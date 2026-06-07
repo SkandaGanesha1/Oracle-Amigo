@@ -43,17 +43,17 @@ describe("Loopback two-agent A2A", () => {
     expect(dataB.identity.did).toMatch(/^did:key:/);
   });
 
-  it("Agent A fetches Agent B's agent card", async () => {
+  it("Agent A fetches Agent B's agent card (A2A v1.0.0)", async () => {
     const card = await withEnv(harness.agentB, async () => {
       const res = await fetch(agentUrl(harness.agentB.port, "/.well-known/agent-card.json"));
-      return (await res.json()) as { name: string; protocolVersion: string; version: string; preferredTransport: string; additionalInterfaces: Array<{ transport: string; url: string }>; skills: Array<{ id: string }> };
+      return (await res.json()) as { name: string; protocolVersion: string; version: string; preferredTransport: string; supportedInterfaces: Array<{ protocolBinding: string; url: string }>; skills: Array<{ id: string }> };
     });
     expect(card.name).toBe("Oracle Amigo Local Agent");
     expect(card.version).toMatch(/^\d+\.\d+\.\d+/);
-    // A2A v0.3.0 compliance: preferredTransport + additionalInterfaces
-    expect(card.protocolVersion).toBe("0.3.0");
-    expect(card.preferredTransport).toBe("JSONRPC");
-    expect(card.additionalInterfaces[0].transport).toBe("JSONRPC");
+    // A2A v1.0.0 compliance: protocolVersion 1.0, supportedInterfaces with HTTP+JSON
+    expect(card.protocolVersion).toBe("1.0");
+    expect(card.preferredTransport).toBe("HTTP+JSON");
+    expect(card.supportedInterfaces[0].protocolBinding).toBe("HTTP+JSON");
     expect(card.skills.find((s) => s.id === "file.request.search")).toBeDefined();
   });
 
@@ -77,7 +77,7 @@ describe("Loopback two-agent A2A", () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ peer: identB.identity.agentId }),
       });
-      return (await res.json()) as { offerId: string; peer: string; nonce: string; createdAt: string; signature: string };
+      return (await res.json()) as { offerId: string; peer: string; nonce: string; createdAt: string; expiresAt: string; fromDid: string; protocol: string; signature: string };
     });
 
     // Agent A verifies the offer using agent B's public key
@@ -98,7 +98,7 @@ describe("Loopback two-agent A2A", () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ offer }),
       });
-      const json = (await res.json()) as { responseId: string; offerId: string; nonce: string; status: string; createdAt: string; signature: string };
+      const json = (await res.json()) as { responseId: string; offerId: string; peer: string; nonce: string; status: string; createdAt: string; expiresAt: string; fromDid: string; protocol: string; signature: string };
       return json;
     });
     expect(response.status).toBe("accepted");

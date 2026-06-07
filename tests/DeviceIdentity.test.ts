@@ -52,29 +52,29 @@ describe("AnpHandshakeAdapter", () => {
 
   it("handshake offer → verify round-trip passes with correct keys", async () => {
     const { generateOrLoadIdentity } = await import("../src/security/DeviceIdentity.js");
-    const { createHandshakeOffer, verifyHandshakeOffer } = await import("../src/security/AnpHandshakeAdapter.js");
+    const { createHandshakeOffer, verifyHandshakeOfferSync } = await import("../src/security/AnpHandshakeAdapter.js");
     const identity = generateOrLoadIdentity();
     const offer = createHandshakeOffer(identity, "peer-agent-1");
-    expect(verifyHandshakeOffer(offer, identity.publicKey)).toBe(true);
+    expect(verifyHandshakeOfferSync(offer, identity.publicKey)).toBe(true);
   });
 
   it("handshake response → verify round-trip passes", async () => {
     const { generateOrLoadIdentity } = await import("../src/security/DeviceIdentity.js");
-    const { createHandshakeOffer, createHandshakeResponse, verifyHandshakeResponse } = await import("../src/security/AnpHandshakeAdapter.js");
+    const { createHandshakeOffer, createHandshakeResponse, verifyHandshakeResponseSync } = await import("../src/security/AnpHandshakeAdapter.js");
     const identityA = generateOrLoadIdentity();
     const offer = createHandshakeOffer(identityA, "peer-b");
     const response = createHandshakeResponse(offer, identityA);
-    expect(verifyHandshakeResponse(response, identityA.publicKey)).toBe(true);
+    expect(verifyHandshakeResponseSync(response, identityA.publicKey)).toBe(true);
   });
 
   it("tampered nonce → verifyHandshakeResponse returns false", async () => {
     const { generateOrLoadIdentity } = await import("../src/security/DeviceIdentity.js");
-    const { createHandshakeOffer, createHandshakeResponse, verifyHandshakeResponse } = await import("../src/security/AnpHandshakeAdapter.js");
+    const { createHandshakeOffer, createHandshakeResponse, verifyHandshakeResponseSync } = await import("../src/security/AnpHandshakeAdapter.js");
     const identity = generateOrLoadIdentity();
     const offer = createHandshakeOffer(identity, "peer-b");
     const response = createHandshakeResponse(offer, identity);
     const tampered = { ...response, nonce: "00000000" };
-    expect(verifyHandshakeResponse(tampered, identity.publicKey)).toBe(false);
+    expect(verifyHandshakeResponseSync(tampered, identity.publicKey)).toBe(false);
   });
 });
 

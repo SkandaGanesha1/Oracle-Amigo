@@ -27,6 +27,19 @@ import { buildAgentCard, ORACLE_AMIGO_SKILLS } from "./protocol/a2a/AgentCard.js
 import { handleA2ARequest, makeMessage, makeTask, makeTextPart, makeTaskStatusUpdate, type A2AContext } from "./protocol/a2a/A2AHandler.js";
 import type { AgentCard, Message as A2AMessage, Task as A2ATask, TaskState, TaskPushNotificationConfig, PushNotificationConfig } from "./protocol/a2a/types.js";
 import { A2A_PROTOCOL_VERSION } from "./protocol/a2a/types.js";
+import { A2Av1Handler, type A2Av1Context } from "./protocol/a2a-v1/A2Av1Handler.js";
+import { buildV1AgentCard } from "./protocol/a2a-v1/AgentCardV1.js";
+import { registerA2Av1Routes, getA2Av1UrlRewriter } from "./protocol/a2a-v1/A2Av1Routes.js";
+import { A2Av1PushNotificationStore } from "./protocol/a2a-v1/A2Av1PushNotificationHandler.js";
+import type {
+  A2Av1AgentCard,
+  A2Av1Message as A2Av1MessageT,
+  A2Av1Task as A2Av1TaskT,
+  A2Av1TaskPushNotificationConfig as A2Av1TaskPushNotificationConfigT,
+  A2Av1PushNotificationConfig as A2Av1PushNotificationConfigT,
+  A2Av1ListTasksRequest as A2Av1ListTasksRequestT,
+  A2Av1ListTasksResponse as A2Av1ListTasksResponseT
+} from "./protocol/a2a-v1/types.js";
 import { getDefaultRegistry } from "./skills/SkillStore.js";
 import { writeSkill, deleteSkill, loadSkillFromDir } from "./skills/SkillRegistry.js";
 import { getEvents, verifyChain } from "./security/AuditHashChain.js";
@@ -64,7 +77,11 @@ export function buildServer(
   reasoner?: AgentReasoner
 ) {
   const logger = createLogger();
-  const server = Fastify({ logger: false });
+  const server = Fastify({ logger: false, rewriteUrl: getA2Av1UrlRewriter() });
+  // A2A v1.0.0 uses `application/a2a+json` as its content type
+  server.addContentTypeParser("application/a2a+json", { parseAs: "string" }, (_req, body, done) => {
+    try { done(null, body ? JSON.parse(body as string) : {}); } catch (err) { done(err as Error, undefined); }
+  });
   const requestStartTimes = new WeakMap<object, number>();
   const publicDir = resolve(process.cwd(), "public");
   const agentRuns = new AgentRunService(tool, fileSearch, reasoner);
@@ -160,22 +177,9 @@ export function buildServer(
     ],
   };
 
-  server.get("/.well-known/agent-card.json", async () => {
-    const discovered = await skillRegistry.ensureFresh();
-    const merged: AgentCard = {
-      ...agentCard,
-      skills: [...agentCard.skills, ...discovered.map((s) => ({
-        id: s.id,
-        name: s.name,
-        description: s.description,
-        tags: s.tags,
-        examples: s.examples,
-        inputModes: s.inputModes.length ? s.inputModes : ["text/plain"],
-        outputModes: s.outputModes.length ? s.outputModes : ["application/json"],
-      }))],
-    };
-    return merged;
-  });
+  // v1.0.0 Agent Card is served by registerA2Av1Routes below.
+  // The legacy v0.3 `/.well-known/agent-card.json` endpoint is no longer registered;
+  // per A2A v1 spec, the same well-known path serves the v1 card.
 
   // A2A v0.3.0 JSON-RPC endpoint
   const pushNotificationStore = new Map<string, TaskPushNotificationConfig[]>();
@@ -303,6 +307,274 @@ export function buildServer(
     const response = await handleA2ARequest(request.body, a2aCtx);
     return reply.send(response);
   });
+
+  // ============================================================
+  // ===== A2A v1.0.0 (HTTP+JSON binding) — pure v1.0.0 implementation, no v0.3 wrapper =====
+  // ============================================================
+  const a2aV1Card: A2Av1AgentCard = buildV1AgentCard(
+    {
+      name: agentCard.name,
+      description: agentCard.description,
+      version: agentCard.version,
+      organization: agentCard.provider?.organization ?? "Oracle Amigo",
+      organizationUrl: agentCard.provider?.url,
+      skills: agentCard.skills.map((s) => ({
+        id: s.id,
+        name: s.name,
+        description: s.description,
+        tags: s.tags,
+        examples: s.examples,
+        inputModes: s.inputModes,
+        outputModes: s.outputModes
+      })),
+      defaultInputModes: agentCard.defaultInputModes,
+      defaultOutputModes: agentCard.defaultOutputModes,
+      documentationUrl: agentCard.documentationUrl,
+      iconUrl: agentCard.iconUrl
+    },
+    {
+      publicBaseUrl: baseUrl,
+      capabilities: {
+        streaming: agentCard.capabilities.streaming ?? true,
+        pushNotifications: agentCard.capabilities.pushNotifications ?? true,
+        stateTransitionHistory: agentCard.capabilities.stateTransitionHistory ?? true,
+        extendedAgentCard: true
+      }
+    }
+  );
+
+  const a2aV1ExtendedCard: A2Av1AgentCard = {
+    ...a2aV1Card,
+    skills: [
+      ...a2aV1Card.skills,
+      {
+        id: "agent.internal.diagnostics",
+        name: "Internal diagnostics",
+        description: "Extended skill: full audit log access, system metrics, and debug information (requires authentication).",
+        tags: ["diagnostics", "audit", "admin"],
+        examples: ["show audit events", "get system metrics"],
+        inputModes: ["text/plain"],
+        outputModes: ["application/json"]
+      }
+    ]
+  };
+
+  // v1 in-memory push notification store
+  const a2aV1PushStore = new A2Av1PushNotificationStore();
+
+  const a2aV1Ctx: A2Av1Context = {
+    agentCard: a2aV1Card,
+    onMessageSend: async (message, configuration, _tenant): Promise<A2Av1TaskT | A2Av1MessageT> => {
+      // Same business logic as v0.3 but returns v1-shaped Task/Message
+      const text = message.parts
+        .filter((p): p is { text: string } => typeof (p as { text?: string }).text === "string")
+        .map((p) => p.text)
+        .join(" ");
+      const task = protocol.createTask({
+        contextId: message.contextId,
+        type: "file.request.search",
+        metadata: { text, messageId: message.messageId, a2aVersion: "1.0" },
+        actorAgentId: "a2a-v1-peer"
+      });
+      wfTransition(task.id, "INTENT_CLASSIFIED", { text });
+      const intent = intentExtractor.extract(text);
+      const messageText = intent.intent === "file_request"
+        ? "File request received and classified. Starting local search..."
+        : "Message received and classified as normal chat.";
+      if (configuration?.pushNotificationConfig) {
+        a2aV1PushStore.set(task.id, {
+          ...configuration.pushNotificationConfig,
+          id: configuration.pushNotificationConfig.id ?? randomUUID()
+        });
+      }
+      return {
+        id: task.id,
+        contextId: message.contextId ?? task.id,
+        status: {
+          state: "TASK_STATE_WORKING",
+          timestamp: new Date().toISOString(),
+          message: {
+            messageId: randomUUID(),
+            role: "ROLE_AGENT",
+            parts: [{ text: messageText }],
+            contextId: message.contextId,
+            taskId: task.id,
+            timestamp: new Date().toISOString()
+          }
+        },
+        history: [message]
+      };
+    },
+    onMessageStream: async (message, configuration): Promise<void> => {
+      const text = message.parts
+        .filter((p): p is { text: string } => typeof (p as { text?: string }).text === "string")
+        .map((p) => p.text)
+        .join(" ");
+      const task = protocol.createTask({
+        contextId: message.contextId,
+        type: "file.request.search",
+        metadata: { text, messageId: message.messageId, streaming: true, a2aVersion: "1.0" },
+        actorAgentId: "a2a-v1-peer"
+      });
+      wfTransition(task.id, "INTENT_CLASSIFIED", { text });
+      if (configuration.pushNotificationConfig) {
+        a2aV1PushStore.set(task.id, {
+          ...configuration.pushNotificationConfig,
+          id: configuration.pushNotificationConfig.id ?? randomUUID()
+        });
+      }
+      configuration.emit({
+        type: "message",
+        taskId: task.id,
+        contextId: message.contextId ?? task.id,
+        message: {
+          messageId: randomUUID(),
+          role: "ROLE_AGENT",
+          parts: [{ text: "Streaming started..." }],
+          contextId: message.contextId,
+          taskId: task.id,
+          timestamp: new Date().toISOString()
+        }
+      });
+      configuration.emit({
+        type: "status",
+        event: {
+          taskId: task.id,
+          contextId: message.contextId ?? task.id,
+          status: { state: "TASK_STATE_WORKING", timestamp: new Date().toISOString() },
+          final: false
+        }
+      });
+      configuration.emit({
+        type: "status",
+        event: {
+          taskId: task.id,
+          contextId: message.contextId ?? task.id,
+          status: { state: "TASK_STATE_COMPLETED", timestamp: new Date().toISOString() },
+          final: true
+        }
+      });
+    },
+    onTaskGet: async (id, historyLength, _tenant) => {
+      const task = protocol.getTask(id);
+      if (!task) return null;
+      const state = (task.protocolState ?? "working") as string;
+      const v1State = (
+        state === "submitted" ? "TASK_STATE_SUBMITTED" :
+        state === "working" ? "TASK_STATE_WORKING" :
+        state === "input-required" ? "TASK_STATE_INPUT_REQUIRED" :
+        state === "completed" ? "TASK_STATE_COMPLETED" :
+        state === "failed" ? "TASK_STATE_FAILED" :
+        state === "rejected" ? "TASK_STATE_REJECTED" :
+        state === "canceled" ? "TASK_STATE_CANCELED" :
+        state === "auth-required" ? "TASK_STATE_AUTH_REQUIRED" :
+        "TASK_STATE_UNKNOWN"
+      ) as A2Av1TaskT["status"]["state"];
+      return {
+        id: task.id,
+        contextId: task.contextId ?? task.id,
+        status: { state: v1State, timestamp: new Date().toISOString() },
+        history: historyLength && historyLength > 0 ? [] : undefined,
+        metadata: task.metadataJson && Object.keys(task.metadataJson).length > 0 ? task.metadataJson : undefined
+      };
+    },
+    onTaskList: async (params): Promise<A2Av1ListTasksResponseT> => {
+      const allTasks = wfListTasks();
+      let filtered = allTasks;
+      if (params.contextId) filtered = filtered.filter((t) => t.contextId === params.contextId);
+      if (params.state) {
+        const v03StateMap: Record<string, string> = {
+          TASK_STATE_SUBMITTED: "submitted",
+          TASK_STATE_WORKING: "working",
+          TASK_STATE_INPUT_REQUIRED: "input-required",
+          TASK_STATE_COMPLETED: "completed",
+          TASK_STATE_FAILED: "failed",
+          TASK_STATE_REJECTED: "rejected",
+          TASK_STATE_CANCELED: "canceled",
+          TASK_STATE_AUTH_REQUIRED: "auth-required"
+        };
+        const v03 = v03StateMap[params.state] ?? "unknown";
+        filtered = filtered.filter((t) => t.protocolState === v03);
+      }
+      const pageSize = params.pageSize ?? 50;
+      const startIndex = params.pageToken ? Number(Buffer.from(params.pageToken, "base64").toString("utf8")) : 0;
+      const page = filtered.slice(startIndex, startIndex + pageSize);
+      const tasks: A2Av1TaskT[] = page.map((t) => ({
+        id: t.id,
+        contextId: t.contextId ?? t.id,
+        status: {
+          state: ((): A2Av1TaskT["status"]["state"] => {
+            const s = String(t.protocolState ?? "working");
+            if (s === "working") return "TASK_STATE_WORKING";
+            if (s === "submitted") return "TASK_STATE_SUBMITTED";
+            if (s === "input-required") return "TASK_STATE_INPUT_REQUIRED";
+            if (s === "completed") return "TASK_STATE_COMPLETED";
+            if (s === "failed") return "TASK_STATE_FAILED";
+            if (s === "rejected") return "TASK_STATE_REJECTED";
+            if (s === "canceled") return "TASK_STATE_CANCELED";
+            if (s === "auth-required") return "TASK_STATE_AUTH_REQUIRED";
+            return "TASK_STATE_UNKNOWN";
+          })(),
+          timestamp: new Date().toISOString()
+        }
+      }));
+      const nextIndex = startIndex + page.length;
+      const nextPageToken = nextIndex < filtered.length ? Buffer.from(String(nextIndex)).toString("base64") : undefined;
+      return { tasks, nextPageToken, totalSize: filtered.length };
+    },
+    onTaskCancel: async (id, _tenant) => {
+      try { wfTransition(id, "FAILED", { reason: "canceled" }); } catch { /* already terminal */ }
+      const task = protocol.getTask(id);
+      if (!task) return null;
+      return {
+        id: task.id,
+        contextId: task.contextId ?? task.id,
+        status: { state: "TASK_STATE_CANCELED", timestamp: new Date().toISOString() }
+      };
+    },
+    onTaskResubscribe: async (id, configuration) => {
+      const task = protocol.getTask(id);
+      if (!task) {
+        configuration.emit({
+          type: "status",
+          event: {
+            taskId: id,
+            contextId: "",
+            status: { state: "TASK_STATE_FAILED", timestamp: new Date().toISOString() },
+            final: true
+          }
+        });
+        return;
+      }
+      configuration.emit({
+        type: "status",
+        event: {
+          taskId: task.id,
+          contextId: task.contextId ?? task.id,
+          status: { state: "TASK_STATE_COMPLETED", timestamp: new Date().toISOString() },
+          final: true
+        }
+      });
+    },
+    onPushNotificationConfigSet: async (taskId, config, _tenant): Promise<A2Av1TaskPushNotificationConfigT> => {
+      const stored = a2aV1PushStore.set(taskId, config);
+      return { taskId, pushNotificationConfig: stored.pushNotificationConfig };
+    },
+    onPushNotificationConfigGet: async (taskId, configId, _tenant) => {
+      return a2aV1PushStore.get(taskId, configId);
+    },
+    onPushNotificationConfigList: async (taskId, _tenant) => {
+      return a2aV1PushStore.list(taskId);
+    },
+    onPushNotificationConfigDelete: async (taskId, configId, _tenant) => {
+      return a2aV1PushStore.delete(taskId, configId);
+    },
+    supportsAuthenticatedExtendedCard: () => true,
+    onGetAuthenticatedExtendedCard: async (_tenant) => a2aV1ExtendedCard
+  };
+
+  const a2aV1Handler = new A2Av1Handler(a2aV1Ctx);
+  registerA2Av1Routes(server, a2aV1Handler);
 
   // ===== Agent Skills (agentskills.io) =====
   const skillRegistry = getDefaultRegistry();
@@ -973,20 +1245,20 @@ export function buildServer(
   });
 
   server.post("/anp/handshake/response", async (request) => {
-    const body = (request.body ?? {}) as { offer?: { offerId: string; peer: string; nonce: string; createdAt: string; signature: string } };
+    const body = (request.body ?? {}) as { offer?: import("./security/AnpHandshakeAdapter.js").HandshakeOffer };
     if (!body.offer) return { error: "Missing offer object" };
     const response = protocol.createHandshakeResponse(body.offer);
     return response;
   });
 
   server.post("/anp/handshake/verify-offer", async (request) => {
-    const body = (request.body ?? {}) as { offer?: { offerId: string; peer: string; nonce: string; createdAt: string; signature: string }; publicKey?: string };
+    const body = (request.body ?? {}) as { offer?: import("./security/AnpHandshakeAdapter.js").HandshakeOffer; publicKey?: string };
     if (!body.offer || !body.publicKey) return { ok: false, error: "Missing offer or publicKey" };
     return { ok: protocol.verifyHandshakeOffer(body.offer, body.publicKey) };
   });
 
   server.post("/anp/handshake/verify-response", async (request) => {
-    const body = (request.body ?? {}) as { response?: { responseId: string; offerId: string; nonce: string; status: "accepted"; createdAt: string; signature: string }; publicKey?: string };
+    const body = (request.body ?? {}) as { response?: import("./security/AnpHandshakeAdapter.js").HandshakeResponse; publicKey?: string };
     if (!body.response || !body.publicKey) return { ok: false, error: "Missing response or publicKey" };
     return { ok: protocol.verifyHandshakeResponse(body.response, body.publicKey) };
   });

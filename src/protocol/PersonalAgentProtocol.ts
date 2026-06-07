@@ -5,7 +5,7 @@ import type { AgentCard } from "@a2a-js/sdk";
 import { getDb } from "../db/connection.js";
 import { appendAuditEvent } from "../security/AuditHashChain.js";
 import { generateOrLoadIdentity, type LocalIdentity } from "../security/DeviceIdentity.js";
-import { createOrGetPeerSession, createHandshakeOffer as anpCreateOffer, verifyHandshakeOffer as anpVerifyOffer, createHandshakeResponse as anpCreateResponse, verifyHandshakeResponse as anpVerifyResponse, type HandshakeOffer, type HandshakeResponse, type PeerSession } from "../security/AnpHandshakeAdapter.js";
+import { createOrGetPeerSession, createHandshakeOffer as anpCreateOffer, verifyHandshakeOfferSync as anpVerifyOffer, createHandshakeResponse as anpCreateResponse, verifyHandshakeResponseSync as anpVerifyResponse, type HandshakeOffer, type HandshakeResponse, type PeerSession } from "../security/AnpHandshakeAdapter.js";
 import { transition, createTask as wfCreateTask, getTask as wfGetTask } from "../workflow/TaskWorkflow.js";
 import { stageFile, promoteToApproved } from "../storage/AgenticStorage.js";
 
@@ -155,7 +155,7 @@ export class PersonalAgentProtocol {
     return this._identity;
   }
 
-  createPeerSession(peer: { agentId: string; did: string; publicKey: string; trustLevel?: "local" | "loopback" | "future" }): PeerSession {
+  createPeerSession(peer: { agentId: string; did: string; publicKey: string; trustLevel?: "local" | "loopback" | "verified" | "untrusted" }): PeerSession {
     return createOrGetPeerSession(peer);
   }
 
@@ -165,6 +165,7 @@ export class PersonalAgentProtocol {
   }
 
   verifyHandshakeOffer(offer: HandshakeOffer, publicKeyHex: string): boolean {
+    // Backward-compat synchronous signature check.
     return anpVerifyOffer(offer, publicKeyHex);
   }
 

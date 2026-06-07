@@ -1,0 +1,200 @@
+import { createHash, createSign, createVerify, randomUUID } from "node:crypto";
+import {
+  A2A_V1_PROTOCOL_VERSION,
+  newServerTaskId,
+  type A2Av1AgentCard,
+  type A2Av1Capabilities,
+  type A2Av1Interface,
+  type A2Av1JwsSignature,
+  type A2Av1SecurityScheme,
+  type A2Av1Skill
+} from "./types.js";
+
+/**
+ * Stable canonical JSON (sorted keys, no whitespace).
+ * Used for JWS signing of Agent Cards.
+ */
+export function canonicalizeCard(card: Record<string, unknown>): string {
+  return JSON.stringify(sortKeysDeep(card));
+}
+
+function sortKeysDeep(v: unknown): unknown {
+  if (Array.isArray(v)) return v.map(sortKeysDeep);
+  if (v && typeof v === "object") {
+    const obj = v as Record<string, unknown>;
+    const out: Record<string, unknown> = {};
+    for (const k of Object.keys(obj).sort()) out[k] = sortKeysDeep(obj[k]);
+    return out;
+  }
+  return v;
+}
+
+export interface V1CardBuildContext {
+  publicBaseUrl: string;
+  tenant?: string;
+  capabilities?: Partial<A2Av1Capabilities>;
+  /** For JWS signing; if absent, card is unsigned (still spec-compliant for unsigned cards) */
+  signingKey?: { privateKeyPem: string; kid: string };
+}
+
+export interface V1CardBuildInput {
+  name: string;
+  description?: string;
+  version: string;
+  organization: string;
+  organizationUrl?: string;
+  skills: A2Av1Skill[];
+  capabilities?: Partial<A2Av1Capabilities>;
+  defaultInputModes?: string[];
+  defaultOutputModes?: string[];
+  documentationUrl?: string;
+  iconUrl?: string;
+  /** Extra security schemes (merged with defaults) */
+  securitySchemes?: Record<string, A2Av1SecurityScheme>;
+  /** Extra security requirements */
+  securityRequirements?: Array<Record<string, string[]>>;
+}
+
+/**
+ * Build a complete A2A v1.0.0 Agent Card from local agent metadata.
+ *
+ * Spec conformance:
+ *  - `supportedInterfaces` populated (HTTP+JSON preferred)
+ *  - `protocolVersion: "1.0"`
+ *  - `preferredTransport: "HTTP+JSON"`
+ *  - `defaultInputModes` / `defaultOutputModes` populated
+ *  - `tenant` for multi-tenancy
+ *  - JWS signature (RS256) over the canonicalized unsigned card (RFC 7515 compact)
+ */
+export function buildV1AgentCard(input: V1CardBuildInput, ctx: V1CardBuildContext): A2Av1AgentCard {
+  const httpInterface: A2Av1Interface = {
+    url: `${ctx.publicBaseUrl}/v1`,
+    protocolBinding: "HTTP+JSON",
+    protocolVersion: A2A_V1_PROTOCOL_VERSION,
+    tenant: ctx.tenant,
+    extensions: []
+  };
+
+  const skills: A2Av1Skill[] = (input.skills ?? []).map((s) => ({
+    id: s.id,
+    name: s.name,
+    description: s.description,
+    tags: s.tags ?? [],
+    examples: s.examples,
+    inputModes: s.inputModes ?? ["text/plain"],
+    outputModes: s.outputModes ?? ["text/plain"],
+    securityRequirements: s.securityRequirements
+  }));
+
+  const capabilities: A2Av1Capabilities = {
+    streaming: ctx.capabilities?.streaming ?? true,
+    pushNotifications: ctx.capabilities?.pushNotifications ?? true,
+    stateTransitionHistory: ctx.capabilities?.stateTransitionHistory ?? true,
+    extendedAgentCard: ctx.capabilities?.extendedAgentCard ?? true,
+    extensions: ctx.capabilities?.extensions
+  };
+
+  const defaultSecuritySchemes: Record<string, A2Av1SecurityScheme> = {
+    "bearer-jwt": {
+      type: "http",
+      scheme: "bearer",
+      bearerFormat: "JWT",
+      description: "Bearer JWT issued by the local agent"
+    }
+  };
+
+  const unsigned: Omit<A2Av1AgentCard, "signatures"> = {
+    protocolVersion: A2A_V1_PROTOCOL_VERSION,
+    name: input.name,
+    description: input.description,
+    url: ctx.publicBaseUrl,
+    preferredTransport: "HTTP+JSON",
+    supportedInterfaces: [httpInterface],
+    iconUrl: input.iconUrl,
+    provider: input.organizationUrl
+      ? { organization: input.organization, url: input.organizationUrl }
+      : { organization: input.organization, url: ctx.publicBaseUrl },
+    version: input.version,
+    documentationUrl: input.documentationUrl,
+    capabilities,
+    securitySchemes: { ...defaultSecuritySchemes, ...(input.securitySchemes ?? {}) },
+    defaultInputModes: input.defaultInputModes ?? ["text/plain", "application/json"],
+    defaultOutputModes: input.defaultOutputModes ?? ["text/plain", "application/json"],
+    skills,
+    tenant: ctx.tenant
+  };
+
+  if (ctx.signingKey) {
+    return signCardWithRs256(unsigned, ctx.signingKey.privateKeyPem, ctx.signingKey.kid);
+  }
+  return { ...unsigned } as A2Av1AgentCard;
+}
+
+/**
+ * Sign the canonicalized card with RS256 (RFC 7515 compact JWS).
+ *
+ * Per the A2A v1 spec, the protected header includes `alg`, `kid`, `typ`,
+ * and the payload is the base64url(JSON of the unsigned card).
+ */
+export function signCardWithRs256(
+  unsigned: Omit<A2Av1AgentCard, "signatures">,
+  privateKeyPem: string,
+  kid: string
+): A2Av1AgentCard {
+  const payload = Buffer.from(JSON.stringify(unsigned), "utf8").toString("base64url");
+  const header = { alg: "RS256", typ: "JWT", kid };
+  const protectedHeader = Buffer.from(JSON.stringify(header), "utf8").toString("base64url");
+  const signingInput = `${protectedHeader}.${payload}`;
+  const signer = createSign("RSA-SHA256");
+  signer.update(signingInput);
+  signer.end();
+  const signature = signer.sign(privateKeyPem).toString("base64url");
+  const sig: A2Av1JwsSignature = {
+    protected: protectedHeader,
+    signature,
+    header
+  };
+  return {
+    ...unsigned,
+    signatures: [sig]
+  };
+}
+
+/**
+ * Verify a JWS-signed card. Returns the verified unsigned card or throws.
+ */
+export function verifySignedCard(
+  card: A2Av1AgentCard,
+  publicKeyPem: string
+): Omit<A2Av1AgentCard, "signatures"> {
+  if (!card.signatures || card.signatures.length === 0) {
+    throw new Error("Card has no signatures");
+  }
+  const sig = card.signatures[0];
+
+  // Reconstruct the unsigned card (strip signatures) and re-canonicalize
+  const unsigned: Omit<A2Av1AgentCard, "signatures"> = { ...card };
+  delete (unsigned as Partial<A2Av1AgentCard>).signatures;
+  const payload = Buffer.from(JSON.stringify(unsigned), "utf8").toString("base64url");
+  const signingInput = `${sig.protected}.${payload}`;
+
+  const verifier = createVerify("RSA-SHA256");
+  verifier.update(signingInput);
+  verifier.end();
+  if (!verifier.verify(publicKeyPem, Buffer.from(sig.signature, "base64url"))) {
+    throw new Error("JWS signature verification failed");
+  }
+  return unsigned;
+}
+
+export function cardFingerprint(
+  card: A2Av1AgentCard | Omit<A2Av1AgentCard, "signatures">
+): string {
+  const hasSignatures = "signatures" in card && (card as A2Av1AgentCard).signatures;
+  const unsigned = hasSignatures
+    ? { ...(card as A2Av1AgentCard), signatures: undefined }
+    : (card as Omit<A2Av1AgentCard, "signatures">);
+  return createHash("sha256").update(canonicalizeCard(unsigned as unknown as Record<string, unknown>)).digest("hex");
+}
+
+export { newServerTaskId, randomUUID };
