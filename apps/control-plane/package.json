@@ -16,11 +16,13 @@
     "demo:two-laptop": "tsx scripts/demo-two-laptop.ts"
   },
   "dependencies": {
+    "@fastify/cookie": "^11.0.2",
     "@node-rs/argon2": "^2.0.2",
     "better-sqlite3": "^12.4.1",
     "dotenv": "^16.5.0",
     "fastify": "^5.3.3",
     "jsonwebtoken": "^9.0.2",
+    "otpauth": "^9.5.1",
     "zod": "^3.25.36"
   },
   "devDependencies": {

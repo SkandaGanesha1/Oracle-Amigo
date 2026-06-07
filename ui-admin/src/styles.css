@@ -1,0 +1,35 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg: #000;
+  --color-fg: #f4f4f5;
+  --color-muted: rgba(255, 255, 255, 0.55);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: #000;
+  color: #f4f4f5;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
+    Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+*:focus-visible {
+  outline: 2px solid rgba(16, 185, 129, 0.55);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Hide native arrow on dark inputs that may not exist, but keep form controls neutral */
+input,
+select,
+textarea {
+  color-scheme: dark;
+}

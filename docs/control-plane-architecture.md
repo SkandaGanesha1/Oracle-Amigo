@@ -43,9 +43,9 @@ client                                control plane
 - Access tokens: HS256, 15 min TTL, claims = `{ sub: userId, orgId, jti }`.
 - Refresh tokens: opaque 32-byte random, SHA-256 hashed in DB, 30 day TTL, revocable.
 - Device tokens: separate JWT with claim `type: "device"`, 7 day TTL, tied to `device_id` for agent-instance RPC.
-- Admin: `requireAdmin` middleware checks `DEV_ADMIN_TOKEN` env var on the `X-Admin-Token` header.
+- Admin: `requireAdmin` middleware checks **either** a valid session cookie (set by `/v1/admin/auth/login` + MFA) **or** the `X-Admin-Token` header (`DEV_ADMIN_TOKEN` in dev, `ADMIN_BOOTSTRAP_TOKEN` in prod). See [Admin Portal](#admin-portal-phase-15b) below for the operator auth flow.
 
-## Data Model (13 tables)
+## Data Model (19 tables)
 
 ```
 organizations ─< users ─< user_credentials
@@ -67,9 +67,15 @@ organizations ─< users ─< user_credentials
                             ╲< transfer_encryption_keys
                              ╲
                               audit_events (SHA-256 hash chain, org-scoped)
+
+admin_users ─< admin_totp_secrets
+           ╲< admin_recovery_codes
+           ╲< admin_sessions
+            admin_login_attempts
+            admin_setup_challenges
 ```
 
-All tables have `org_id` and indexes on `(org_id, …)` lookup columns.
+All user/agent tables have `org_id` and indexes on `(org_id, …)` lookup columns. The six `admin_*` tables are org-independent (admins operate the control plane, not a tenant).
 
 ## Endpoints (summary)
 
@@ -99,7 +105,8 @@ All tables have `org_id` and indexes on `(org_id, …)` lookup columns.
 | `/transfers/{id}/upload` | PUT | access | Stream ciphertext (raw octet-stream) |
 | `/transfers/{id}/download` | GET | access | Stream ciphertext back |
 | `/transfers/{id}/receipt` | POST | access | Confirm download + hash check |
-| `/admin/...` | GET | admin token | Read-only org-wide views |
+| `/admin/...` | GET | session cookie OR admin token | Read-only org-wide views |
+| `/v1/admin/auth/...` | GET/POST | varies | Operator auth: setup, login, MFA, me, logout |
 
 ## File Transfer Crypto
 
@@ -161,3 +168,71 @@ AGENTIC_CONTROL_PLANE_URL=http://127.0.0.1:8080 \
 ```
 
 In production: put behind a reverse proxy (nginx, Caddy) with TLS termination. Bind to `127.0.0.1` and let the proxy handle public traffic.
+
+## Admin Portal (Phase 15b)
+
+The operator-facing admin UI is a **standalone React app** served by a thin Fastify adapter (`apps/admin-portal/`, default port `3398`) that reverse-proxies `/v1/*` to the control plane on `127.0.0.1:8080`. The two services share the same hostname so the browser treats them as one origin (cookies set on `:8080` are sent on `:3398`).
+
+### Why split
+
+Phase 15 shipped an in-chat admin tab gated by a single shared `DEV_ADMIN_TOKEN` stored in `sessionStorage`. That had three problems: any XSS in chat could read the token, there was no per-operator identity or MFA, and the admin bundle added ~170 KB to every chat load. Phase 15b fixes all three.
+
+### Auth crypto
+
+| Concern | Implementation |
+| --- | --- |
+| Password | Argon2id (`@node-rs/argon2`, memoryCost=19456, timeCost=2, parallelism=1). |
+| 2FA | TOTP RFC 6238 via `otpauth ^9.5.1`; SHA1, 6 digits, 30s period, 20-byte secret. |
+| TOTP secret at rest | AES-256-GCM keyed by `SHA-256("oracle-amigo.admin.kek.v1:" + ADMIN_KEK)`; 12B random IV, 16B auth tag, base64url(`iv.ct.tag`). |
+| Recovery codes | 10 × 10 chars Crockford base32 (no `I`/`L`/`O`/`U`/`0`/`1`); displayed once at bootstrap; stored as `SHA-256(normalized)`; using one invalidates the other nine. |
+| Session token | 32B `crypto.randomBytes` → base64url; only `SHA-256(token)` stored. |
+| Session cookie | `__Host-admin_session` in prod (HttpOnly, Secure, SameSite=Strict, Path=/, no Domain); `admin_session` in dev (no Secure). |
+| Session lifetime | 1h idle / 8h absolute. |
+
+### Auth flow
+
+```
+first-run:                   returning operator:
+  GET /v1/admin/auth/setup-status     GET /v1/admin/auth/me (cookie?)
+    → { required: true }                ↳ 200 { user } (skip to dashboard)
+  POST /v1/admin/auth/setup/start    POST /v1/admin/auth/login {email, password}
+    → { challenge, provisioning_uri,    ↳ mfa_required { challenge }
+      secret_base32, expires_in: 600 }   ↳ 429 if locked out
+  POST /v1/admin/auth/setup              POST /v1/admin/auth/mfa/verify
+    { email, display_name, password,      { challenge, totp_code }
+      totp_code, setup_challenge }        ↳ 200 { user } + Set-Cookie
+    → 201 { user, recovery_codes[10] }
+```
+
+The setup endpoint verifies the TOTP code **server-side** (looking up the encrypted secret by `setup_challenge` token hash) before persisting the admin row. The setup wizard's QR code is the only time the TOTP secret is shown; the client cannot keep it.
+
+### Operator middleware
+
+`requireAdmin()` accepts **either** a valid session cookie **or** `X-Admin-Token: $DEV_ADMIN_TOKEN` (dev) / `X-Admin-Token: $ADMIN_BOOTSTRAP_TOKEN` (prod). The bootstrap token is a deliberate escape hatch for incident response; in prod it must be empty after the first admin is bootstrapped. `requireAdminSession()` is the strict variant (cookie-only) — used by the auth routes themselves.
+
+### Topology in prod
+
+```
+operator browser
+    ↓ HTTPS
+reverse proxy (Caddy / nginx) — TLS + IP allowlist
+    ↓
+127.0.0.1:3398  apps/admin-portal/  (Fastify: @fastify/static + @fastify/http-proxy)
+    ↓  /v1/*
+127.0.0.1:8080  apps/control-plane/ (auth + business logic + SQLite)
+```
+
+The reverse proxy must forward `Cookie` (request) and `Set-Cookie` (response) headers verbatim. `@fastify/http-proxy` v11.5+ does this by default.
+
+### Tables added
+
+| Table | Purpose |
+| --- | --- |
+| `admin_users` | Email, display name, Argon2id password hash, TOTP enrolled flag, disabled flag, last login. |
+| `admin_totp_secrets` | AES-256-GCM-encrypted TOTP secret, `last_used_counter` (replay defense), `provisioning_uri`, `secret_base32` (shown once). |
+| `admin_recovery_codes` | SHA-256 hashes of the 10 recovery codes, with a `used_at` timestamp. |
+| `admin_sessions` | `token_hash`, `created_at`, `last_seen_at`, `expires_at`, `absolute_expires_at`, `user_agent`, `ip`. |
+| `admin_login_attempts` | Sliding-window counters per email and per IP. |
+| `admin_setup_challenges` | One-shot setup challenges: `token_hash`, `totp_secret_encrypted`, `provisioning_uri`, `secret_base32`, `expires_at`, `used_at`. 10-min TTL. |
+
+For the full operator guide, security model, and troubleshooting, see [`admin-portal.md`](./admin-portal.md).

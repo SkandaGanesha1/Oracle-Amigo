@@ -214,3 +214,81 @@ CREATE TABLE IF NOT EXISTS audit_events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_audit_events_org_created ON audit_events(org_id, created_at);
+
+-- Admin Portal: dedicated operator accounts (do NOT reuse `users` to keep auth/UX boundaries clean).
+-- Phase 15b: separate port + Argon2id password + TOTP 2FA + recovery codes + HttpOnly session cookies.
+CREATE TABLE IF NOT EXISTS admin_users (
+  id TEXT PRIMARY KEY,
+  email TEXT UNIQUE NOT NULL,
+  display_name TEXT NOT NULL,
+  password_hash TEXT NOT NULL,
+  password_algo TEXT NOT NULL DEFAULT 'argon2id',
+  is_disabled INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+-- TOTP secrets are encrypted at rest with ADMIN_KEK (AES-256-GCM).
+-- secret_encrypted stores "iv:ciphertext:tag" (base64url each segment).
+CREATE TABLE IF NOT EXISTS admin_totp_secrets (
+  admin_user_id TEXT PRIMARY KEY REFERENCES admin_users(id) ON DELETE CASCADE,
+  secret_encrypted TEXT NOT NULL,
+  enrolled_at TEXT NOT NULL,
+  last_used_counter INTEGER NOT NULL DEFAULT 0
+);
+
+-- Recovery codes: 10 per admin, each 10 Crockford-base32 chars. We store sha256(normalized_code)
+-- in code_hash. used_at is set on first use; the entire batch is rotated on use.
+CREATE TABLE IF NOT EXISTS admin_recovery_codes (
+  id TEXT PRIMARY KEY,
+  admin_user_id TEXT NOT NULL REFERENCES admin_users(id) ON DELETE CASCADE,
+  code_hash TEXT NOT NULL,
+  used_at TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_recovery_user ON admin_recovery_codes(admin_user_id);
+
+-- Opaque session tokens (no JWT, no JWT signature secrets at the edge). Cookie value is the
+-- raw token; we only persist its sha256 in token_hash. Idle TTL enforced via last_seen_at.
+CREATE TABLE IF NOT EXISTS admin_sessions (
+  id TEXT PRIMARY KEY,
+  admin_user_id TEXT NOT NULL REFERENCES admin_users(id) ON DELETE CASCADE,
+  token_hash TEXT NOT NULL UNIQUE,
+  ip_address TEXT,
+  user_agent TEXT,
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  absolute_expires_at TEXT NOT NULL,
+  last_seen_at TEXT NOT NULL,
+  revoked_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON admin_sessions(admin_user_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_expires ON admin_sessions(expires_at);
+
+-- Sliding-window login attempt counter (per email + per ip). Used for lockout.
+CREATE TABLE IF NOT EXISTS admin_login_attempts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  email_lower TEXT NOT NULL,
+  ip_address TEXT,
+  succeeded INTEGER NOT NULL,
+  reason TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_attempts_email_time ON admin_login_attempts(email_lower, created_at);
+CREATE INDEX IF NOT EXISTS idx_attempts_ip_time ON admin_login_attempts(ip_address, created_at);
+
+-- One-shot setup challenge used by /v1/admin/auth/setup/start. The server generates a TOTP secret,
+-- encrypts it at rest with the admin KEK, and returns only a setup_challenge token + provisioning URI
+-- to the client. The client later POSTs that token + email + password + display_name + totp_code back
+-- to /v1/admin/auth/setup which looks up the secret by token_hash. TTL is 10 minutes; one-shot.
+CREATE TABLE IF NOT EXISTS admin_setup_challenges (
+  id TEXT PRIMARY KEY,
+  token_hash TEXT UNIQUE NOT NULL,
+  totp_secret_encrypted TEXT NOT NULL,
+  provisioning_uri TEXT NOT NULL,
+  secret_base32 TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  used_at TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_setup_challenges_expires ON admin_setup_challenges(expires_at);

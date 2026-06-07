@@ -34,3 +34,7 @@ desktop.ini
 *.swo
 
 storage/files/
+
+# opencode session artifacts (anchored summary, plans, playwright-cli logs)
+.opencode/
+.playwright-cli/
