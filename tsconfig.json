@@ -12,6 +12,6 @@
     "rootDir": ".",
     "types": ["node", "vitest/globals"]
   },
-  "include": ["server.ts", "src/**/*.ts", "examples/**/*.ts", "tests/**/*.ts"],
+  "include": ["server.ts", "src/**/*.ts", "examples/**/*.ts", "tests/**/*.ts", "apps/control-plane/src/**/*.ts"],
   "exclude": ["dist", "node_modules"]
 }

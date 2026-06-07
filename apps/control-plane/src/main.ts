@@ -38,8 +38,8 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
   app.addContentTypeParser("application/octet-stream", { parseAs: "buffer" }, (_req, body, done) => {
     done(null, body);
   });
-  app.setErrorHandler((err: Error, _req, reply) => {
-    app.log.error({ err }, "request failed");
+  app.setErrorHandler((err: Error, req, reply) => {
+    app.log.error({ err, url: req.url, method: req.method }, "request failed");
     reply.code(500).send({ error: "INTERNAL_ERROR", message: err.message });
   });
 

@@ -53,7 +53,16 @@ export async function registerTransferRoutes(app: FastifyInstance, publicBaseUrl
     const { transfer_id } = req.params as { transfer_id: string };
     try {
       const body = req.body;
-      const data = Buffer.isBuffer(body) ? body : (body ? Buffer.from(body as ArrayBuffer | string) : Buffer.alloc(0));
+      let data: Buffer;
+      if (Buffer.isBuffer(body)) {
+        data = body;
+      } else if (typeof body === "string") {
+        data = Buffer.from(body, "utf8");
+      } else if (body instanceof Uint8Array) {
+        data = Buffer.from(body);
+      } else {
+        data = Buffer.alloc(0);
+      }
       const result = uploadTransfer(
         req.deviceContext.orgId,
         transfer_id,

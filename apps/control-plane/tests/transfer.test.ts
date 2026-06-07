@@ -119,8 +119,7 @@ describe("file transfer relay", () => {
       method: "PUT",
       url: `/v1/transfers/${transfer_id}/upload`,
       headers: { authorization: `Bearer ${aliceDeviceToken}`, "content-type": "application/octet-stream" },
-      payload: plaintext,
-      payloadAsBuffer: true
+      payload: plaintext
     });
     if (put.statusCode !== 200) console.error("UPLOAD FAILED:", put.statusCode, put.body);
     expect(put.statusCode).toBe(200);
@@ -159,8 +158,7 @@ describe("file transfer relay", () => {
       method: "PUT",
       url: `/v1/transfers/${transfer_id}/upload`,
       headers: { authorization: `Bearer ${aliceDeviceToken}`, "content-type": "application/octet-stream" },
-      payload: plaintext,
-      payloadAsBuffer: true
+      payload: plaintext
     });
     const receipt = await app.inject({
       method: "POST",
@@ -192,8 +190,7 @@ describe("file transfer relay", () => {
       method: "PUT",
       url: `/v1/transfers/${transfer_id}/upload`,
       headers: { authorization: `Bearer ${aliceDeviceToken}`, "content-type": "application/octet-stream" },
-      payload: plaintext,
-      payloadAsBuffer: true
+      payload: plaintext
     });
     expect(put.statusCode).toBe(400);
   });
