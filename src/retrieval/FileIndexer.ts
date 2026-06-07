@@ -21,8 +21,25 @@ export async function indexRoot(root: string): Promise<number> {
 
 export async function reindexAll(root: string): Promise<number> {
   const db = getDb();
+  // Capture rowids FIRST so we can cascade-delete dependent tables.
+  // Doing it in the other order (delete file_index first) empties the
+  // subquery result and leaves orphan embeddings + FTS rows.
+  const rowids = (db
+    .prepare("SELECT id FROM file_index WHERE root_id = ?")
+    .all(root) as Array<{ id: number }>).map((r) => r.id);
+  if (rowids.length > 0) {
+    // FTS5 contentless tables do not support `DELETE FROM fts WHERE rowid IN (...)`
+    // reliably across versions — use the FTS5 'delete' command via INSERT.
+    const ftsDelete = db.prepare(
+      "INSERT INTO fts_file_index(fts_file_index, rowid) VALUES('delete', ?)"
+    );
+    const deleteEmbed = db.prepare("DELETE FROM file_embeddings WHERE rowid = ?");
+    for (const rowid of rowids) {
+      try { ftsDelete.run(rowid); } catch { /* row may not exist in FTS */ }
+      deleteEmbed.run(rowid);
+    }
+  }
   db.prepare("DELETE FROM file_index WHERE root_id = ?").run(root);
-  db.prepare("DELETE FROM file_embeddings WHERE rowid IN (SELECT id FROM file_index WHERE root_id = ?)").run(root);
   return indexRoot(root);
 }
 

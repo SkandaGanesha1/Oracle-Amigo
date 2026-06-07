@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Net;
 using System.Text;
@@ -9,12 +10,34 @@ const string AUMID = "OracleAmigo.NotificationBridge";
 const string DISPLAY_NAME = "Oracle Amigo Agent";
 const string ICON_PATH = ""; // could be set to an .ico file path
 
+// Log path resolution: explicit env override wins; otherwise fall back to
+// %LOCALAPPDATA%\OracleAmigo\logs\notification-bridge.log (created on demand).
+// The previous version hardcoded a path under the developer's personal temp
+// directory, which broke for any other user.
+string ResolveLogPath()
+{
+    var explicitPath = Environment.GetEnvironmentVariable("ORACLE_AMIGO_NOTIFICATION_LOG_PATH");
+    if (!string.IsNullOrWhiteSpace(explicitPath)) return explicitPath;
+    var localAppData = Environment.GetEnvironmentVariable("LOCALAPPDATA");
+    var baseDir = string.IsNullOrEmpty(localAppData)
+        ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "OracleAmigo", "logs")
+        : Path.Combine(localAppData, "OracleAmigo", "logs");
+    Directory.CreateDirectory(baseDir);
+    return Path.Combine(baseDir, "notification-bridge.log");
+}
+
 void Log(string msg)
 {
     var line = $"[bridge] {msg}";
     Console.Error.WriteLine(line);
-    try { System.IO.File.AppendAllText(@"C:\Users\Skanda Ganesha L\Temp\opencode\bridge-debug.log", $"{DateTime.Now:HH:mm:ss.fff} {line}\n"); } catch { }
+    try { System.IO.File.AppendAllText(ResolveLogPath(), $"{DateTime.Now:HH:mm:ss.fff} {line}\n"); } catch { }
 }
+
+// Idempotency: the same approval can be invoked more than once if the user
+// taps a toast after we've already processed it (Windows keeps the toast in
+// the Action Center). Track processed approval IDs in memory and short-circuit
+// duplicate callbacks so the local agent never sees the same approval twice.
+var processedApprovals = new ConcurrentDictionary<string, byte>();
 
 Log("=== Bridge starting ===");
 Log($"Process ID: {Environment.ProcessId}");
@@ -53,6 +76,16 @@ try
             feedback = f;
         }
 
+        // Idempotency guard: skip duplicate invokes for the same approval.
+        // The key is "approval|action" so a user can still re-reject an
+        // already-approved approval if the UI allows it.
+        var dedupKey = $"{approvalId}|{action}";
+        if (!string.IsNullOrEmpty(approvalId) && !processedApprovals.TryAdd(dedupKey, 0))
+        {
+            Log($"[toast] Skipping duplicate invoke for {dedupKey}");
+            return;
+        }
+
         var localPort = Environment.GetEnvironmentVariable("LOCAL_AGENT_PORT") ?? "3399";
         var callbackPayload = new Dictionary<string, object?>
         {
@@ -74,10 +107,19 @@ try
             var response = client.PostAsync($"http://127.0.0.1:{localPort}/approvals/notification-callback", content)
                 .GetAwaiter().GetResult();
             Log($"[toast] Callback response: {(int)response.StatusCode}");
+            // If the local agent rejected the callback as a duplicate, drop our
+            // dedup record so the user can re-tap without a stale skip.
+            if ((int)response.StatusCode == 409)
+            {
+                processedApprovals.TryRemove(dedupKey, out _);
+                Log($"[toast] Local agent reported duplicate; cleared dedup record for {dedupKey}");
+            }
         }
         catch (Exception ex)
         {
             Log($"[toast] Callback FAILED: {ex.Message}");
+            // Network blip — release the dedup record so the next attempt can try again.
+            if (!string.IsNullOrEmpty(approvalId)) processedApprovals.TryRemove(dedupKey, out _);
         }
     };
 
