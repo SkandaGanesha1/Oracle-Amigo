@@ -1,16 +1,16 @@
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildServer } from "../server.js";
 
-export async function startLoopbackAgents() {
+export async function startLoopbackAgents(options: { portA?: number; portB?: number } = {}) {
   const tmpA = join(tmpdir(), `loopback-A-${Date.now()}`);
   const tmpB = join(tmpdir(), `loopback-B-${Date.now()}`);
   mkdirSync(tmpA, { recursive: true });
   mkdirSync(tmpB, { recursive: true });
 
-  const portA = 3399;
-  const portB = 3400;
+  const portA = options.portA ?? 3399;
+  const portB = options.portB ?? 3400;
 
   const storageA = join(tmpA, "storage");
   const dbPathA = join(tmpA, "oracle-amigo.db");
