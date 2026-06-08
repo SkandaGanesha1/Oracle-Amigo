@@ -6,47 +6,30 @@
  * form is RFC 8785 (JCS) flavor: recursively sorted keys, no whitespace, deterministic
  * number formatting.
  *
- * The signed canonical string is built by concatenating the listed fields in a fixed
- * order, each prefixed with its length to prevent field-boundary ambiguity.
  */
 import { createHash, createPrivateKey, createPublicKey, sign, verify } from "node:crypto";
 
 export type AnpCanonicalFields = {
-  peer: string;
-  createdAt: string;     // ISO 8601 UTC
-  expiresAt: string;     // ISO 8601 UTC
-  offerId: string;
-  fromDid: string;
-  protocol: string;      // e.g. "anp/handshake/v1"
-  nonce: string;         // hex
+  protocol: string;
+  offer_id: string;
+  from_agent_id: string;
+  from_agent_instance_id: string;
+  from_did: string;
+  to_peer: string;
+  nonce: string;
+  created_at: string;
+  expires_at: string;
 };
 
-const FIELD_ORDER: Array<keyof AnpCanonicalFields> = [
-  "peer",
-  "createdAt",
-  "expiresAt",
-  "offerId",
-  "fromDid",
-  "protocol",
-  "nonce",
-];
-
 /**
- * Build the canonical string for an ANP payload. Each field is prefixed with its
- * UTF-8 byte length (as a 4-digit big-endian hex) followed by a colon, then the
- * field value bytes. This prevents field-boundary confusion attacks.
+ * Build RFC 8785-style canonical JSON for the signed ANP handshake payload.
  */
 export function canonicalizeAnpPayload(fields: AnpCanonicalFields): string {
-  let out = "";
-  for (const key of FIELD_ORDER) {
-    const value = fields[key];
-    if (typeof value !== "string") {
-      throw new Error(`ANP canonical payload field ${key} must be a string`);
-    }
-    const bytes = Buffer.from(value, "utf8");
-    out += bytes.length.toString(16).padStart(4, "0") + ":" + bytes.toString("utf8");
+  const normalized = normalizeAnpPayload(fields);
+  for (const [key, value] of Object.entries(normalized)) {
+    if (typeof value !== "string") throw new Error(`ANP canonical payload field ${key} must be a string`);
   }
-  return out;
+  return canonicalJson(normalized);
 }
 
 /** SHA-256 of the canonical string. */
@@ -91,13 +74,42 @@ export function validateAnpTiming(
   now: Date = new Date(),
   skewSeconds = 30,
 ): { valid: boolean; reason?: string } {
-  const created = Date.parse(fields.createdAt);
-  const expires = Date.parse(fields.expiresAt);
-  if (Number.isNaN(created)) return { valid: false, reason: "invalid_createdAt" };
-  if (Number.isNaN(expires)) return { valid: false, reason: "invalid_expiresAt" };
+  const normalized = normalizeAnpPayload(fields);
+  const created = Date.parse(normalized.created_at);
+  const expires = Date.parse(normalized.expires_at);
+  if (Number.isNaN(created)) return { valid: false, reason: "invalid_created_at" };
+  if (Number.isNaN(expires)) return { valid: false, reason: "invalid_expires_at" };
   if (expires <= created) return { valid: false, reason: "expires_before_created" };
   const nowMs = now.getTime();
-  if (created > nowMs + skewSeconds * 1000) return { valid: false, reason: "createdAt_in_future" };
+  if (created > nowMs + skewSeconds * 1000) return { valid: false, reason: "created_at_in_future" };
   if (expires < nowMs - skewSeconds * 1000) return { valid: false, reason: "expired" };
   return { valid: true };
+}
+
+export function normalizeAnpPayload(fields: AnpCanonicalFields): AnpCanonicalFields {
+  return {
+    protocol: fields.protocol,
+    offer_id: fields.offer_id,
+    from_agent_id: fields.from_agent_id,
+    from_agent_instance_id: fields.from_agent_instance_id,
+    from_did: fields.from_did,
+    to_peer: fields.to_peer,
+    nonce: fields.nonce,
+    created_at: fields.created_at,
+    expires_at: fields.expires_at
+  };
+}
+
+function canonicalJson(value: unknown): string {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (typeof value === "object") {
+    const obj = value as Record<string, unknown>;
+    return `{${Object.keys(obj)
+      .filter((key) => obj[key] !== undefined)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(obj[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
 }

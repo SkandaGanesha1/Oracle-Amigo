@@ -83,9 +83,10 @@ describe("chat build is admin-free", () => {
     expect(js, "chat bundle leaked __Host- cookie name").not.toContain("__Host-admin_session");
     expect(js, "chat bundle leaked admin auth route paths").not.toContain("/v1/admin/auth/login");
     expect(js, "chat bundle leaked admin auth route paths").not.toContain("/v1/admin/auth/setup");
-    // The chat bundle retains the user-visible chat surfaces
-    expect(js, "chat bundle no longer renders Agent Chat").toContain("Agent Chat");
-    expect(js, "chat bundle no longer renders Agent Runner").toContain("Agent Runner");
+    // The chat bundle retains the product chat surfaces
+    expect(js, "chat bundle no longer renders Agentic Chat").toContain("Agentic Chat");
+    expect(js, "chat bundle no longer renders Approval Center").toContain("Approval Center");
+    expect(js, "chat bundle no longer includes relay file request client").toContain("/relay/send-file-request");
   });
 
   it("chat index.html references the new asset filenames", () => {

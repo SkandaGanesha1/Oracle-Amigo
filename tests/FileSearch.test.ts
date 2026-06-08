@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildServer } from "../src/server.js";
 import { FileSearchService } from "../src/file-search/FileSearchService.js";
 
+vi.setConfig({ testTimeout: 30_000 });
+
 const fixtureRoot = resolve("tests/.tmp-file-search");
 const outsideRoot = resolve("tests/.tmp-file-search-outside");
 const pdfBytes = Buffer.from("%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n");

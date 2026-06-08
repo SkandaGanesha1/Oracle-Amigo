@@ -48,7 +48,7 @@ export function getDb(path?: string): DatabaseSync {
     allowExtension: true,
     enableForeignKeyConstraints: true,
   });
-  db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
+  db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;");
   db.loadExtension(getLoadablePath());
 
   // Migrate vec0 tables before running schema migrations to add partition keys.
@@ -109,26 +109,42 @@ function migrateVec0Tables(db: DatabaseSync): void {
   try {
     for (const tableName of existing.map((t) => t.name)) {
       const staging = `${tableName}_staging`;
-      const meta = `${tableName}_meta`;
       const metaCols =
         tableName === "file_embeddings"
-          ? "tenant_id TEXT, agent_id TEXT, source_type TEXT, namespace TEXT, embedding BLOB"
+          ? "rowid INTEGER PRIMARY KEY, tenant_id TEXT, agent_id TEXT, source_type TEXT, namespace TEXT, embedding BLOB"
           : tableName === "memory_embeddings"
-            ? "tenant_id TEXT, agent_id TEXT, memory_type TEXT, namespace TEXT, embedding BLOB"
-            : "tenant_id TEXT, agent_id TEXT, task_id TEXT, embedding BLOB";
+            ? "rowid INTEGER PRIMARY KEY, tenant_id TEXT, agent_id TEXT, memory_type TEXT, namespace TEXT, embedding BLOB"
+            : "rowid INTEGER PRIMARY KEY, tenant_id TEXT, agent_id TEXT, task_id TEXT, embedding BLOB";
       const vecCols =
         tableName === "file_embeddings"
           ? "tenant_id TEXT PARTITION KEY, agent_id TEXT PARTITION KEY, source_type TEXT, namespace TEXT, embedding FLOAT[384]"
           : tableName === "memory_embeddings"
             ? "tenant_id TEXT PARTITION KEY, agent_id TEXT PARTITION KEY, memory_type TEXT, namespace TEXT, embedding FLOAT[384]"
             : "tenant_id TEXT PARTITION KEY, agent_id TEXT PARTITION KEY, task_id TEXT, embedding FLOAT[384]";
-      db.exec(`
-        CREATE TABLE ${staging} (${metaCols});
-        INSERT INTO ${staging}(tenant_id, agent_id, embedding) SELECT 'default', 'default', embedding FROM ${tableName};
-        DROP TABLE ${tableName};
-        CREATE VIRTUAL TABLE ${tableName} USING vec0(${vecCols});
-      `);
-      void meta;
+      db.exec(`CREATE TABLE ${staging} (${metaCols})`);
+      if (tableName === "file_embeddings") {
+        db.exec(`INSERT INTO ${staging}(rowid, tenant_id, agent_id, source_type, namespace, embedding)
+          SELECT rowid, 'default', 'default', 'file', 'default', embedding FROM ${tableName}`);
+      } else if (tableName === "memory_embeddings") {
+        db.exec(`INSERT INTO ${staging}(rowid, tenant_id, agent_id, memory_type, namespace, embedding)
+          SELECT rowid, 'default', 'default', 'memory', 'default', embedding FROM ${tableName}`);
+      } else {
+        db.exec(`INSERT INTO ${staging}(rowid, tenant_id, agent_id, task_id, embedding)
+          SELECT rowid, 'default', 'default', '', embedding FROM ${tableName}`);
+      }
+      db.exec(`DROP TABLE ${tableName}`);
+      db.exec(`CREATE VIRTUAL TABLE ${tableName} USING vec0(${vecCols})`);
+      if (tableName === "file_embeddings") {
+        db.exec(`INSERT INTO ${tableName}(rowid, tenant_id, agent_id, source_type, namespace, embedding)
+          SELECT rowid, tenant_id, agent_id, source_type, namespace, embedding FROM ${staging}`);
+      } else if (tableName === "memory_embeddings") {
+        db.exec(`INSERT INTO ${tableName}(rowid, tenant_id, agent_id, memory_type, namespace, embedding)
+          SELECT rowid, tenant_id, agent_id, memory_type, namespace, embedding FROM ${staging}`);
+      } else {
+        db.exec(`INSERT INTO ${tableName}(rowid, tenant_id, agent_id, task_id, embedding)
+          SELECT rowid, tenant_id, agent_id, task_id, embedding FROM ${staging}`);
+      }
+      db.exec(`DROP TABLE ${staging}`);
     }
     db.exec("COMMIT");
   } catch (err) {

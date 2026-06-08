@@ -65,13 +65,15 @@ function makeIdentity(): { ident: LocalIdentity; privateKey: string; publicKey: 
 function makeFields(overrides: Partial<AnpCanonicalFields> = {}): AnpCanonicalFields {
   const now = new Date();
   return {
-    peer: "peer-x",
-    createdAt: now.toISOString(),
-    expiresAt: new Date(now.getTime() + 60_000).toISOString(),
-    offerId: randomUUID(),
-    fromDid: "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
     protocol: ANP_HANDSHAKE_PROTOCOL,
+    offer_id: randomUUID(),
+    from_agent_id: "agent-a",
+    from_agent_instance_id: "agent-a-instance",
+    from_did: "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+    to_peer: "peer-x",
     nonce: randomBytes(32).toString("hex"),
+    created_at: now.toISOString(),
+    expires_at: new Date(now.getTime() + 60_000).toISOString(),
     ...overrides,
   };
 }
@@ -88,30 +90,34 @@ describe("AnpCanonicalPayload", () => {
 
   it("canonicalize produces a fixed field order even when object key order differs", () => {
     const f1: AnpCanonicalFields = {
-      peer: "p",
-      createdAt: "2026-01-01T00:00:00.000Z",
-      expiresAt: "2026-01-02T00:00:00.000Z",
-      offerId: "o",
-      fromDid: "did:key:z",
       protocol: ANP_HANDSHAKE_PROTOCOL,
+      offer_id: "o",
+      from_agent_id: "agent-a",
+      from_agent_instance_id: "agent-a-instance",
+      from_did: "did:key:z",
+      to_peer: "p",
       nonce: "n",
+      created_at: "2026-01-01T00:00:00.000Z",
+      expires_at: "2026-01-02T00:00:00.000Z",
     };
     // Same fields, different key insertion order
     const f2: AnpCanonicalFields = {
       nonce: "n",
       protocol: ANP_HANDSHAKE_PROTOCOL,
-      fromDid: "did:key:z",
-      offerId: "o",
-      expiresAt: "2026-01-02T00:00:00.000Z",
-      createdAt: "2026-01-01T00:00:00.000Z",
-      peer: "p",
+      from_did: "did:key:z",
+      offer_id: "o",
+      from_agent_id: "agent-a",
+      from_agent_instance_id: "agent-a-instance",
+      expires_at: "2026-01-02T00:00:00.000Z",
+      created_at: "2026-01-01T00:00:00.000Z",
+      to_peer: "p",
     };
     expect(canonicalizeAnpPayload(f1)).toBe(canonicalizeAnpPayload(f2));
   });
 
   it("changing any field changes the fingerprint", () => {
     const f1 = makeFields();
-    const f2 = { ...f1, peer: "different" };
+    const f2 = { ...f1, to_peer: "different" };
     expect(anpPayloadFingerprint(f1)).not.toBe(anpPayloadFingerprint(f2));
   });
 
@@ -134,8 +140,9 @@ describe("AnpCanonicalPayload", () => {
     const { privateKey, publicKey } = makeIdentity();
     const fields = makeFields();
     const sig = signAnpPayload(fields, privateKey);
-    expect(verifyAnpPayload({ ...fields, nonce: "0" }, sig, publicKey)).toBe(false);
-    expect(verifyAnpPayload({ ...fields, peer: "other" }, sig, publicKey)).toBe(false);
+    for (const key of ["offer_id", "from_agent_id", "from_agent_instance_id", "from_did", "to_peer", "nonce", "created_at", "expires_at", "protocol"] as const) {
+      expect(verifyAnpPayload({ ...fields, [key]: `${fields[key]}-tampered` }, sig, publicKey)).toBe(false);
+    }
   });
 
   it("validateAnpTiming accepts a fresh, in-range payload", () => {
@@ -144,8 +151,8 @@ describe("AnpCanonicalPayload", () => {
 
   it("validateAnpTiming rejects expired payloads", () => {
     const fields = makeFields({
-      createdAt: new Date(Date.now() - 120_000).toISOString(),
-      expiresAt: new Date(Date.now() - 60_000).toISOString(),
+      created_at: new Date(Date.now() - 120_000).toISOString(),
+      expires_at: new Date(Date.now() - 60_000).toISOString(),
     });
     expect(validateAnpTiming(fields).valid).toBe(false);
     expect(validateAnpTiming(fields).reason).toBe("expired");
@@ -153,11 +160,11 @@ describe("AnpCanonicalPayload", () => {
 
   it("validateAnpTiming rejects createdAt in the future", () => {
     const fields = makeFields({
-      createdAt: new Date(Date.now() + 120_000).toISOString(),
-      expiresAt: new Date(Date.now() + 180_000).toISOString(),
+      created_at: new Date(Date.now() + 120_000).toISOString(),
+      expires_at: new Date(Date.now() + 180_000).toISOString(),
     });
     expect(validateAnpTiming(fields).valid).toBe(false);
-    expect(validateAnpTiming(fields).reason).toBe("createdAt_in_future");
+    expect(validateAnpTiming(fields).reason).toBe("created_at_in_future");
   });
 });
 

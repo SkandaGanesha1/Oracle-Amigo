@@ -2,13 +2,13 @@ import { describe, expect, it } from "vitest";
 import { buildServer } from "../src/server.js";
 
 describe("static UI", () => {
-  it("serves the centered AI prompt box shell", async () => {
+  it("serves the agentic chat shell", async () => {
     const server = buildServer();
     const response = await server.inject({ method: "GET", url: "/" });
 
     expect(response.statusCode).toBe(200);
     expect(response.headers["content-type"]).toContain("text/html");
-    expect(response.body).toContain("Oracle Amigo Sandbox");
+    expect(response.body).toContain("Oracle Amigo Agentic Chat");
     expect(response.body).toContain("/assets/");
     expect(response.body).not.toContain("plan-list");
     await server.close();
@@ -30,9 +30,10 @@ describe("static UI", () => {
     expect(css.headers["content-type"]).toContain("text/css");
     expect(js.statusCode).toBe(200);
     expect(js.headers["content-type"]).toContain("text/javascript");
-    expect(js.body).toContain("PromptInputBox");
-    expect(js.body).toContain("Agent Runner");
-    expect(js.body).toContain("Agent Chat");
+    expect(js.body).toContain("Agentic Chat");
+    expect(js.body).toContain("Approval Center");
+    expect(js.body).toContain("/relay/send-file-request");
+    expect(js.body).toContain("/cloud/status");
     await server.close();
   });
 

@@ -10,6 +10,7 @@ import { transition, createTask as wfCreateTask, getTask as wfGetTask } from "..
 import { stageFile, promoteToApproved } from "../storage/AgenticStorage.js";
 
 export type ApprovalAction = "approve" | "reject" | "feedback";
+export type ApprovalDecisionOutcome = "applied" | "replay" | "denied" | "not_found";
 
 export type ApprovalRecord = {
   id: string;
@@ -17,7 +18,7 @@ export type ApprovalRecord = {
   approvalType: string;
   requesterAgentId: string;
   ownerAgentId: string;
-  status: "pending" | "approved" | "rejected" | "feedback";
+  status: "pending" | "approved" | "rejected" | "feedback_received" | "expired";
   selectedFileId: string | null;
   boundFilePath: string | null;
   boundSha256: string | null;
@@ -26,6 +27,14 @@ export type ApprovalRecord = {
   expiresAt: string;
   createdAt: string;
   decidedAt: string | null;
+};
+
+export type ApprovalDecisionResult = {
+  approval: ApprovalRecord | null;
+  outcome: ApprovalDecisionOutcome;
+  replay: boolean;
+  transferScheduled: boolean;
+  error?: string;
 };
 
 export class PersonalAgentProtocol {
@@ -84,17 +93,53 @@ export class PersonalAgentProtocol {
   }
 
   applyApprovalDecision(id: string, action: ApprovalAction, feedback?: string): ApprovalRecord | null {
+    return this.applyApprovalDecisionWithResult(id, action, { feedback }).approval;
+  }
+
+  applyApprovalDecisionWithResult(
+    id: string,
+    action: ApprovalAction,
+    options: { feedback?: string; idempotencyKey?: string } = {}
+  ): ApprovalDecisionResult {
     const approval = this.getApproval(id);
-    if (!approval) return null;
-    if (approval.status !== "pending") return approval; // idempotency
+    if (!approval) return { approval: null, outcome: "not_found", replay: false, transferScheduled: false, error: "Approval not found" };
 
     const db = getDb(this._dbPath);
     const now = new Date().toISOString();
+    const idempotencyKey = options.idempotencyKey ?? `${id}|${approval.taskId}|${action}`;
+    const existingKey = db.prepare(`
+      SELECT * FROM approval_idempotency_keys
+      WHERE approval_id = ? AND idempotency_key = ?
+    `).get(id, idempotencyKey) as Record<string, unknown> | undefined;
+    if (existingKey) {
+      return {
+        approval,
+        outcome: "replay",
+        replay: true,
+        transferScheduled: false
+      };
+    }
+
+    if (approval.status !== "pending") {
+      const duplicateTerminal =
+        (approval.status === "approved" && action === "approve") ||
+        (approval.status === "rejected" && action === "reject");
+      recordApprovalIdempotencyKey(db, id, idempotencyKey, action, approval.status, now);
+      return {
+        approval,
+        outcome: duplicateTerminal ? "replay" : "denied",
+        replay: duplicateTerminal,
+        transferScheduled: false,
+        error: duplicateTerminal ? undefined : `Approval is terminal: ${approval.status}`
+      };
+    }
 
     if (action === "approve") {
       db.prepare("UPDATE approval_requests SET status='approved', decided_at=? WHERE id=?").run(now, id);
+      recordApprovalIdempotencyKey(db, id, idempotencyKey, action, "approved", now);
       try { transition(approval.taskId, "APPROVED", { approvalId: id }); } catch { /* already transitioned */ }
 
+      let transferScheduled = false;
       if (approval.boundFilePath && approval.boundSha256) {
         const filePath = approval.boundFilePath;
         const sha256 = approval.boundSha256;
@@ -103,6 +148,10 @@ export class PersonalAgentProtocol {
         const root = filePath.replace(/[\\/][^\\/]+$/, "") || ".";
         void stageFile(taskId, filePath, [root])
           .then((staged) => {
+            const latest = this.getApproval(id);
+            if (!latest || latest.status !== "approved") return;
+            const existingTransfer = db.prepare("SELECT id FROM transfers WHERE task_id = ? AND sha256 = ? LIMIT 1").get(taskId, sha256);
+            if (existingTransfer) return;
             try { transition(taskId, "FILE_HASHING", { sha256, sizeBytes: staged.sizeBytes }); } catch { /* already moved */ }
             try { transition(taskId, "FILE_STAGED", { stagedPath: staged.stagedPath }); } catch { /* already moved */ }
             const stored = promoteToApproved(taskId, id, staged, sha256, {
@@ -125,19 +174,23 @@ export class PersonalAgentProtocol {
             });
             try { transition(taskId, "FAILED", { stage: "storage", error: String((err as Error)?.message ?? err) }); } catch { /* ignore */ }
           });
+        transferScheduled = true;
       }
       appendAuditEvent({ actorAgentId: approval.ownerAgentId, taskId: approval.taskId, approvalId: id, eventType: "APPROVED", detailsJson: {} });
+      return { approval: this.getApproval(id)!, outcome: "applied", replay: false, transferScheduled };
     } else if (action === "reject") {
       db.prepare("UPDATE approval_requests SET status='rejected', decided_at=? WHERE id=?").run(now, id);
+      recordApprovalIdempotencyKey(db, id, idempotencyKey, action, "rejected", now);
       try { transition(approval.taskId, "REJECTED", { approvalId: id }); } catch { /* ignore */ }
       appendAuditEvent({ actorAgentId: approval.ownerAgentId, taskId: approval.taskId, approvalId: id, eventType: "REJECTED", detailsJson: {} });
+      return { approval: this.getApproval(id)!, outcome: "applied", replay: false, transferScheduled: false };
     } else {
-      db.prepare("UPDATE approval_requests SET status='feedback', feedback_text=?, decided_at=? WHERE id=?").run(feedback ?? null, now, id);
-      try { transition(approval.taskId, "USER_FEEDBACK_RECEIVED", { feedback }); } catch { /* ignore */ }
-      appendAuditEvent({ actorAgentId: approval.ownerAgentId, taskId: approval.taskId, approvalId: id, eventType: "FEEDBACK_RECEIVED", detailsJson: { feedback } });
+      db.prepare("UPDATE approval_requests SET status='feedback_received', feedback_text=?, decided_at=? WHERE id=?").run(options.feedback ?? null, now, id);
+      recordApprovalIdempotencyKey(db, id, idempotencyKey, action, "feedback_received", now);
+      try { transition(approval.taskId, "USER_FEEDBACK_RECEIVED", { feedback: options.feedback }); } catch { /* ignore */ }
+      appendAuditEvent({ actorAgentId: approval.ownerAgentId, taskId: approval.taskId, approvalId: id, eventType: "FEEDBACK_RECEIVED", detailsJson: { feedback: options.feedback } });
+      return { approval: this.getApproval(id)!, outcome: "applied", replay: false, transferScheduled: false };
     }
-
-    return this.getApproval(id)!;
   }
 
   getApproval(id: string): ApprovalRecord | null {
@@ -192,6 +245,21 @@ export class PersonalAgentProtocol {
   getTask(taskId: string) {
     return wfGetTask(taskId);
   }
+}
+
+function recordApprovalIdempotencyKey(
+  db: ReturnType<typeof getDb>,
+  approvalId: string,
+  idempotencyKey: string,
+  action: ApprovalAction,
+  resultStatus: string,
+  createdAt: string
+): void {
+  db.prepare(`
+    INSERT OR IGNORE INTO approval_idempotency_keys
+      (id, approval_id, idempotency_key, action, result_status, created_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(randomUUID(), approvalId, idempotencyKey, action, resultStatus, createdAt);
 }
 
 function rowToApproval(r: Record<string, unknown>): ApprovalRecord {

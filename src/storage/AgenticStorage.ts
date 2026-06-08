@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { copyFileSync, createReadStream, mkdirSync, rmSync, statSync } from "node:fs";
+import { copyFileSync, createReadStream, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { pipeline } from "node:stream/promises";
 import { createWriteStream } from "node:fs";
 import { homedir } from "node:os";
@@ -87,6 +87,42 @@ export function promoteToApproved(
   `).run(id, transferId, opts.fromAgentId, dest, fileName, staged.sha256, staged.sizeBytes, now);
 
   return { id, transferId, storedPath: dest, originalFileName: fileName, sha256: staged.sha256, sizeBytes: staged.sizeBytes, receivedAt: now };
+}
+
+export function storeReceivedRelayFile(input: {
+  transferId: string;
+  senderAgentId: string;
+  fileName: string;
+  data: Buffer;
+  sha256: string;
+}): StoredFile {
+  ensureDirectories();
+  const safeName = basename(input.fileName || "received-file");
+  const inboxDir = join(storageRoot(), "inbox", input.transferId);
+  mkdirSync(inboxDir, { recursive: true });
+  const dest = join(inboxDir, safeName);
+  const actualSha = createHash("sha256").update(input.data).digest("hex");
+  if (actualSha !== input.sha256.toLowerCase()) {
+    throw new Error(`SHA-256 mismatch: received=${actualSha} expected=${input.sha256}`);
+  }
+  writeFileSync(dest, input.data);
+
+  const db = getDb();
+  const id = randomUUID();
+  const now = new Date().toISOString();
+  db.prepare(`
+    INSERT INTO received_files (id, transfer_id, sender_agent_id, stored_path, original_file_name, sha256, size_bytes, received_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(id, input.transferId, input.senderAgentId, dest, safeName, actualSha, input.data.length, now);
+  return {
+    id,
+    transferId: input.transferId,
+    storedPath: dest,
+    originalFileName: safeName,
+    sha256: actualSha,
+    sizeBytes: input.data.length,
+    receivedAt: now
+  };
 }
 
 export function listStoredFiles(): StoredFile[] {

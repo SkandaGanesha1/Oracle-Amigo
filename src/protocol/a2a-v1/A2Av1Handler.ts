@@ -38,7 +38,7 @@ import type { A2Av1StreamEmitter } from "./A2Av1StreamHandler.js";
  *   3. GetTask                      — GET    /tasks/{id}
  *   4. ListTasks                    — GET    /tasks
  *   5. CancelTask                   — POST   /tasks/{id}:cancel
- *   6. SubscribeToTask              — GET    /tasks/{id}:subscribe  (SSE)
+ *   6. SubscribeToTask              - POST   /tasks/{id}:subscribe  (SSE)
  *   7. CreateTaskPushNotificationConfig   — POST   /tasks/{id}/pushNotificationConfigs
  *   8. GetTaskPushNotificationConfig       — GET    /tasks/{id}/pushNotificationConfigs/{configId}
  *   9. ListTaskPushNotificationConfigs     — GET    /tasks/{id}/pushNotificationConfigs
@@ -145,7 +145,7 @@ export class A2Av1Handler {
         code: A2A_ERROR_CODES.INVALID_AGENT_RESPONSE
       });
     }
-    return this.ctx.onMessageSend(body.message, body.configuration, tenant);
+    return this.ctx.onMessageSend(body.message, normalizeSendConfiguration(body.configuration), tenant);
   }
 
   // ---- GetTask ----
@@ -240,6 +240,18 @@ export class A2Av1Handler {
       data
     };
   }
+}
+
+function normalizeSendConfiguration(
+  configuration: A2Av1SendMessageConfiguration | undefined
+): A2Av1SendMessageConfiguration | undefined {
+  if (!configuration) return undefined;
+  const taskPushNotificationConfig =
+    configuration.taskPushNotificationConfig ?? configuration.pushNotificationConfig;
+  return {
+    ...configuration,
+    taskPushNotificationConfig
+  };
 }
 
 // Re-exports for convenience

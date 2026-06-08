@@ -82,4 +82,28 @@ describe("HybridRetrieval", () => {
     expect(result.newQuery).not.toBe("");
     expect(result.searchOptions.extensions).toContain("ppt");
   });
+
+  it("paginates stable MMR results with limit and offset without duplicates", async () => {
+    for (let i = 0; i < 25; i++) {
+      writeFileSync(join(fixtureRoot, `design_document_${String(i).padStart(2, "0")}.md`), `design document page ${i}`);
+    }
+    const { indexRoot } = await import("../src/retrieval/FileIndexer.js");
+    await indexRoot(fixtureRoot);
+    const { search } = await import("../src/retrieval/HybridRetrievalPipeline.js");
+    const page1 = search("design document", { limit: 10, offset: 0 });
+    const page2 = search("design document", { limit: 10, offset: 10 });
+    expect(page1.length).toBeLessThanOrEqual(10);
+    expect(page2.length).toBeLessThanOrEqual(10);
+    expect(page1.length).toBe(10);
+    expect(page2.length).toBe(10);
+    const page1Ids = new Set(page1.map((r) => r.id));
+    const page2Ids = new Set(page2.map((r) => r.id));
+    expect(page1Ids.size).toBe(page1.length);
+    expect(page2Ids.size).toBe(page2.length);
+    for (const id of page2Ids) {
+      expect(page1Ids.has(id)).toBe(false);
+    }
+    const repeatPage2 = search("design document", { limit: 10, offset: 10 });
+    expect(repeatPage2.map((r) => r.id)).toEqual(page2.map((r) => r.id));
+  });
 });

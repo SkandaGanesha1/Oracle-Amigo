@@ -3,6 +3,10 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "vite";
 
+const localAgentTarget =
+  process.env.VITE_LOCAL_AGENT_URL ??
+  `http://127.0.0.1:${process.env.AGENTIC_AGENT_PORT ?? process.env.SANDBOX_PORT ?? 3399}`;
+
 export default defineConfig({
   root: "ui",
   publicDir: false,
@@ -18,6 +22,15 @@ export default defineConfig({
   },
   server: {
     host: "127.0.0.1",
-    port: 5173
+    port: 5173,
+    proxy: {
+      "/audit": localAgentTarget,
+      "/approvals": localAgentTarget,
+      "/chat": localAgentTarget,
+      "/cloud": localAgentTarget,
+      "/health": localAgentTarget,
+      "/relay": localAgentTarget,
+      "/storage": localAgentTarget
+    }
   }
 });

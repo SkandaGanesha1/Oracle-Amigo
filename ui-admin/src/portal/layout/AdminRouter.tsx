@@ -6,7 +6,9 @@ import { AgentInstancesPage } from "../pages/AgentInstancesPage";
 import { PresencePage } from "../pages/PresencePage";
 import { TasksPage } from "../pages/TasksPage";
 import { TransfersPage } from "../pages/TransfersPage";
+import { ApprovalsPage } from "../pages/ApprovalsPage";
 import { AuditPage } from "../pages/AuditPage";
+import { SecurityPage } from "../pages/SecurityPage";
 import { OrgSnapshotPage } from "../pages/OrgSnapshotPage";
 
 function parseHash(): { path: string } {
@@ -32,7 +34,9 @@ export const AdminRouter: FC = () => {
   if (route.path === "/presence") return <PresencePage />;
   if (route.path === "/tasks") return <TasksPage />;
   if (route.path === "/transfers") return <TransfersPage />;
+  if (route.path === "/approvals") return <ApprovalsPage />;
   if (route.path === "/audit") return <AuditPage />;
+  if (route.path === "/security") return <SecurityPage />;
   if (route.path.startsWith("/orgs/")) {
     const id = decodeURIComponent(route.path.split("/").pop() ?? "");
     return <OrgSnapshotPage orgId={id} />;

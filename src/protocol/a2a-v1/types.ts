@@ -296,13 +296,17 @@ export interface A2Av1PushNotificationConfig {
 
 export interface A2Av1TaskPushNotificationConfig {
   taskId: string;
-  pushNotificationConfig: A2Av1PushNotificationConfig;
+  taskPushNotificationConfig: A2Av1PushNotificationConfig;
+  /** Legacy compatibility only. Do not emit on v1 HTTP responses. */
+  pushNotificationConfig?: A2Av1PushNotificationConfig;
 }
 
 // ===== Send message =====
 export interface A2Av1SendMessageConfiguration {
   acceptedOutputModes?: string[];
   historyLength?: number;
+  taskPushNotificationConfig?: A2Av1PushNotificationConfig;
+  /** Legacy compatibility input accepted for older clients. */
   pushNotificationConfig?: A2Av1PushNotificationConfig;
   blocking?: boolean;
 }
@@ -358,7 +362,9 @@ export interface A2Av1SubscribeToTaskRequest {
 // ===== Push notification CRUD requests =====
 export interface A2Av1CreateTaskPushNotificationConfigRequest {
   taskId: string;
-  pushNotificationConfig: A2Av1PushNotificationConfig;
+  taskPushNotificationConfig: A2Av1PushNotificationConfig;
+  /** Legacy compatibility input accepted for older clients. */
+  pushNotificationConfig?: A2Av1PushNotificationConfig;
   metadata?: Record<string, unknown>;
 }
 

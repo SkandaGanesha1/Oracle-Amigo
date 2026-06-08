@@ -1,4 +1,4 @@
-import { Activity, Boxes, Cpu, FileLock2, History, LayoutDashboard, Network, ScrollText, Users2 } from "lucide-react";
+import { Activity, Boxes, Cpu, FileLock2, History, LayoutDashboard, Network, ScrollText, ShieldAlert, Stamp, Users2 } from "lucide-react";
 import { useEffect, useState, type FC } from "react";
 
 interface NavLink {
@@ -16,7 +16,9 @@ const items: NavLink[] = [
   { to: "/presence", label: "Presence", icon: Activity },
   { to: "/tasks", label: "Tasks", icon: ScrollText },
   { to: "/transfers", label: "Transfers", icon: FileLock2 },
-  { to: "/audit", label: "Audit", icon: History }
+  { to: "/approvals", label: "Approvals", icon: Stamp },
+  { to: "/audit", label: "Audit", icon: History },
+  { to: "/security", label: "Security", icon: ShieldAlert }
 ];
 
 function isActive(itemTo: string, hash: string, end?: boolean): boolean {
@@ -64,7 +66,7 @@ export const Sidebar: FC = () => {
         ))}
       </nav>
       <div className="rounded-md border border-white/5 bg-white/[0.02] p-2 text-[10px] leading-relaxed text-white/40">
-        <p>Read-only monitoring.</p>
+        <p>Monitoring and revocation.</p>
         <p className="mt-1">Session is HttpOnly + SameSite=Strict.</p>
       </div>
     </aside>

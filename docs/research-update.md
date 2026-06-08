@@ -1,354 +1,95 @@
-# Research Update: Oracle Amigo Two-Device Architecture
+# Research Update
 
-## 1. Current Repo Architecture
+Date: 2026-06-07
 
-### 1.1 Overall Structure
-The repository is a **local-first personal agent POC** with a single-process Fastify server (`src/server.ts`) that runs on `127.0.0.1:3399`. It serves both the React UI and the agent API endpoints. All state is stored in a local SQLite database (`node:sqlite` with WAL mode) with `sqlite-vec` extension for vector search.
+This note records the official references reviewed before the first code change in this pass and the assumptions the current implementation should follow. It is intentionally scoped to the present codebase state and does not claim full protocol compliance where the repo has only partial support.
 
-### 1.2 Core Components
+## References Reviewed
 
-| Component | Location | Description |
-|-----------|----------|-------------|
-| HTTP Server | `src/server.ts` | Fastify server with all endpoints |
-| Database | `src/db/connection.ts` | SQLite + sqlite-vec with multi-tenant partition keys |
-| Schema | `src/db/schema.sql` | 18 tables including FTS5, vec0, audit chain |
-| A2A Protocol | `src/protocol/a2a/` | v0.3.0 types, handler, agent card |
-| ANP Protocol | `src/security/anp/` | Handshake, crypto, meta-protocol, ADP, discovery, messaging, AP2 |
-| ANP Adapter | `src/security/AnpHandshakeAdapter.ts` | Simple nonce-signing handshake (not canonical) |
-| Memory | `src/memory/` | Short-term, Long-term, Episodic with tenant isolation |
-| File Search | `src/retrieval/` | Hybrid FTS5 + vec0 KNN + RRF + MMR |
-| File Indexer | `src/retrieval/FileIndexer.ts` | Walks roots, embeds, stores in vec0 |
-| Storage | `src/storage/AgenticStorage.ts` | Staging/approved/inbox/sent/temp folders |
-| Approvals | `src/protocol/PersonalAgentProtocol.ts` | Approval creation, decision, audit |
-| Audit | `src/security/AuditHashChain.ts` | Tamper-evident hash chain |
-| Device Identity | `src/security/DeviceIdentity.ts` | Ed25519 keypairs, DID:key, local profiles |
-| Notification Bridge | `apps/notification-bridge-windows/` | .NET 8 Windows Toast bridge |
-| Loopback Harness | `src/loopback/LoopbackTestHarness.ts` | Two-agent test harness |
+- A2A Protocol v1: https://a2a-protocol.org/latest/specification/
+- A2A project and SDKs: https://github.com/a2aproject/A2A, https://github.com/a2aproject/a2a-js, https://github.com/a2aproject/a2a-python
+- Agent Network Protocol: https://github.com/agent-network-protocol/AgentNetworkProtocol and https://github.com/agent-network-protocol/AgentNetworkProtocol/tree/main/standard
+- sqlite-vec: https://github.com/asg017/sqlite-vec and https://alexgarcia.xyz/sqlite-vec/
+- Windows App SDK notifications: https://learn.microsoft.com/en-us/windows/apps/develop/notifications/app-notifications/, https://learn.microsoft.com/en-us/windows/apps/develop/notifications/app-notifications/app-notifications-content, https://learn.microsoft.com/en-us/windows/apps/develop/notifications/app-notifications/app-notifications-console
+- React: https://react.dev/, https://react.dev/reference/react/useOptimistic, https://react.dev/reference/react/startTransition, https://react.dev/reference/react/useTransition, https://react.dev/reference/react/useSyncExternalStore
+- TanStack Query: https://tanstack.com/query/latest/docs/framework/react/overview, https://tanstack.com/query/latest/docs/framework/react/guides/optimistic-updates, https://tanstack.com/query/latest/docs/framework/react/guides/query-invalidation
+- Accessibility: https://www.w3.org/WAI/ARIA/apg/ and https://www.w3.org/WAI/WCAG22/quickref/
+- Design systems and primitives: https://developer.microsoft.com/en-us/fluentui, https://ui.shadcn.com/, https://www.radix-ui.com/primitives
+- Security: https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html, https://cheatsheetseries.owasp.org/cheatsheets/AI_Agent_Security_Cheat_Sheet.html, https://cheatsheetseries.owasp.org/cheatsheets/MCP_Security_Cheat_Sheet.html, https://cheatsheetseries.owasp.org/cheatsheets/RAG_Security_Cheat_Sheet.html
 
-### 1.3 Data Flow (Single-Device)
-1. User types in UI → `POST /chat/messages`
-2. `IntentExtractor` classifies intent
-3. If file request: task created, state machine transitions
-4. `HybridRetrievalPipeline.search()` → FTS5 + vec0 KNN + RRF + MMR
-5. Candidates shown in ApprovalCard
-6. User approves → file staged → SHA-256 verified → promoted
-7. Transfer receipt created, audit event appended
+## Implementation Assumptions
 
-### 1.4 Loopback Mode
-- Two agent instances on ports 3399 and 3400
-- Separate SQLite databases and storage folders per agent
-- ANP handshake establishes peer session
-- A2A task messages flow via HTTP between agents
+- A2A: Treat current A2A support as mixed. The repo has A2A v1 test coverage and local routes, plus compatibility surfaces for older JSON-RPC style flows. Do not claim complete A2A v1 compliance until wire payloads, agent-card fields, version/media headers, subscribe behavior, remote auth, and generated artifacts are audited against the latest v1 specification.
+- A2A SDKs: Use SDK repositories as reference material, not as proof that the repo is SDK-backed. Current server behavior remains locally implemented unless code explicitly imports and exercises an SDK.
+- ANP: Document this codebase as an "ANP-style identity and handshake adapter, not full decentralized ANP network compliance." Existing DID, crypto, and handshake pieces are useful, but full ANP network behavior requires additional canonical signing, registry/discovery, replay protection, expiry handling, and trust semantics.
+- sqlite-vec: Treat vec0 tables and migrations as data-sensitive. Migrations must either preserve existing embeddings or deliberately invalidate them and force reindexing. Retrieval pagination should be tested after candidate selection so offset/limit behavior is correct.
+- Windows notifications: Toast/app notification callbacks can be duplicated by user action or delivery behavior. Approval decisions must be enforced by DB-backed idempotency and terminal state transitions, not by UI assumptions.
+- React/TanStack Query: Future UI work should stay inside the existing React/Vite app unless the architecture changes. Use a typed API layer, TanStack Query invalidation/optimistic mutation patterns, and React transition/external-store APIs only where they improve real chat, polling, or offline state behavior.
+- Accessibility/design: Approval cards, directory search, message timelines, dialogs, menus, and file-transfer controls should follow WCAG 2.2 and ARIA APG patterns. Use existing components and Radix/shadcn-style primitives where they fit the current UI conventions.
+- Security: Password handling should follow OWASP password storage guidance, with Argon2id already aligned with that direction. Agent, MCP, and RAG surfaces should assume untrusted tool inputs, untrusted retrieved content, strict command/network policy boundaries, and no logging of raw secrets or bearer tokens.
 
----
+## Current Scope Statement
 
-## 2. Current A2A Implementation Status
+- A2A v1 is partially implemented and tested locally. Compliant pieces, compatibility-only pieces, and remaining gaps must be documented in future protocol docs before this is described as full A2A v1 compliance.
+- ANP is partially implemented as local ANP-style identity, crypto, and handshake support. It is not full decentralized ANP network compliance.
+- The first code change in this pass only fixes the control-plane test command behavior under `npm --prefix`; it does not implement the larger relay-first runtime, product chat UI, or protocol hardening plan.
 
-### 2.1 What Exists (A2A v0.3.0)
-- **AgentCard**: `protocolVersion: "0.3.0"`, `preferredTransport`, `additionalInterfaces`, `securitySchemes`, `supportsAuthenticatedExtendedCard`
-- **11 JSON-RPC Methods**:
-  - `message/send`, `message/stream`
-  - `tasks/get`, `tasks/list`, `tasks/cancel`, `tasks/resubscribe`
-  - `tasks/pushNotificationConfig/{set,get,list,delete}`
-  - `agent/getAuthenticatedExtendedCard`
-- **Error Codes**: `PUSH_NOTIFICATION_NOT_SUPPORTED (-32003)`, `CONTENT_TYPE_NOT_SUPPORTED (-32005)`, `AUTHENTICATED_EXTENDED_CARD_NOT_CONFIGURED (-32007)`
-- **Streaming Events**: `TaskStatusUpdateEvent`, `TaskArtifactUpdateEvent`
-- **Types**: `TextPart`, `FilePart`, `DataPart`, `FileWithBytes`, `FileWithUri`, `Message`, `Task`, `Artifact`, `AgentCard`, `AgentSkill`, `AgentExtension`, `SecurityScheme`
+## Phase 1/2 Update
 
-### 2.2 What A2A v1.0 Adds (2026-03-12 release)
-- **`kind` discriminator removed** — use member-based polymorphism (breaking)
-- **Enum values changed**: `kebab-case` → `SCREAMING_SNAKE_CASE` (e.g., `submitted` → `TASK_STATE_SUBMITTED`)
-- **`supportedInterfaces` field** (not `additionalInterfaces`)
-- **JWS-signed Agent Cards** (RFC 7515)
-- **Multi-tenancy**: `tenant` field in requests
-- **HTTP+JSON binding preferred** (JSON-RPC is fallback)
-- **OAuth 2.0 Device Code flow** (RFC 8628) + PKCE
-- **A2A-Version, A2A-Extensions headers**
-- **Media type**: `application/a2a+json`
-- **Cursor-based pagination** for task listing
-- **Task IDs server-generated**
-- **ISO 8601 millisecond timestamps**
-- **Proto as canonical source of truth** (`a2a.proto`)
+- Local-agent control-plane wiring now follows the existing `/v1` control-plane clients and stores cloud identity in local SQLite. The implementation assumes polling relay mode via `AGENTIC_RELAY_MODE=polling`.
+- The local facade routes are intentionally separate from the authoritative control-plane API: `/cloud/*` and `/relay/*` are local UI-facing routes, while `docs/api-contract.md` defines the control-plane `/v1` contract.
+- Device-authenticated control-plane routes now assume DB-backed device access token hashes are present for newly enrolled devices. Revocation is enforced by token row state plus active `users`, `devices`, `agents`, and `agent_instances` status.
+- Remote file requests are dispatched into the existing local file-search approval workflow. This preserves the security rule that no file transfer occurs before explicit approval and does not put local file paths in relay payloads.
 
-### 2.3 A2A v1 Endpoint URLs (HTTP+JSON)
-| Method | v0.3 | v1 |
-|--------|------|-----|
-| Send Message | `message/send` (JSON-RPC) | `POST /v1/message:send` |
-| Stream | `message/stream` (SSE) | `POST /v1/message:stream` |
-| Get Task | `tasks/get` (JSON-RPC) | `GET /v1/tasks/{id}` |
-| List Tasks | `tasks/list` (JSON-RPC) | `GET /v1/tasks` |
-| Cancel | `tasks/cancel` (JSON-RPC) | `POST /v1/tasks/{id}:cancel` |
-| Subscribe | `tasks/resubscribe` (JSON-RPC) | `GET /v1/tasks/{id}:subscribe` |
-| Push Config | `tasks/pushNotificationConfig/*` | `POST/GET/DELETE /v1/tasks/{id}/pushNotificationConfigs` |
-| Agent Card | `agent/getAuthenticatedExtendedCard` | `GET /v1/agent/authenticatedExtendedCard` |
-| Agent Card (public) | `/.well-known/agent-card.json` | `/.well-known/agent-card.json` |
+## Phase 3.4/3.5/3.6/4 Update
 
-### 2.4 SDK Usage
-- Uses `@a2a-js/sdk` v0.3.13 for **type definitions only**
-- Actual handlers implemented in `src/server.ts` because SDK server integration is Express/Protobuf-specific
+Date: 2026-06-08
 
----
+Additional reference assumptions used for the chat frontend and file-request workflow:
 
-## 3. Current ANP Implementation Status
+- React 19.2 `useOptimistic` remains appropriate for transient UI state, but optimistic setters should run inside actions/transitions. This pass uses TanStack Query optimistic mutation cache updates and local reducer updates rather than introducing `useOptimistic` in a way that would violate that constraint.
+- TanStack Query v5 query invalidation is the primary server-state refresh mechanism. Polling is implemented through a `RealtimeTransport` abstraction with `PollingTransport` now and explicit `SseTransport`/`WebSocketTransport` placeholders for later server-push work.
+- A2A v1 JSON payloads should use camelCase on the wire. Existing local relay facades still accept snake_case local API parameters because they are UI-facing compatibility routes; relay payload content now includes camelCase `requestText` alongside existing local fields.
+- A2A file requests remain represented as asynchronous tasks requiring human approval. The current implementation is relay-compatible and approval-gated, but it is not a full end-to-end A2A transfer-completion implementation across two live laptops yet.
+- ARIA/WCAG assumptions applied: command palette uses dialog semantics, message timeline uses log/live-region semantics, icon-only buttons keep accessible labels via titles/ARIA labels, and approval actions are real keyboard-focusable buttons.
+- Local chat persistence now uses `conversations`, `conversation_participants`, `chat_messages`, `message_delivery_attempts`, and `outbox`. The older `messages` table remains for compatibility with existing memory APIs.
+- Security boundary maintained: remote peers and cloud relay payloads must not receive local file paths. Chat timeline approval candidate payloads use display paths and privacy labels; approval binding can still store local file paths in local SQLite for approval/hash enforcement.
 
-### 3.1 What Exists (ANP-Style Local Handshake)
-- **Identity**: Ed25519 keypairs, DID:key format (`src/security/DeviceIdentity.ts`)
-- **Handshake** (`src/security/AnpHandshakeAdapter.ts`):
-  - `createHandshakeOffer()`: signs nonce only (NOT canonical)
-  - `verifyHandshakeOffer()`: verifies nonce signature
-  - `createHandshakeResponse()`: signs offerId:nonce
-  - `verifyHandshakeResponse()`: verifies response signature
-  - Peer session management in `peer_sessions` table
-- **Meta-Protocol** (`src/security/anp/AnpMetaProtocol.ts`): Capability negotiation, 12 capabilities, 9 application protocols
-- **ADP** (`src/security/anp/AgentDescriptionProtocol.ts`): JSON-LD agent descriptions at `/.well-known/agent-description.json`
-- **Discovery** (`src/security/anp/AgentDiscoveryProtocol.ts`): Capability scoring, WNS handle conversion
-- **Messaging** (`src/security/anp/MessagingProtocol.ts`): E2E encrypted/signed envelopes, message threads
-- **AP2 Payments** (`src/security/anp/Ap2PaymentProtocol.ts`): Intent → authorize → settle lifecycle
-- **Crypto** (`src/security/anp/AnpCrypto.ts`): ECDHE (secp256r1), HKDF-SHA256, AES-128-GCM
+## Phase 5/6/7 Update
 
-### 3.2 ANP Spec Reference
-- [IETF draft-zyyhl-agent-networks-framework-00](https://github.com/agent-network-protocol/AgentNetworkProtocol/blob/main/standard/draft-zyyhl-agent-networks-framework-00.md)
-- Three-layer architecture: Identity (DID:WBA) + Meta-Protocol + Application Protocol
-- `did:wba` method: `did:wba:host:port:ed25519:<fingerprint>` (V0.2)
-- HTTP Message Signatures (RFC 9421) for request signing
-- Content-Digest (RFC 9530) for body integrity
-- WNS handles: human-readable agent identifiers
-- Capability negotiation via structured meta-protocol
-- E2E encryption via ECDHE + AES-128-GCM
+Date: 2026-06-08
 
-### 3.3 Critical Gaps (Not Production-Ready)
-- **Handshake signs only nonce**, not canonical full payload (peer, createdAt, expiresAt, offerId, from_did, protocol not bound)
-- **No replay protection** (nonce can be reused)
-- **No expiry validation** on offers
-- **No DID/public key resolution** from registry (only local)
-- **No trust level calculation** based on verification
-- **No session expiry** enforcement
-- **Loopback works** but not hardened for cross-device
+Additional implementation assumptions:
 
-### 3.4 ANP Compliance Scope
-| Component | Status | Notes |
-|-----------|--------|-------|
-| Identity (DID:WBA) | ✅ Partial | DID:key used, not DID:WBA |
-| Meta-Protocol | ✅ Implemented | Capability negotiation works |
-| ADP | ✅ Implemented | JSON-LD at `/.well-known/agent-description.json` |
-| Discovery | ✅ Implemented | Scoring + WNS handle conversion |
-| E2E Messaging | ✅ Implemented | DIDComm-style envelopes |
-| AP2 Payments | ✅ Implemented | Intent lifecycle |
-| **Hardened Handshake** | ❌ **Missing** | Canonical payload, replay, expiry, DID resolution |
+- A2A v1 HTTP routes use public colon verbs through the existing Fastify URL rewriter. `POST /v1/tasks/:id:subscribe` is covered by tests and maps internally to `/v1/tasks/subscribe/:id`.
+- A2A v1 push notification config responses emit `taskPushNotificationConfig`. Legacy `pushNotificationConfig` input is accepted for backward compatibility but is not emitted by v1 HTTP responses.
+- A2A v1 generated payloads use member-based `text`/`file`/`data` parts and do not include a runtime `kind` discriminator.
+- Agent Card signatures use canonical JSON of the unsigned card payload, with `signatures` excluded, and JOSE protected header `typ`.
+- Extended Agent Card access now requires a bearer-style Authorization header. Remote A2A route protection is option-driven so local development remains compatible while cloud/remote mode can require bearer/device/relay token validation and tenant checks.
+- ANP handshake signing now uses canonical JSON over the full snake_case payload: `protocol`, `offer_id`, `from_agent_id`, `from_agent_instance_id`, `from_did`, `to_peer`, `nonce`, `created_at`, and `expires_at`.
+- ANP remains "ANP-style identity and handshake adapter, not full decentralized ANP network compliance." Full decentralized discovery, production DID-WBA resolver behavior, full E2E ANP messaging, and marketplace/open-network behavior are still out of scope.
+- sqlite-vec migration now preserves compatible old vec0 embeddings by staging rowid and embedding data, recreating partitioned vec0 tables, reinserting compatible rows, and dropping staging tables.
+- Hybrid retrieval pagination now ranks enough candidates for `offset + limit`, then returns `slice(offset, offset + limit)` to keep MMR pagination stable and non-overlapping.
 
----
+## Phase 8-13 Update
 
-## 4. Latest A2A Spec Differences That Matter
+Date: 2026-06-08
 
-### A2A v0.3.0 (Current) vs A2A v1.0 (Target)
+Additional official references rechecked:
 
-| Aspect | v0.3.0 | v1 |
-|--------|--------|-----|
-| Agent Card Field | `additionalInterfaces` | `supportedInterfaces` |
-| Protocol Version | `"0.3.0"` | `"1.0"` |
-| Transport | `preferredTransport` | Part of `supportedInterfaces` |
-| Task States | `submitted`, `working`, `input-required`, etc. | `TASK_STATE_SUBMITTED`, `TASK_STATE_WORKING`, etc. |
-| Message Send | `message/send` (JSON-RPC method) | `POST /v1/message:send` |
-| Task Get | `tasks/get` (JSON-RPC method) | `GET /v1/tasks/{id}` |
-| Task Cancel | `tasks/cancel` (JSON-RPC method) | `POST /v1/tasks/{id}:cancel` |
-| Streaming | `message/stream` (JSON-RPC method) | `POST /v1/message:stream` |
-| Push Notifications | `tasks/pushNotificationConfig/*` | `POST/GET/DELETE /v1/tasks/{id}/pushNotificationConfigs` |
-| Agent Card (auth) | `agent/getAuthenticatedExtendedCard` | `GET /v1/agent/authenticatedExtendedCard` |
-| `kind` discriminator | Required | **Removed** (breaking) |
-| Member-based polymorphism | No | Yes |
-| JWS signing | No | Yes (RFC 7515) |
-| Multi-tenancy | No | `tenant` field in requests |
-| Binding | JSON-RPC only | HTTP+JSON preferred, JSON-RPC fallback |
-| Pagination | Offset-based | Cursor-based |
-| Task IDs | Client-supplied | Server-generated |
-| Timestamp precision | seconds | milliseconds |
-| Media type | `application/json` | `application/a2a+json` |
-| Version header | None | `A2A-Version` header |
-| Extensions header | None | `A2A-Extensions` header |
-| Canonical data model | ad-hoc | Proto file (`a2a.proto`) |
+- A2A latest specification: https://a2a-protocol.org/latest/specification/
+- A2A project repository: https://github.com/a2aproject/A2A
+- Agent Network Protocol repository: https://github.com/agent-network-protocol/AgentNetworkProtocol
+- sqlite-vec repository: https://github.com/asg017/sqlite-vec
+- React transition API: https://react.dev/reference/react/useTransition
+- TanStack Query optimistic updates: https://tanstack.com/query/latest/docs/framework/react/guides/optimistic-updates
+- WCAG 2.2 quick reference: https://www.w3.org/WAI/WCAG22/quickref/
+- OWASP AI Agent Security Cheat Sheet: https://cheatsheetseries.owasp.org/cheatsheets/AI_Agent_Security_Cheat_Sheet.html
 
-### Key Implementation Decision
-- **Keep v0.3.0 working** for local/loopback mode (existing tests)
-- **Add full A2A v1 implementation** as the primary path going forward
-- **Provide v1↔v0.3 compatibility adapter** for migration
-- **Publish v1 card at** `/.well-known/agent-card.json`
-- **Keep v0.3 card at** `/.well-known/agent-card.v0.3.json` for backward compatibility
+Implementation assumptions applied:
 
----
-
-## 5. sqlite-vec Usage and Version Notes
-
-### 5.1 Current Version
-- `sqlite-vec` **v0.1.9** (pre-v1, API unstable)
-- Loaded as extension into Node.js built-in `DatabaseSync`
-- Provides `vec0` virtual table type for float vector storage and KNN search
-
-### 5.2 Schema (Multi-Tenant)
-```sql
-CREATE VIRTUAL TABLE file_embeddings
-  USING vec0(
-    tenant_id TEXT PARTITION KEY,
-    agent_id TEXT PARTITION KEY,
-    source_type TEXT,
-    namespace TEXT,
-    embedding FLOAT[384]
-  );
-```
-Same pattern for `memory_embeddings` and `episodic_embeddings`.
-
-### 5.3 Known Issues
-1. **Reindex Bug** (`FileIndexer.ts:22-26`):
-   ```typescript
-   db.prepare("DELETE FROM file_index WHERE root_id = ?").run(root);
-   db.prepare("DELETE FROM file_embeddings WHERE rowid IN (SELECT id FROM file_index WHERE root_id = ?)").run(root);
-   ```
-   - The subquery returns **empty** because `file_index` rows already deleted!
-   - Must capture IDs **before** deleting from `file_index`
-   - **Fix**: Capture IDs first, then delete from `file_embeddings`, then delete from `file_index`
-
-2. **Version Pinning**: No lockfile pin for native extension binary compatibility
-
-3. **Migration**: `migrateVec0Tables()` in `connection.ts` handles partition key migration but runs on every startup
-
-### 5.4 Embedding Model
-- **Dimension**: 384 (stub FNV-1a hash, not real embeddings)
-- **Target**: OCI `text-embedding-3-large` (3072→384 truncated)
-
----
-
-## 6. Windows Notification Constraints
-
-### 6.1 Current Implementation
-- **Bridge**: .NET 8 console app (`apps/notification-bridge-windows/Program.cs`)
-- **API**: `Microsoft.Windows.AppNotifications` (Windows App SDK 1.6+)
-- **Transport**: HTTP on `localhost:3400` (`NOTIFICATION_BRIDGE_PORT`)
-- **Toast Features**: Text, text input (feedback), action buttons (Approve/Reject/Send feedback)
-- **Fallback**: In-app approval if bridge unavailable
-
-### 6.2 Critical Bug
-**Hardcoded debug log path** (`Program.cs:16`):
-```csharp
-System.IO.File.AppendAllText(@"C:\Users\Skanda Ganesha L\Temp\opencode\bridge-debug.log", ...)
-```
-- Must use `%LOCALAPPDATA%\OracleAmigo\logs\notification-bridge.log`
-- Or configurable via `ORACLE_AMIGO_NOTIFICATION_LOG_PATH`
-
-### 6.3 Idempotency Gap
-- `/approvals/notification-callback` endpoint exists but no idempotency key enforcement
-- Duplicate toast clicks could trigger duplicate approvals/transfers
-
-### 6.4 Windows Requirements
-- Windows 10 19041+ (Build 19041 = 20H1)
-- AppNotificationManager.Register() auto-registers AUMID for unpackaged apps
-- No MSIX packaging in current POC
-
----
-
-## 7. Security Requirements
-
-### 7.1 Email/Password (Control Plane)
-- **Hash**: Argon2id via `@node-rs/argon2` (native, fast, secure)
-- **Never log**: Passwords, hashes, tokens
-- **Rate limit**: Signup/login endpoints (TODO)
-- **Email normalization**: Lowercase, trim
-
-### 7.2 Device Tokens
-- **Device access tokens**: Short-lived (15 min), signed JWT
-- **Refresh tokens**: Long-lived (30 days), stored as **hash** (bcrypt/Argon2id), revocable
-- **Device revocation**: Immediate invalidation of all tokens
-
-### 7.3 Agent Private Keys
-- **Never leave device**: Generated locally, stored in OS keychain/credential manager
-- **Cloud only sees**: Public key, fingerprint, DID
-- **Key rotation**: Future work
-
-### 7.4 Relay Authorization
-- **Every relay request**: Validates sender/receiver are enrolled, same org, active
-- **Inbox access**: Only intended agent_instance can read its inbox
-- **Idempotency**: Keys required for all relay operations
-
-### 7.5 File Transfer
-- **Approval before upload**: Never upload before explicit user approval
-- **Approval binds**: Exact file path, SHA-256, size, recipient agent, task ID, approval ID, timestamp
-- **Hash verification**: Receiver MUST verify SHA-256 before storing
-- **AES-256-GCM per-transfer encryption**: Each transfer uses a unique key, IV, and AAD
-- **No local paths in cloud**: Cloud stores only file name, size, hash, storage path
-
-### 7.6 Tenant/Org Isolation
-- **Every cloud table**: Includes `org_id` for multi-tenancy
-- **Every local table**: Should include `org_id`, `user_id`, `agent_id`, `device_id`, `namespace` for future migration
-
----
-
-## 8. Architecture Decision Summary
-
-### 8.1 Control Plane Stack
-- **Runtime**: Node.js 24+ (matches local agent)
-- **Framework**: Fastify 5.x (matches local agent)
-- **Database**: better-sqlite3 (sync, fast, production-ready)
-- **Crypto**: @node-rs/argon2 (Argon2id), node:crypto (JWT signing)
-- **Validation**: zod 3.x (matches local agent)
-- **Logging**: pino (Fastify default) + structured JSON
-
-### 8.2 A2A v1 Binding Decision
-- **Primary**: HTTP+JSON binding (matches A2A v1 recommendation)
-- **Secondary**: JSON-RPC 2.0 binding (for backward compatibility with v0.3)
-- **Card endpoint**: `/.well-known/agent-card.json` returns v1 format
-- **Legacy endpoint**: `/.well-known/agent-card.v0.3.json` for backward compat
-
-### 8.3 File Transfer Encryption
-- **Algorithm**: AES-256-GCM (per-transfer key + IV + AAD)
-- **Key**: 32 random bytes per transfer
-- **IV**: 12 random bytes per transfer
-- **AAD**: JSON with transfer_id + file_name + sha256
-- **Storage**: Encrypted file + sidecar `.meta.json` with crypto params
-- **Receiver**: Downloads encrypted, decrypts with shared key from control plane
-
-### 8.4 Two-Laptop Demo (Phase 0)
-- **Run two local agents on same machine** with different ports/env
-- **Control plane on** port 8080
-- **Agent A** on port 3399 (Alice)
-- **Agent B** on port 3400 (Bob)
-- **Different SQLite paths, storage paths, keys paths**
-- **Same CLOUD URL = http://localhost:8080**
-
-### 8.5 OCI GenAI Integration
-- **Control plane**: Uses OCI for admin summaries, audit log analysis, intent classification
-- **Local agent**: Already uses OCI for embeddings + LLM
-- **Shared client**: `src/oci/OciGenAiClient.ts` with connection pooling
-
----
-
-## 9. Implementation Plan (Confirmed)
-
-### User Decisions
-1. **Password hashing**: `@node-rs/argon2` (native, fast, production-grade)
-2. **Cloud DB**: Try `better-sqlite3` first (sync, fast), fallback to `node:sqlite` if better-sqlite3 install fails
-3. **A2A scope**: **Full v1 implementation** (supportedInterfaces, SCREAMING_SNAKE_CASE, JWS, multi-tenancy, HTTP+JSON)
-4. **File transfer encryption**: AES-256-GCM per-transfer (implement now)
-5. **Two-laptop demo**: Same machine, different ports/env (then real two-machine later)
-6. **Admin UI**: Lightweight React admin tab
-7. **OCI**: Use OCI GenAI in both control plane and local agent
-8. **Test strategy**: Run full suite after each phase
-
-### Phases
-1. Research & Planning (this doc)
-2. Control Plane skeleton + DB migrations
-3. Auth (signup/login/refresh/logout/me)
-4. Device + Agent enrollment
-5. Local cloud clients
-6. Directory + contacts
-7. Presence/heartbeat
-8. A2A relay
-9. File transfer relay (with AES-256-GCM)
-10. A2A v1 full implementation + v0.3 compatibility adapter
-11. ANP handshake hardening (canonical payload, replay, expiry, DID resolution)
-12. Fix sqlite-vec/FileIndexer reindexAll() bug
-13. Windows notification bridge cleanup
-14. Admin monitoring APIs
-15. React admin tab UI
-16. Documentation
-17. Comprehensive tests
-18. typecheck + test suite
-19. Two-laptop demo script
-20. Commit + push to main
+- Approval callback safety follows the Windows notification assumption above: DB-backed idempotency and terminal approval transitions are required because notification callbacks can repeat.
+- Admin revocation is deterministic and DB-backed. Device revoke revokes device tokens and associated agent instances; agent-instance disable blocks relay polling because device-auth middleware validates instance status.
+- Production admin setup must be explicitly enabled with `ADMIN_SETUP_ENABLED=true`; otherwise setup is guarded even when no admin exists.
+- Frontend workflow tests use the repo's current stable test tool, Vitest, to verify source/build contracts. Browser-level Playwright coverage remains recommended but not stable in this local environment.
+- The relay-first E2E harness validates relay-first behavior with automatic local-runtime approval-to-cloud-transfer handoff: Bob approval uploads through the cloud relay, Alice downloads, verifies SHA-256, stores the file locally, and records receipt.

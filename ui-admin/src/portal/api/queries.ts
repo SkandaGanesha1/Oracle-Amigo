@@ -1,7 +1,8 @@
-import { useQuery, type UseQueryResult } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient, type UseMutationResult, type UseQueryResult } from "@tanstack/react-query";
 import { adminFetch } from "./client";
 import type {
   AdminAgentInstance,
+  AdminApproval,
   AdminAuditEvent,
   AdminDevice,
   AdminInfo,
@@ -14,6 +15,7 @@ import type {
 
 export type {
   AdminAgentInstance,
+  AdminApproval,
   AdminAuditEvent,
   AdminDevice,
   AdminInfo,
@@ -57,6 +59,11 @@ async function fetchTransfers(): Promise<AdminTransfer[]> {
 async function fetchAudit(): Promise<AdminAuditEvent[]> {
   const body = await adminFetch<{ events: AdminAuditEvent[] }>("/v1/admin/audit");
   return body.events ?? [];
+}
+
+async function fetchApprovals(): Promise<AdminApproval[]> {
+  const body = await adminFetch<{ approvals: AdminApproval[] }>("/v1/admin/approvals");
+  return body.approvals ?? [];
 }
 
 async function fetchOrgSnapshot(orgId: string): Promise<AdminOrgSnapshot> {
@@ -120,6 +127,62 @@ export function useAdminAudit(opts?: { refetchInterval?: number }): UseQueryResu
     queryKey: ["admin", "audit"],
     queryFn: fetchAudit,
     refetchInterval: opts?.refetchInterval
+  });
+}
+
+export function useAdminApprovals(opts?: { refetchInterval?: number }): UseQueryResult<AdminApproval[]> {
+  return useQuery({
+    queryKey: ["admin", "approvals"],
+    queryFn: fetchApprovals,
+    refetchInterval: opts?.refetchInterval
+  });
+}
+
+export function useRevokeDevice(): UseMutationResult<{ ok: boolean; device_id: string; status: string }, Error, string> {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (deviceId: string) => adminFetch<{ ok: boolean; device_id: string; status: string }>(
+      `/v1/admin/devices/${encodeURIComponent(deviceId)}/revoke`,
+      { method: "POST", body: {} }
+    ),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["admin", "devices"] });
+      void qc.invalidateQueries({ queryKey: ["admin", "agent-instances"] });
+      void qc.invalidateQueries({ queryKey: ["admin", "presence"] });
+      void qc.invalidateQueries({ queryKey: ["admin", "audit"] });
+    }
+  });
+}
+
+export function useDisableUser(): UseMutationResult<{ ok: boolean; user_id: string; status: string }, Error, string> {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (userId: string) => adminFetch<{ ok: boolean; user_id: string; status: string }>(
+      `/v1/admin/users/${encodeURIComponent(userId)}/disable`,
+      { method: "POST", body: {} }
+    ),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["admin", "users"] });
+      void qc.invalidateQueries({ queryKey: ["admin", "devices"] });
+      void qc.invalidateQueries({ queryKey: ["admin", "agent-instances"] });
+      void qc.invalidateQueries({ queryKey: ["admin", "presence"] });
+      void qc.invalidateQueries({ queryKey: ["admin", "audit"] });
+    }
+  });
+}
+
+export function useDisableAgentInstance(): UseMutationResult<{ ok: boolean; agent_instance_id: string; status: string }, Error, string> {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (instanceId: string) => adminFetch<{ ok: boolean; agent_instance_id: string; status: string }>(
+      `/v1/admin/agent-instances/${encodeURIComponent(instanceId)}/disable`,
+      { method: "POST", body: {} }
+    ),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["admin", "agent-instances"] });
+      void qc.invalidateQueries({ queryKey: ["admin", "presence"] });
+      void qc.invalidateQueries({ queryKey: ["admin", "audit"] });
+    }
   });
 }
 

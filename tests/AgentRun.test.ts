@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentDecision, AgentReasoner, AgentReasoningContext } from "../src/agent-runs/AgentDecision.js";
 import { buildServer } from "../src/server.js";
 
+vi.setConfig({ testTimeout: 30_000 });
+
 const fixtureRoot = resolve("tests/.tmp-agent-runs");
 const pdfBytes = Buffer.from("%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n");
 

@@ -5,6 +5,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApp } from "../src/main.js";
 import { resetConfigForTest } from "../src/config.js";
 import { closeAll } from "../src/db/connection.js";
+import { getDb } from "../src/db/connection.js";
 import type { FastifyInstance } from "fastify";
 
 let app: FastifyInstance;
@@ -175,6 +176,23 @@ describe("control-plane", () => {
     if (res.statusCode !== 200) console.error("HEARTBEAT FAILED:", res.statusCode, res.body);
     expect(res.statusCode).toBe(200);
     expect(res.json().ok).toBe(true);
+  });
+
+  it("denies heartbeat after the device is revoked", async () => {
+    getDb().prepare("UPDATE devices SET status = 'revoked' WHERE id = ?").run(deviceId);
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/presence/heartbeat",
+      headers: { authorization: `Bearer ${deviceToken}` },
+      payload: {
+        agent_instance_id: agentInstanceId,
+        device_id: deviceId,
+        agent_id: agentId,
+        status: "online"
+      }
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error).toBe("DEVICE_DISABLED");
   });
 
   it("GET /v1/admin/info with admin token works", async () => {

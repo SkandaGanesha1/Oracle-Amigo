@@ -12,6 +12,20 @@ import {
 } from "./types.js";
 import type { A2AError } from "./types.js";
 
+export interface A2Av1AuthContext {
+  token: string;
+  orgId?: string;
+  callerAgentInstanceId?: string;
+  targetAgentInstanceId?: string;
+  skillScopes: string[];
+}
+
+export interface A2Av1RouteAuthOptions {
+  requireRemoteAuth?: boolean;
+  requireExtendedCardAuth?: boolean;
+  verifyAuth?: (request: FastifyRequest, tenant?: string) => Promise<A2Av1AuthContext | null> | A2Av1AuthContext | null;
+}
+
 /**
  * Mount the A2A v1.0.0 HTTP+JSON routes on a Fastify instance.
  *
@@ -22,7 +36,7 @@ import type { A2AError } from "./types.js";
  *   GET    /v1/tasks
  *   GET    /v1/tasks/{id}
  *   POST   /v1/tasks/{id}:cancel
- *   GET    /v1/tasks/{id}:subscribe
+ *   POST   /v1/tasks/{id}:subscribe
  *   POST   /v1/tasks/{taskId}/pushNotificationConfigs
  *   GET    /v1/tasks/{taskId}/pushNotificationConfigs
  *   GET    /v1/tasks/{taskId}/pushNotificationConfigs/{configId}
@@ -64,6 +78,14 @@ export function getA2Av1UrlRewriter(): (req: { url?: string | undefined }) => st
 }
 
 export function registerA2Av1Routes(server: FastifyInstance, handler: A2Av1Handler): void {
+  return registerA2Av1RoutesWithOptions(server, handler);
+}
+
+export function registerA2Av1RoutesWithOptions(
+  server: FastifyInstance,
+  handler: A2Av1Handler,
+  options: A2Av1RouteAuthOptions = {}
+): void {
   // ---- Agent Card (well-known) ----
   // Skip if already registered (e.g. when the legacy v0.3 card is at the same path)
   if (!server.hasRoute({ method: "GET", url: A2A_V1_AGENT_CARD_PATH })) {
@@ -101,11 +123,37 @@ export function registerA2Av1Routes(server: FastifyInstance, handler: A2Av1Handl
     return reply.code(status).send(err);
   };
 
+  const authenticate = async (request: FastifyRequest, reply: FastifyReply, tenant: string | undefined, required: boolean) => {
+    if (!required) return true;
+    const header = request.headers.authorization;
+    if (!header?.startsWith("Bearer ")) {
+      replyError(reply, 401, A2A_ERROR_CODES.INVALID_AGENT_RESPONSE, "A2A bearer, device, or relay token is required");
+      return false;
+    }
+    if (!options.verifyAuth) return true;
+    const auth = await options.verifyAuth(request, tenant);
+    if (!auth) {
+      replyError(reply, 401, A2A_ERROR_CODES.INVALID_AGENT_RESPONSE, "A2A token is invalid");
+      return false;
+    }
+    if (tenant && auth.orgId && tenant !== auth.orgId) {
+      replyError(reply, 403, A2A_ERROR_CODES.INVALID_AGENT_RESPONSE, "A2A caller org does not match requested tenant");
+      return false;
+    }
+    const target = (request.headers["x-a2a-target-agent-instance-id"] ?? request.headers["x-target-agent-instance-id"]) as string | undefined;
+    if (auth.targetAgentInstanceId && target && auth.targetAgentInstanceId !== target) {
+      replyError(reply, 403, A2A_ERROR_CODES.INVALID_AGENT_RESPONSE, "A2A caller target is not authorized");
+      return false;
+    }
+    return true;
+  };
+
   // ===== 1+2. SendMessage / SendStreamingMessage: POST /v1/message_send | /v1/message_stream =====
   const sendOrStreamMessageHandler = async (request: FastifyRequest, reply: FastifyReply) => {
     setHeaders(reply);
     const body = (request.body ?? {}) as A2Av1SendMessageRequest;
     const tenant = extractTenant(request);
+    if (!(await authenticate(request, reply, tenant, options.requireRemoteAuth ?? false))) return reply;
     const isStream = request.url.includes("/message_stream");
 
     if (isStream) {
@@ -179,6 +227,7 @@ export function registerA2Av1Routes(server: FastifyInstance, handler: A2Av1Handl
     try {
       const q = request.query as A2Av1ListTasksRequest;
       const tenant = extractTenant(request);
+      if (!(await authenticate(request, reply, tenant, options.requireRemoteAuth ?? false))) return reply;
       const params: A2Av1ListTasksRequest = { ...q, tenant };
       const result = await handler.handleListTasks(params);
       return reply.send(result);
@@ -200,6 +249,7 @@ export function registerA2Av1Routes(server: FastifyInstance, handler: A2Av1Handl
     setHeaders(reply);
     const params = request.params as { id: string; tenant?: string };
     const tenant = extractTenant(request);
+    if (!(await authenticate(request, reply, tenant, options.requireRemoteAuth ?? false))) return reply;
     try {
       const historyLength = (request.query as { historyLength?: string })?.historyLength
         ? Number((request.query as { historyLength?: string }).historyLength)
@@ -223,6 +273,7 @@ export function registerA2Av1Routes(server: FastifyInstance, handler: A2Av1Handl
     setHeaders(reply);
     const params = request.params as { id: string };
     const tenant = extractTenant(request);
+    if (!(await authenticate(request, reply, tenant, options.requireRemoteAuth ?? false))) return reply;
     // After URL rewrite, "/tasks/subscribe/" is the subscribe path and
     // "/tasks/cancel/" is the cancel path.
     const isSubscribe = request.url.includes("/tasks/subscribe/") || request.raw.url?.includes("/tasks/subscribe/");
@@ -272,6 +323,8 @@ export function registerA2Av1Routes(server: FastifyInstance, handler: A2Av1Handl
   };
   server.post("/v1/tasks/cancel/:id", cancelOrSubscribeHandler);
   server.post("/v1/:tenant/tasks/cancel/:id", cancelOrSubscribeHandler);
+  server.post("/v1/tasks/subscribe/:id", cancelOrSubscribeHandler);
+  server.post("/v1/:tenant/tasks/subscribe/:id", cancelOrSubscribeHandler);
   server.get("/v1/tasks/subscribe/:id", cancelOrSubscribeHandler);
   server.get("/v1/:tenant/tasks/subscribe/:id", cancelOrSubscribeHandler);
 
@@ -280,11 +333,16 @@ export function registerA2Av1Routes(server: FastifyInstance, handler: A2Av1Handl
     setHeaders(reply);
     const params = request.params as { taskId: string };
     const tenant = extractTenant(request);
-    const body = (request.body ?? {}) as { pushNotificationConfig: A2Av1PushNotificationConfig };
+    if (!(await authenticate(request, reply, tenant, options.requireRemoteAuth ?? false))) return reply;
+    const body = (request.body ?? {}) as { taskPushNotificationConfig?: A2Av1PushNotificationConfig; pushNotificationConfig?: A2Av1PushNotificationConfig };
+    const pushConfig = body.taskPushNotificationConfig ?? body.pushNotificationConfig;
     try {
+      if (!pushConfig) {
+        return replyError(reply, 400, A2A_ERROR_CODES.INVALID_AGENT_RESPONSE, "taskPushNotificationConfig is required");
+      }
       const config = await handler.handleCreatePushNotificationConfig(
         params.taskId,
-        body.pushNotificationConfig,
+        pushConfig,
         tenant
       );
       return reply.code(201).send(config);
@@ -306,6 +364,7 @@ export function registerA2Av1Routes(server: FastifyInstance, handler: A2Av1Handl
     setHeaders(reply);
     const params = request.params as { taskId: string; configId: string };
     const tenant = extractTenant(request);
+    if (!(await authenticate(request, reply, tenant, options.requireRemoteAuth ?? false))) return reply;
     try {
       const config = await handler.handleGetPushNotificationConfig(
         params.taskId,
@@ -329,6 +388,7 @@ export function registerA2Av1Routes(server: FastifyInstance, handler: A2Av1Handl
     setHeaders(reply);
     const params = request.params as { taskId: string };
     const tenant = extractTenant(request);
+    if (!(await authenticate(request, reply, tenant, options.requireRemoteAuth ?? false))) return reply;
     try {
       const configs = await handler.handleListPushNotificationConfigs(params.taskId, tenant);
       return reply.send({ configs });
@@ -345,6 +405,7 @@ export function registerA2Av1Routes(server: FastifyInstance, handler: A2Av1Handl
     setHeaders(reply);
     const params = request.params as { taskId: string; configId: string };
     const tenant = extractTenant(request);
+    if (!(await authenticate(request, reply, tenant, options.requireRemoteAuth ?? false))) return reply;
     try {
       const ok = await handler.handleDeletePushNotificationConfig(
         params.taskId,
@@ -367,6 +428,7 @@ export function registerA2Av1Routes(server: FastifyInstance, handler: A2Av1Handl
   const extendedCardHandler = async (request: FastifyRequest, reply: FastifyReply) => {
     setHeaders(reply);
     const tenant = extractTenant(request);
+    if (!(await authenticate(request, reply, tenant, options.requireExtendedCardAuth ?? true))) return reply;
     try {
       const card = await handler.handleGetExtendedAgentCard(tenant);
       return reply.send(card);

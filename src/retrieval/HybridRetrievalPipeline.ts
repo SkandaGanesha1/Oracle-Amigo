@@ -140,6 +140,8 @@ export function search(query: string, options: SearchOptions = {}): RetrievalMat
     .sort((a, b) => b.score - a.score);
 
   // 6. MMR diversity (λ=0.75) — precompute candidate embeddings to avoid repeated embed() calls
+  const offset = Math.max(0, options.offset ?? 0);
+  const targetCount = offset + limit;
   const lambda = 0.75;
   const selected: typeof candidates = [];
   const remaining = [...candidates];
@@ -150,7 +152,7 @@ export function search(query: string, options: SearchOptions = {}): RetrievalMat
     candVecMap.set(c.id, embed(`${c.fileName} ${c.displayPath}`));
   }
 
-  while (selected.length < limit && remaining.length > 0) {
+  while (selected.length < targetCount && remaining.length > 0) {
     let bestIdx = 0;
     let bestMmr = -Infinity;
     for (let i = 0; i < remaining.length; i++) {
@@ -169,9 +171,5 @@ export function search(query: string, options: SearchOptions = {}): RetrievalMat
     remaining.splice(bestIdx, 1);
   }
 
-  const offset = options.offset ?? 0;
-  if (offset > 0) {
-    return selected.slice(offset);
-  }
-  return selected;
+  return selected.slice(offset, offset + limit);
 }

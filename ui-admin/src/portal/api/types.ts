@@ -9,6 +9,7 @@ export interface AdminUser {
   org_id: string;
   email: string;
   display_name: string;
+  status?: string;
   created_at: string;
   [key: string]: unknown;
 }
@@ -19,6 +20,7 @@ export interface AdminDevice {
   user_id: string;
   agent_id?: string | null;
   device_name: string;
+  status?: string;
   public_key_fingerprint?: string;
   created_at: string;
   owner_email?: string;
@@ -87,6 +89,20 @@ export interface AdminAuditEvent {
   previous_hash: string;
   event_hash: string;
   created_at: string;
+  [key: string]: unknown;
+}
+
+export interface AdminApproval {
+  relay_task_id: string;
+  org_id: string;
+  from_agent_instance_id: string;
+  to_agent_instance_id: string;
+  a2a_task_id: string;
+  type: string;
+  task_status: string;
+  created_at: string;
+  updated_at: string;
+  completed_at?: string | null;
   [key: string]: unknown;
 }
 

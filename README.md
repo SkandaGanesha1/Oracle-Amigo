@@ -1,168 +1,146 @@
-# Oracle Amigo Sandbox Tools
+# Oracle Amigo
 
-This project is a safe sandbox tool layer for a personal agent. The agent calls a controlled TypeScript API instead of raw shell or raw Gondolin SDK calls. The layer validates requests, applies command/network/secret policy, runs work inside one Gondolin micro-VM per session, and keeps a visible event log for every action.
+Oracle Amigo is a local-first personal-agent app with a cloud relay. A user signs up, enrolls a device-bound local agent, searches same-org people, chats through the control plane, and can request files through A2A-style tasks that require explicit local approval before transfer.
 
 ## Architecture
 
-```text
-Personal Agent
-  -> SandboxTool
-  -> CommandPolicy / NetworkPolicy / SecretPolicy
-  -> SandboxSessionManager
-  -> GondolinSandbox
-  -> Gondolin VM
-```
+- Local Agent: single-user, device-bound Fastify service on `127.0.0.1` by default. It owns local SQLite/sqlite-vec memory, indexed files, approval workflow, chat persistence, notification callbacks, and local storage.
+- Agentic Chat UI: React/Vite chat app in `ui/`, built into `public/`. It provides auth, enrollment, directory, conversations, file-request detection, approvals, received files, audit, diagnostics, and settings.
+- Control Plane: multi-tenant Fastify app in `apps/control-plane`. It owns auth, enrollment, directory, contacts, presence, A2A relay, file transfers, audit, and admin APIs.
+- Admin Portal: adapter in `apps/admin-portal` plus React UI in `ui-admin`. It provides admin auth, monitoring, revocation, and audit views without file bytes or local paths.
+- Windows Notification Bridge: `apps/notification-bridge-windows`, used for local approval notifications and callbacks.
 
-Gondolin is the execution boundary. This project is the policy and observability layer around it.
+## Requirements
 
-## Quick Start
+- Node.js `>=24`
+- npm
+- Optional: Windows App SDK/.NET tooling for the notification bridge
+
+## Install And Check
 
 ```bash
 npm install
 npm run typecheck
 npm test
-npm run demo:dry
-npm run dev
-```
-
-PowerShell dry-run equivalent:
-
-```powershell
-$env:SANDBOX_DRY_RUN="true"; npm run demo
-```
-
-## Environment
-
-Copy `.env.example` to `.env` and fill only the secrets you want host-scoped.
-
-```text
-SANDBOX_DRY_RUN=true
-SANDBOX_HOST=127.0.0.1
-SANDBOX_PORT=3399
-GITHUB_TOKEN=
-NPM_TOKEN=
-```
-
-Secrets are never returned to the agent. `GITHUB_TOKEN` is only scoped to `github.com` and `api.github.com`; `NPM_TOKEN` is only scoped to `registry.npmjs.org`.
-
-## HTTP API
-
-Start the local tool server:
-
-```bash
-npm run dev
-```
-
-Create a session:
-
-```bash
-curl -sS -X POST http://127.0.0.1:3399/sessions \
-  -H "content-type: application/json" \
-  -d '{"purpose":"test generated code","networkProfile":"npm"}'
-```
-
-Run a command:
-
-```bash
-curl -sS -X POST http://127.0.0.1:3399/sessions/<sessionId>/shell \
-  -H "content-type: application/json" \
-  -d '{"command":"node --version"}'
-```
-
-View session events:
-
-```bash
-curl -sS http://127.0.0.1:3399/sessions/<sessionId>/events
-```
-
-Close a session:
-
-```bash
-curl -sS -X DELETE http://127.0.0.1:3399/sessions/<sessionId>
-```
-
-Create a frontend-style agent run. By default this creates a Gondolin session, runs a small VM probe (`pwd`, `whoami`, `hostname`), then performs the host-side PDF search with every step labeled as either `gondolin-vm-command`, `host-file-search`, or `agent-orchestrator`.
-
-```bash
-curl -sS -X POST http://127.0.0.1:3399/agent/runs \
-  -H "content-type: application/json" \
-  -d '{"query":"find the Job Offer-Associate Consultant.pdf file"}'
-```
-
-The host file search is intentionally separate from the VM command execution because Windows files such as Downloads are not automatically visible inside an isolated Gondolin guest. The response includes the run id, sandbox session id when creation succeeds, command trace, matched directory, and PDF preview URL.
-
-## Static UI
-
-The browser UI is a React + Tailwind frontend built into `public/` and served by the same local tool server. The reusable AI prompt component lives at `components/ui/ai-prompt-box.tsx`; `public/` is generated output from `npm run build`.
-
-Build the frontend and server output:
-
-```bash
 npm run build
 ```
 
-Start it in dry-run mode when you want the browser flow to work without QEMU:
+## Single-Device Mode
 
 ```bash
-SANDBOX_DRY_RUN=true npm run dev
+npm run dev
+npm run dev:ui
 ```
 
-Then open:
+Open `http://127.0.0.1:3399/` for the local agent UI, or the Vite URL from `npm run dev:ui`.
+
+## Control Plane
+
+```bash
+npm run dev:control-plane
+```
+
+Important environment variables:
 
 ```text
-http://127.0.0.1:3399/
+CONTROL_PLANE_URL=http://127.0.0.1:8080
+CONTROL_PLANE_DB_PATH=./data/control-plane.db
+JWT_ACCESS_SECRET=change-this
+JWT_REFRESH_SECRET=change-this
+ADMIN_KEK=change-this-32-chars-min
 ```
 
-The UI loads `public/index.html` at `/` and serves Vite-generated assets through `/assets/*`. It shows the shader background and the reusable AI prompt box with Lucide icons, Radix tooltips/dialogs, Framer Motion interactions, image upload/preview, mode toggles, loading, and voice-recording states. Prompt submissions call `/agent/runs`, so the Agent Plan panel can show the run record, Gondolin session status, labeled VM commands, labeled host file search commands, the found directory, and the PDF preview.
-
-PowerShell dry-run server:
-
-```powershell
-$env:SANDBOX_DRY_RUN="true"; npm run dev
-```
-
-## Windows + WSL2 Real Gondolin Run
-
-Dry-run mode works on Windows directly. Real Gondolin VM execution should be run inside WSL2 Ubuntu.
-
-1. Install Node.js 24+ in WSL2.
-2. Install QEMU:
+## Local Agent Cloud Mode
 
 ```bash
-sudo apt update
-sudo apt install qemu-system-arm nodejs npm
+CONTROL_PLANE_URL=http://127.0.0.1:8080 \
+AGENTIC_PROFILE_ID=alice \
+AGENTIC_DB_PATH=./data/alice.db \
+AGENTIC_STORAGE_ROOT=./data/alice-storage \
+SANDBOX_PORT=3399 \
+npm run dev
 ```
 
-3. From the project directory mounted in WSL2:
+Use the UI or local APIs:
+
+- `POST /cloud/signup`
+- `POST /cloud/login`
+- `POST /cloud/enroll`
+- `GET /cloud/status`
+- `GET /cloud/directory/users?q=`
+- `POST /relay/send-file-request`
+
+## Admin Portal
 
 ```bash
-npm install
-SANDBOX_DRY_RUN=false npm run demo
+npm run dev:admin-portal
 ```
 
-If your WSL2 kernel or hardware does not expose acceleration, Gondolin may still run more slowly or fail at VM startup. Keep `SANDBOX_DRY_RUN=true` for CI and local policy tests.
+Admin auth is separate from normal user auth. Admin APIs reject normal user tokens. Admin sessions use HttpOnly cookies, TOTP secrets are encrypted at rest, and recovery codes are hashed.
 
-## Network Policy
+## Windows Notification Bridge
 
-Profiles:
-
-```text
-none      -> []
-npm       -> registry.npmjs.org
-python    -> pypi.org, files.pythonhosted.org
-github    -> github.com, api.github.com, raw.githubusercontent.com
-web-basic -> example.com
-custom    -> request allowedHosts
+```bash
+npm run dev:notification-bridge
 ```
 
-The adapter passes the resolved allowlist to `createHttpHooks` when the installed Gondolin SDK exposes it.
+Approval callbacks are now DB-backed in the local agent. Duplicate approve/reject callbacks are idempotent and terminal approvals cannot be reversed.
 
-## Troubleshooting
+## Two-Agent Relay E2E
 
-- Node version too old: install Node.js 24+.
-- QEMU missing: install the WSL2 Ubuntu QEMU package.
-- `/dev/kvm` missing: use dry-run mode or enable virtualization support.
-- `EPERM: operation not permitted, symlink ... .cache\gondolin`: Windows denied Gondolin image-cache symlink creation. Run real Gondolin from WSL2 Ubuntu as described above, or use `SANDBOX_DRY_RUN=true` for Windows-local UI and lifecycle testing.
-- Gondolin cannot start in this environment: use `SANDBOX_DRY_RUN=true`; tests and demo still exercise policy, validation, logging, and lifecycle.
-- npm registry blocked by policy: create the session with `networkProfile: "npm"`.
-- secrets unavailable: make sure the target host is allowlisted for that secret.
+```bash
+npm run test:e2e:relay
+```
+
+This starts a control plane and two separate local-agent processes, enrolls Alice and Bob, sends a relay file request, creates Bob's approval card, approves it, completes a control-plane file transfer, verifies SHA-256, and checks admin task/transfer/audit visibility.
+
+## A2A v1 Status
+
+Implemented/covered:
+
+- Agent Card v1 shape with `supportedInterfaces`
+- no emitted v1 `kind` discriminator in tested payloads
+- `POST /v1/tasks/:id:subscribe` compatible route
+- `taskPushNotificationConfig` emitted, legacy input accepted
+- canonical Agent Card signing excluding signatures, `typ: "JOSE"`
+- Extended Agent Card auth
+- remote route auth hook for bearer/device/relay-style validation
+
+Compatibility-only or remaining:
+
+- A2A relay payloads are practical app messages/tasks, not a full independent A2A conformance suite.
+- End-to-end remote A2A auth should be tested against production relay tokens before deployment.
+
+## ANP Status
+
+Implemented: local DID/keypair plus hardened handshake adapter that signs canonical full payloads, validates expiry, prevents replay, binds peer identity to `agent_instance_id`, and persists peer sessions.
+
+Not implemented: full decentralized ANP network compliance, DID-WBA production resolver, full E2E ANP messaging, marketplace/open-network discovery.
+
+## sqlite-vec And Retrieval
+
+The local agent uses FTS5 plus sqlite-vec when available. The vec0 migration preserves compatible embeddings or forces reindex behavior where needed, and hybrid retrieval pagination now slices `offset..offset+limit` after ranking/MMR.
+
+## Security Model
+
+- No file transfer before explicit approval.
+- Approval binds approval/task/file metadata, size, SHA-256, participants, and timestamp.
+- Remote peers and cloud never receive local file paths.
+- Passwords use Argon2id.
+- Refresh/device tokens are hashed server-side.
+- Revoked/disabled devices and agent instances cannot heartbeat, poll relay, or transfer.
+- Cross-org directory/relay access is denied by org-scoped auth checks.
+- LLM output is not allowed to directly execute sensitive actions.
+
+## Known Limitations
+
+- Bob approval now triggers cloud relay upload/download/receipt in the local runtimes; the relay E2E verifies this without manual transfer calls in the harness.
+- Browser-level Playwright verification is not part of the normal suite; frontend workflow coverage currently uses Vitest source/build contract tests.
+- The skipped legacy `tests/TwoLaptopE2E.test.ts` still includes direct-agent compatibility coverage and is not the relay-first acceptance harness.
+
+## Next Production Hardening
+
+- Replace dev/admin bootstrap paths with production operator setup procedure.
+- Add full browser E2E with Playwright once the local browser environment is stable.
+- Add SSE/WebSocket transport behind the existing realtime abstraction.
+- Add production key rotation, TLS deployment, monitoring, and backup procedures.

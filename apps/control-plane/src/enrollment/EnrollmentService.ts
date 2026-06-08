@@ -232,12 +232,20 @@ export async function enroll(
     INSERT INTO device_tokens (id, org_id, user_id, device_id, token_hash, expires_at, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?)
   `).run(
+    `dat_${randomUUID()}`, auth.orgId, auth.userId, device.id,
+    deviceToken.tokenHash,
+    new Date(Date.now() + deviceToken.expiresIn * 1000).toISOString(),
+    now
+  );
+  conn.prepare(`
+    INSERT INTO device_tokens (id, org_id, user_id, device_id, token_hash, expires_at, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(
     deviceRefreshId, auth.orgId, auth.userId, device.id,
     opaqueRefresh.hash,
     new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
     now
   );
-  void deviceToken; // already used for access token
 
   appendAuditEvent({
     orgId: auth.orgId,

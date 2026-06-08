@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS agent_cards (
 CREATE TABLE IF NOT EXISTS peer_sessions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   peer_agent_id TEXT NOT NULL,
+  peer_agent_instance_id TEXT NOT NULL DEFAULT '',
   peer_did TEXT NOT NULL,
   peer_agent_card_url TEXT,
   peer_public_key TEXT NOT NULL,
@@ -40,9 +41,27 @@ CREATE TABLE IF NOT EXISTS conversations (
   id TEXT PRIMARY KEY,
   local_agent_id TEXT NOT NULL,
   peer_agent_id TEXT,
-  mode TEXT NOT NULL DEFAULT 'single-device',
+  mode TEXT NOT NULL DEFAULT 'local',
+  org_id TEXT,
+  local_user_id TEXT,
+  local_agent_instance_id TEXT,
+  peer_user_id TEXT,
+  peer_agent_instance_id TEXT,
+  title TEXT NOT NULL DEFAULT 'Conversation',
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  last_message_at TEXT,
+  unread_count INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS conversation_participants (
+  conversation_id TEXT NOT NULL,
+  user_id TEXT,
+  agent_instance_id TEXT,
+  role TEXT NOT NULL,
+  joined_at TEXT NOT NULL,
+  PRIMARY KEY (conversation_id, role, agent_instance_id),
+  FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -55,6 +74,49 @@ CREATE TABLE IF NOT EXISTS messages (
   content_text TEXT,
   content_json TEXT,
   created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+  id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL,
+  task_id TEXT,
+  sender_user_id TEXT,
+  sender_agent_instance_id TEXT,
+  receiver_agent_instance_id TEXT,
+  message_type TEXT NOT NULL,
+  text TEXT,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  delivery_status TEXT NOT NULL DEFAULT 'local_pending',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_messages_conversation_created
+  ON chat_messages(conversation_id, created_at);
+
+CREATE TABLE IF NOT EXISTS message_delivery_attempts (
+  id TEXT PRIMARY KEY,
+  message_id TEXT NOT NULL,
+  attempt_no INTEGER NOT NULL,
+  status TEXT NOT NULL,
+  error_code TEXT,
+  error_message TEXT,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (message_id) REFERENCES chat_messages(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS outbox (
+  id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL,
+  message_id TEXT NOT NULL UNIQUE,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT 'queued',
+  next_retry_at TEXT NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
+  FOREIGN KEY (message_id) REFERENCES chat_messages(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS a2a_tasks (
@@ -122,6 +184,17 @@ CREATE TABLE IF NOT EXISTS approval_requests (
   decided_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS approval_idempotency_keys (
+  id TEXT PRIMARY KEY,
+  approval_id TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  action TEXT NOT NULL,
+  result_status TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE(approval_id, idempotency_key),
+  FOREIGN KEY (approval_id) REFERENCES approval_requests(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS transfers (
   id TEXT PRIMARY KEY,
   task_id TEXT NOT NULL,
@@ -147,6 +220,21 @@ CREATE TABLE IF NOT EXISTS received_files (
   sha256 TEXT NOT NULL,
   size_bytes INTEGER NOT NULL DEFAULT 0,
   received_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS approval_transfer_jobs (
+  id TEXT PRIMARY KEY,
+  approval_id TEXT NOT NULL UNIQUE,
+  task_id TEXT NOT NULL,
+  relay_task_id TEXT,
+  transfer_id TEXT,
+  status TEXT NOT NULL DEFAULT 'pending',
+  attempts INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  completed_at TEXT,
+  FOREIGN KEY (approval_id) REFERENCES approval_requests(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS memories (
@@ -182,4 +270,38 @@ CREATE TABLE IF NOT EXISTS audit_events (
   previous_hash TEXT NOT NULL,
   event_hash TEXT NOT NULL,
   created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS local_cloud_identity (
+  profile_id TEXT PRIMARY KEY,
+  control_plane_url TEXT NOT NULL,
+  org_id TEXT,
+  user_id TEXT,
+  user_email TEXT,
+  display_name TEXT,
+  device_id TEXT,
+  agent_id TEXT,
+  agent_instance_id TEXT,
+  relay_inbox_url TEXT,
+  user_access_token TEXT,
+  device_access_token TEXT,
+  refresh_token TEXT,
+  status TEXT NOT NULL DEFAULT 'disconnected',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS local_relay_dispatches (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  profile_id TEXT NOT NULL,
+  relay_task_id TEXT NOT NULL,
+  a2a_task_id TEXT,
+  type TEXT NOT NULL,
+  status TEXT NOT NULL,
+  local_task_id TEXT,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  error_text TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(profile_id, relay_task_id)
 );

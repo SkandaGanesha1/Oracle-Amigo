@@ -33,7 +33,9 @@ const ConfigSchema = z.object({
   ADMIN_COOKIE_HOST_PREFIX: z.enum(["true", "false"]).default("false"),
   // Optional one-time bootstrap: a static header token that grants admin access without a session.
   // Useful for first-run setup when no admin account exists yet. Never set in production.
-  ADMIN_BOOTSTRAP_TOKEN: z.string().optional()
+  ADMIN_BOOTSTRAP_TOKEN: z.string().optional(),
+  // Production first-admin setup requires an explicit short-lived operator decision.
+  ADMIN_SETUP_ENABLED: z.enum(["true", "false"]).default("false")
 });
 
 export type Config = z.infer<typeof ConfigSchema>;

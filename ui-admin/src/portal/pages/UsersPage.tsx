@@ -3,13 +3,15 @@ import { DataTable, type ColumnDef } from "../components/DataTable";
 import { TimeAgo } from "../components/TimeAgo";
 import { CopyableId } from "../components/CopyableId";
 import { ErrorState } from "../components/ErrorState";
-import { useAdminUsers, type AdminUser } from "../api/queries";
+import { useAdminUsers, useDisableUser, type AdminUser } from "../api/queries";
 import { RefreshButton } from "../components/RefreshButton";
+import { StatusPill, statusTone } from "../components/StatusPill";
 import { Inbox } from "lucide-react";
 import type { FC } from "react";
 
 export const UsersPage: FC = () => {
   const q = useAdminUsers({ refetchInterval: 15_000 });
+  const disableUser = useDisableUser();
 
   const columns: ColumnDef<AdminUser, unknown>[] = [
     {
@@ -29,6 +31,14 @@ export const UsersPage: FC = () => {
       enableSorting: false
     },
     {
+      header: "Status",
+      accessorKey: "status",
+      cell: (info) => {
+        const s = String(info.getValue() ?? "active");
+        return <StatusPill tone={statusTone(s)}>{s}</StatusPill>;
+      }
+    },
+    {
       header: "Created",
       accessorKey: "created_at",
       cell: (info) => <TimeAgo iso={String(info.getValue() ?? "")} />
@@ -37,6 +47,25 @@ export const UsersPage: FC = () => {
       header: "ID",
       accessorKey: "id",
       cell: (info) => <CopyableId value={String(info.getValue() ?? "")} />,
+      enableSorting: false
+    },
+    {
+      header: "Actions",
+      accessorKey: "id",
+      cell: (info) => {
+        const row = info.row.original;
+        const disabled = String(row.status ?? "active") === "disabled" || disableUser.isPending;
+        return (
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => disableUser.mutate(row.id)}
+            className="rounded-md border border-rose-400/30 bg-rose-400/10 px-2 py-1 text-[11px] text-rose-100 transition hover:bg-rose-400/20 disabled:cursor-not-allowed disabled:opacity-45"
+          >
+            Disable
+          </button>
+        );
+      },
       enableSorting: false
     }
   ];

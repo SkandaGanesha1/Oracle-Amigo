@@ -17,8 +17,11 @@ export interface RelaySendResult {
 
 export interface RelayInboxMessage {
   relay_task_id: string;
+  relay_message_id?: string;
   from_agent_instance_id: string;
   to_agent_instance_id: string;
+  a2a_task_id?: string;
+  type: string;
   payload: Record<string, unknown>;
   status: string;
   created_at: string;

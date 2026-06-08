@@ -18,6 +18,16 @@ export interface CloudAgentInstance {
   last_seen_at: string | null;
 }
 
+export interface CloudContact {
+  id: string;
+  org_id: string;
+  requester_user_id: string;
+  target_user_id: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export class DirectoryClient {
   constructor(private cp: ControlPlaneClient) {}
 
@@ -28,5 +38,17 @@ export class DirectoryClient {
 
   getUserAgents(userId: string, accessToken: string): Promise<{ user_id: string; agents: CloudAgentInstance[] }> {
     return this.cp.getJson(`/v1/directory/users/${encodeURIComponent(userId)}/agents`, accessToken);
+  }
+
+  listContacts(accessToken: string): Promise<{ contacts: CloudContact[] }> {
+    return this.cp.getJson("/v1/contacts", accessToken);
+  }
+
+  requestContact(targetUserId: string, accessToken: string): Promise<CloudContact> {
+    return this.cp.postJson<CloudContact>("/v1/contacts/request", { target_user_id: targetUserId }, accessToken);
+  }
+
+  acceptContact(contactId: string, accessToken: string): Promise<CloudContact> {
+    return this.cp.postJson<CloudContact>(`/v1/contacts/${encodeURIComponent(contactId)}/accept`, {}, accessToken);
   }
 }

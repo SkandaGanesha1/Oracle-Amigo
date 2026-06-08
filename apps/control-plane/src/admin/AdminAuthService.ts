@@ -72,6 +72,16 @@ export function getSetupStatus(): { required: boolean; has_any_admin: boolean } 
   return { required: countAdmins() === 0, has_any_admin: countAdmins() > 0 };
 }
 
+function assertSetupAllowed(): void {
+  const cfg = loadConfig();
+  if (cfg.CONTROL_PLANE_ENV === "production" && cfg.ADMIN_SETUP_ENABLED !== "true") {
+    throw new AdminAuthError(
+      "SETUP_DISABLED_PRODUCTION",
+      "Admin setup is disabled in production unless ADMIN_SETUP_ENABLED=true"
+    );
+  }
+}
+
 export interface SetupInput {
   email: string;
   displayName: string;
@@ -96,6 +106,7 @@ export interface SetupStartResult {
 const SETUP_TTL_SECONDS = 600; // 10 minutes
 
 export function startSetup(): SetupStartResult {
+  assertSetupAllowed();
   if (countAdmins() > 0) {
     throw new AdminAuthError("SETUP_DISABLED", "An admin already exists; use login instead");
   }
@@ -180,6 +191,7 @@ function consumeSetupChallenge(challenge: string): SetupChallengeRow | null {
 }
 
 export async function setupFirstAdmin(input: SetupInput, ctx: Sessions.SessionContext): Promise<SetupResult> {
+  assertSetupAllowed();
   if (countAdmins() > 0) {
     throw new AdminAuthError("SETUP_DISABLED", "An admin already exists; use login instead");
   }

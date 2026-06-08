@@ -26,7 +26,7 @@ The TypeScript types in `src/protocol/a2a-v1/types.ts` are a 1:1 mirror of that 
 | `/v1/tasks` | `GET` | `ListTasks` (cursor pagination) |
 | `/v1/tasks/{id}` | `GET` | `GetTask` |
 | `/v1/tasks/{id}:cancel` | `POST` | `CancelTask` |
-| `/v1/tasks/{id}:subscribe` | `GET` | `SubscribeToTask` (SSE) |
+| `/v1/tasks/{id}:subscribe` | `POST` | `SubscribeToTask` (SSE) |
 | `/v1/tasks/{id}/pushNotificationConfigs` | `POST` / `GET` | Create / list |
 | `/v1/tasks/{id}/pushNotificationConfigs/{configId}` | `GET` / `DELETE` | Get / delete |
 
@@ -88,7 +88,7 @@ A custom content-type parser is registered for `application/a2a+json` so Fastify
 
 ## Security
 
-- **Agent Card signing**: Optional JWS RS256 signature (RFC 7515). `signCardWithRs256(card, privateKey)` produces a flattened JSON serialization; `verifySignedCard(signed, publicKey)` verifies. Canonical JSON uses sorted keys for stable signing input.
+- **Agent Card signing**: Optional JWS RS256 signature (RFC 7515). `signCardWithRs256(card, privateKey)` signs canonical JSON of the card with `signatures` excluded. Protected headers use `typ: "JOSE"`.
 - **Push notification authentication**: `buildPushNotificationHeaders(config, body)` produces headers including `X-A2A-Notification-Token` (opaque token) and `Authorization: Bearer <token>` or `Basic <base64>` based on the config's `authentication` block.
 - **Extended card**: `/v1/extendedAgentCard` is gated on `supportsAuthenticatedExtendedCard`. Returns 401 (`AUTHENTICATED_EXTENDED_CARD_NOT_CONFIGURED`) when disabled.
 
@@ -129,7 +129,7 @@ curl -X POST http://localhost:3399/v1/message:send \
     "message": {
       "messageId": "11111111-1111-1111-1111-111111111111",
       "role": "ROLE_USER",
-      "parts": [{"kind": "text", "text": "Search my files for invoices"}]
+      "parts": [{"text": "Search my files for invoices"}]
     }
   }'
 ```
@@ -146,7 +146,7 @@ curl -X POST http://localhost:3399/v1/message:send \
     "artifacts": [
       {
         "artifactId": "result-1",
-        "parts": [{"kind": "text", "text": "Found 3 invoices..."}]
+        "parts": [{"text": "Found 3 invoices..."}]
       }
     ]
   }
@@ -163,7 +163,7 @@ curl -N -X POST http://localhost:3399/v1/message:stream \
     "message": {
       "messageId": "...",
       "role": "ROLE_USER",
-      "parts": [{"kind": "text", "text": "Stream a long analysis"}]
+      "parts": [{"text": "Stream a long analysis"}]
     }
   }'
 ```
@@ -176,4 +176,4 @@ Returns `text/event-stream` with one `data:` frame per event.
 - **Path changes**: `/v1/message:send` (v1) replaces the v0.3 JSON-RPC `/a2a` endpoint.
 - **Media type**: `application/a2a+json` replaces v0.3's `application/json` for A2A calls.
 - **Enums**: Task states are SCREAMING_SNAKE_CASE in v1.0.0 (e.g. `TASK_STATE_WORKING`), camelCase in v0.3 (`working`).
-- **Member polymorphism**: v1 uses member-based polymorphism (no `kind` discriminator on `Part`; uses the actual `text`/`file`/`data` field). However, our TS types use a `kind` discriminator for ergonomic narrowing — this is a runtime no-op (the wire format is the actual fields).
+- **Member polymorphism**: v1 uses member-based polymorphism with the actual `text`/`file`/`data` field. Generated v1 wire payloads do not include a discriminator field.

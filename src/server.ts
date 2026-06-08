@@ -4,7 +4,7 @@ import { createReadStream, existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import Fastify from "fastify";
+import Fastify, { type FastifyReply } from "fastify";
 import { z, ZodError, type ZodSchema } from "zod";
 import { SandboxTool } from "./agent-tools/SandboxTool.js";
 import {
@@ -29,7 +29,7 @@ import type { AgentCard, Message as A2AMessage, Task as A2ATask, TaskState, Task
 import { A2A_PROTOCOL_VERSION } from "./protocol/a2a/types.js";
 import { A2Av1Handler, type A2Av1Context } from "./protocol/a2a-v1/A2Av1Handler.js";
 import { buildV1AgentCard } from "./protocol/a2a-v1/AgentCardV1.js";
-import { registerA2Av1Routes, getA2Av1UrlRewriter } from "./protocol/a2a-v1/A2Av1Routes.js";
+import { registerA2Av1RoutesWithOptions, getA2Av1UrlRewriter } from "./protocol/a2a-v1/A2Av1Routes.js";
 import { A2Av1PushNotificationStore } from "./protocol/a2a-v1/A2Av1PushNotificationHandler.js";
 import type {
   A2Av1AgentCard,
@@ -52,6 +52,17 @@ import { listStoredFiles, getStoredFile } from "./storage/AgenticStorage.js";
 import { createTask as wfCreateTask, transition as wfTransition, listTasks as wfListTasks, getTask as wfGetTask } from "./workflow/TaskWorkflow.js";
 import { getDb, resolveDbPath } from "./db/connection.js";
 import { generateOrLoadIdentity } from "./security/DeviceIdentity.js";
+import { CloudError, ControlPlaneClient } from "./cloud/ControlPlaneClient.js";
+import { DirectoryClient } from "./cloud/DirectoryClient.js";
+import { RelayClient } from "./cloud/RelayClient.js";
+import { LocalCloudIdentityStore, defaultControlPlaneUrl, defaultProfileId, type LocalCloudIdentity } from "./cloud/LocalCloudIdentityStore.js";
+import { DeviceEnrollmentService } from "./enrollment/DeviceEnrollmentService.js";
+import { AgentRegistrationService } from "./enrollment/AgentRegistrationService.js";
+import { HeartbeatService } from "./runtime/HeartbeatService.js";
+import { InboxPoller } from "./runtime/InboxPoller.js";
+import { RemoteTaskDispatcher } from "./runtime/RemoteTaskDispatcher.js";
+import { ApprovalTransferOrchestrator } from "./runtime/ApprovalTransferOrchestrator.js";
+import { ChatRepository, type ChatConversationRecord, type ChatMessageRecord } from "./chat/ChatRepository.js";
 
 const FileSearchSchema = z.object({
   query: z.string().trim().min(1).max(500)
@@ -67,9 +78,54 @@ const ChatMessageSchema = z.object({
   conversationId: z.string().trim().min(1).max(200).optional()
 });
 
+const ChatConversationSchema = z.object({
+  peer_user_id: z.string().trim().min(1).nullable().optional(),
+  peer_agent_instance_id: z.string().trim().min(1).nullable().optional(),
+  title: z.string().trim().min(1).max(200),
+  mode: z.enum(["local", "cloud_relay", "loopback"]).optional()
+});
+
+const ChatConversationSendSchema = z.object({
+  text: z.string().trim().min(1).max(2000),
+  send_as: z.enum(["normal", "file_request"]).default("normal"),
+  idempotency_key: z.string().trim().min(1).max(200).optional(),
+  client_message_id: z.string().trim().min(1).max(200).optional()
+});
+
 const FileIndexSchema = z.object({
   roots: z.array(z.string().trim().min(1)).default([])
 });
+
+const CloudAuthSchema = z.object({
+  email: z.string().email(),
+  password: z.string().min(8),
+  display_name: z.string().trim().min(1).max(120).optional(),
+  org_slug: z.string().trim().min(1).max(120).optional(),
+  control_plane_url: z.string().url().optional()
+});
+
+const CloudEnrollSchema = z.object({
+  device_name: z.string().trim().min(1).max(120).optional(),
+  agent_display_name: z.string().trim().min(1).max(120).optional(),
+  version: z.string().trim().max(40).optional(),
+  capabilities: z.array(z.string().trim().min(1).max(120)).max(50).optional(),
+  agent_card: z.record(z.unknown()).optional()
+});
+
+const ContactRequestSchema = z.object({
+  target_user_id: z.string().trim().min(1)
+});
+
+const RelaySendSchema = z.object({
+  to_agent_instance_id: z.string().trim().min(1),
+  text: z.string().trim().min(1).max(2000),
+  a2a_task_id: z.string().trim().min(1).max(120).optional(),
+  idempotency_key: z.string().trim().min(1).max(200).optional(),
+  conversation_id: z.string().trim().min(1).max(200).optional(),
+  message_id: z.string().trim().min(1).max(200).optional()
+});
+
+const DEFAULT_DEV_ORG_SLUG = "local-dev";
 
 export function buildServer(
   tool = new SandboxTool(),
@@ -87,20 +143,43 @@ export function buildServer(
   const agentRuns = new AgentRunService(tool, fileSearch, reasoner);
   const protocol = new PersonalAgentProtocol();
   const intentExtractor = createIntentExtractor();
+  const cloudStore = new LocalCloudIdentityStore();
+  const deviceEnrollment = new DeviceEnrollmentService(cloudStore);
+  const agentRegistration = new AgentRegistrationService(cloudStore);
+  const chatRepo = new ChatRepository(getDb());
+  const approvalTransfers = new ApprovalTransferOrchestrator(getDb(), cloudStore, defaultProfileId(), chatRepo);
 
   // Eagerly init identity with resolved db path so handlers don't re-read process.env
   const dbPath = resolveDbPath();
   const identity = generateOrLoadIdentity("Local User", dbPath);
   protocol.setIdentityPath(identity, dbPath);
+  const remoteDispatcher = new RemoteTaskDispatcher(protocol, getDb(), defaultProfileId());
+  const heartbeatService = new HeartbeatService(cloudStore, defaultProfileId());
+  const inboxPoller = new InboxPoller(cloudStore, remoteDispatcher, defaultProfileId());
 
   server.setErrorHandler((error, _request, reply) => {
     if (error instanceof ZodError) {
       reply.status(400).send({ error: "Validation failed", issues: error.issues });
       return;
     }
+    if (error instanceof CloudError) {
+      reply.status(error.statusCode).send({
+        error: error.code,
+        message: error.message
+      });
+      return;
+    }
     const message = error instanceof Error ? error.message : String(error);
     if (message.startsWith("Unknown sandbox session")) {
       reply.status(404).send({ error: message });
+      return;
+    }
+    if (isCloudConnectivityError(error)) {
+      const requestedControlPlaneUrl = getRequestedControlPlaneUrl(_request.body);
+      reply.status(502).send({
+        error: "CONTROL_PLANE_UNAVAILABLE",
+        message: `Cannot reach the control plane at ${requestedControlPlaneUrl}. Start it with npm run dev:control-plane or set the Control-plane URL to a running service.`
+      });
       return;
     }
     logger.error("request failed", { error: message });
@@ -122,11 +201,17 @@ export function buildServer(
     });
   });
 
-  server.addHook("onClose", async () => {});
+  server.addHook("onClose", async () => {
+    heartbeatService.stop();
+    inboxPoller.stop();
+  });
 
   server.get("/health", async () => ({
     status: "ok",
-    dryRun: process.env.SANDBOX_DRY_RUN === "true"
+    dryRun: process.env.SANDBOX_DRY_RUN === "true",
+    localAgentUrl: localAgentUrl(),
+    controlPlaneUrl: defaultControlPlaneUrl(),
+    defaultOrgSlug: defaultOrgSlug()
   }));
 
   server.get("/profile", async () => {
@@ -144,6 +229,164 @@ export function buildServer(
     identity: protocol.createLocalIdentity(),
     session: protocol.createPeerSession({ agentId: protocol.createLocalIdentity().agentId, did: protocol.createLocalIdentity().did, publicKey: protocol.createLocalIdentity().publicKey, trustLevel: "local" })
   }));
+
+  server.post("/cloud/signup", async (request) => {
+    const body = parseBody(CloudAuthSchema, request.body);
+    return deviceEnrollment.signup({
+      email: body.email,
+      password: body.password,
+      display_name: body.display_name ?? body.email,
+      org_slug: body.org_slug
+    }, { controlPlaneUrl: body.control_plane_url ?? defaultControlPlaneUrl() });
+  });
+
+  server.post("/cloud/login", async (request) => {
+    const body = parseBody(CloudAuthSchema.omit({ display_name: true }).extend({ display_name: z.string().optional() }), request.body);
+    return deviceEnrollment.login({
+      email: body.email,
+      password: body.password,
+      org_slug: body.org_slug
+    }, { controlPlaneUrl: body.control_plane_url ?? defaultControlPlaneUrl() });
+  });
+
+  server.post("/cloud/logout", async () => {
+    heartbeatService.stop();
+    inboxPoller.stop();
+    return deviceEnrollment.logout();
+  });
+
+  server.post("/cloud/enroll", async (request) => {
+    const body = parseBody(CloudEnrollSchema, request.body ?? {});
+    const result = await agentRegistration.enroll({
+      deviceName: body.device_name,
+      agentDisplayName: body.agent_display_name,
+      version: body.version,
+      capabilities: body.capabilities,
+      agentCard: body.agent_card
+    });
+    if (process.env.AGENTIC_DISABLE_RUNTIME_AUTOSTART !== "true") {
+      heartbeatService.start();
+      inboxPoller.start();
+    }
+    return result;
+  });
+
+  server.get("/cloud/status", async () => {
+    const cloud = cloudStore.getOrCreate();
+    return {
+      cloud: publicCloudIdentity(cloud),
+      heartbeat: heartbeatService.status(),
+      inbox: inboxPoller.status(),
+      relayMode: process.env.AGENTIC_RELAY_MODE ?? "polling",
+      defaults: {
+        localAgentUrl: localAgentUrl(),
+        controlPlaneUrl: defaultControlPlaneUrl(),
+        orgSlug: defaultOrgSlug()
+      }
+    };
+  });
+
+  server.get("/cloud/me", async (request, reply) => {
+    const cloud = requireCloudIdentity(cloudStore.get(), reply);
+    if (!cloud) return;
+    const token = requireUserAccessToken(cloud, reply);
+    if (!token) return;
+    const me = await new (await import("./cloud/AuthClient.js")).AuthClient(new ControlPlaneClient(cloud.controlPlaneUrl)).me(token);
+    return me;
+  });
+
+  server.get("/cloud/directory/users", async (request, reply) => {
+    const cloud = requireCloudIdentity(cloudStore.get(), reply);
+    if (!cloud) return;
+    const token = requireUserAccessToken(cloud, reply);
+    if (!token) return;
+    const q = ((request.query as { q?: string })?.q ?? "").trim();
+    return new DirectoryClient(new ControlPlaneClient(cloud.controlPlaneUrl)).searchUsers(q, token);
+  });
+
+  server.get("/cloud/directory/users/:user_id/agents", async (request, reply) => {
+    const cloud = requireCloudIdentity(cloudStore.get(), reply);
+    if (!cloud) return;
+    const token = requireUserAccessToken(cloud, reply);
+    if (!token) return;
+    const { user_id } = request.params as { user_id: string };
+    return new DirectoryClient(new ControlPlaneClient(cloud.controlPlaneUrl)).getUserAgents(user_id, token);
+  });
+
+  server.get("/cloud/contacts", async (_request, reply) => {
+    const cloud = requireCloudIdentity(cloudStore.get(), reply);
+    if (!cloud) return;
+    const token = requireUserAccessToken(cloud, reply);
+    if (!token) return;
+    return new DirectoryClient(new ControlPlaneClient(cloud.controlPlaneUrl)).listContacts(token);
+  });
+
+  server.post("/cloud/contacts/request", async (request, reply) => {
+    const cloud = requireCloudIdentity(cloudStore.get(), reply);
+    if (!cloud) return;
+    const token = requireUserAccessToken(cloud, reply);
+    if (!token) return;
+    const body = parseBody(ContactRequestSchema, request.body);
+    return new DirectoryClient(new ControlPlaneClient(cloud.controlPlaneUrl)).requestContact(body.target_user_id, token);
+  });
+
+  server.post("/cloud/contacts/:contact_id/accept", async (request, reply) => {
+    const cloud = requireCloudIdentity(cloudStore.get(), reply);
+    if (!cloud) return;
+    const token = requireUserAccessToken(cloud, reply);
+    if (!token) return;
+    const { contact_id } = request.params as { contact_id: string };
+    return new DirectoryClient(new ControlPlaneClient(cloud.controlPlaneUrl)).acceptContact(contact_id, token);
+  });
+
+  server.get("/relay/inbox/status", async () => inboxPoller.status());
+
+  server.post("/relay/send-message", async (request, reply) => {
+    const cloud = requireCloudIdentity(cloudStore.get(), reply);
+    if (!cloud) return;
+    const token = requireDeviceAccessToken(cloud, reply);
+    if (!token) return;
+    const body = parseBody(RelaySendSchema, request.body);
+    const result = await new RelayClient(new ControlPlaneClient(cloud.controlPlaneUrl)).send({
+      to_agent_instance_id: body.to_agent_instance_id,
+      a2a_task_id: body.a2a_task_id ?? randomUUID(),
+      type: "message.send",
+      payload: { kind: "message", text: body.text },
+      idempotency_key: body.idempotency_key
+    }, token);
+    if (body.message_id) chatRepo.markMessageStatus(body.message_id, "sent");
+    return result;
+  });
+
+  server.post("/relay/send-file-request", async (request, reply) => {
+    const cloud = requireCloudIdentity(cloudStore.get(), reply);
+    if (!cloud) return;
+    const token = requireDeviceAccessToken(cloud, reply);
+    if (!token) return;
+    const body = parseBody(RelaySendSchema, request.body);
+    const a2aTaskId = body.a2a_task_id ?? randomUUID();
+    const result = await new RelayClient(new ControlPlaneClient(cloud.controlPlaneUrl)).send({
+      to_agent_instance_id: body.to_agent_instance_id,
+      a2a_task_id: a2aTaskId,
+      type: "file.request",
+      payload: { kind: "file_request", text: body.text, requestText: body.text },
+      idempotency_key: body.idempotency_key
+    }, token);
+    if (body.message_id) chatRepo.markMessageStatus(body.message_id, "sent");
+    if (body.conversation_id) {
+      chatRepo.appendMessage({
+        conversationId: body.conversation_id,
+        taskId: a2aTaskId,
+        senderAgentInstanceId: cloud.agentInstanceId,
+        receiverAgentInstanceId: body.to_agent_instance_id,
+        messageType: "agent_status",
+        text: "Waiting for remote approval",
+        payload: { relay_task_id: result.relay_task_id, phase: "input_required" },
+        deliveryStatus: "sent"
+      });
+    }
+    return result;
+  });
 
   const baseUrl = `http://127.0.0.1:${process.env.SANDBOX_PORT ?? 3399}`;
   const localIdentity = protocol.createLocalIdentity();
@@ -381,10 +624,10 @@ export function buildServer(
       const messageText = intent.intent === "file_request"
         ? "File request received and classified. Starting local search..."
         : "Message received and classified as normal chat.";
-      if (configuration?.pushNotificationConfig) {
+      if (configuration?.taskPushNotificationConfig) {
         a2aV1PushStore.set(task.id, {
-          ...configuration.pushNotificationConfig,
-          id: configuration.pushNotificationConfig.id ?? randomUUID()
+          ...configuration.taskPushNotificationConfig,
+          id: configuration.taskPushNotificationConfig.id ?? randomUUID()
         });
       }
       return {
@@ -417,10 +660,10 @@ export function buildServer(
         actorAgentId: "a2a-v1-peer"
       });
       wfTransition(task.id, "INTENT_CLASSIFIED", { text });
-      if (configuration.pushNotificationConfig) {
+      if (configuration.taskPushNotificationConfig) {
         a2aV1PushStore.set(task.id, {
-          ...configuration.pushNotificationConfig,
-          id: configuration.pushNotificationConfig.id ?? randomUUID()
+          ...configuration.taskPushNotificationConfig,
+          id: configuration.taskPushNotificationConfig.id ?? randomUUID()
         });
       }
       configuration.emit({
@@ -558,7 +801,7 @@ export function buildServer(
     },
     onPushNotificationConfigSet: async (taskId, config, _tenant): Promise<A2Av1TaskPushNotificationConfigT> => {
       const stored = a2aV1PushStore.set(taskId, config);
-      return { taskId, pushNotificationConfig: stored.pushNotificationConfig };
+      return { taskId, taskPushNotificationConfig: stored.taskPushNotificationConfig };
     },
     onPushNotificationConfigGet: async (taskId, configId, _tenant) => {
       return a2aV1PushStore.get(taskId, configId);
@@ -574,7 +817,22 @@ export function buildServer(
   };
 
   const a2aV1Handler = new A2Av1Handler(a2aV1Ctx);
-  registerA2Av1Routes(server, a2aV1Handler);
+  registerA2Av1RoutesWithOptions(server, a2aV1Handler, {
+    requireRemoteAuth: process.env.AGENTIC_A2A_REMOTE_AUTH_REQUIRED === "true",
+    verifyAuth: async (request, tenant) => {
+      const token = request.headers.authorization?.replace(/^Bearer\s+/i, "").trim();
+      if (!token) return null;
+      const identity = cloudStore.get();
+      if (!identity?.deviceAccessToken || identity.deviceAccessToken !== token) return null;
+      return {
+        token,
+        orgId: identity.orgId ?? undefined,
+        callerAgentInstanceId: identity.agentInstanceId ?? undefined,
+        targetAgentInstanceId: identity.agentInstanceId ?? undefined,
+        skillScopes: ["message.send", "tasks.read", "tasks.cancel", "tasks.subscribe", "push.config", "agent-card.extended"]
+      };
+    }
+  });
 
   // ===== Agent Skills (agentskills.io) =====
   const skillRegistry = getDefaultRegistry();
@@ -818,6 +1076,99 @@ export function buildServer(
     return reply;
   });
 
+  async function localFileRequestFlow(text: string, conversationId: string, sourceMessageId?: string): Promise<{
+    taskId: string;
+    approvalId: string;
+    candidates: Array<{ id: number; fileName: string; displayPath: string; extension: string; sizeBytes: number; modifiedAt: string; score: number; reason: string }>;
+  }> {
+    const intent = intentExtractor.extract(text);
+    const task = wfCreateTask({ contextId: conversationId, type: "file.request.search", metadata: { query: text, intent }, actorAgentId: "local-user" });
+    wfTransition(task.id, "INTENT_CLASSIFIED", { intent: intent.intent });
+    wfTransition(task.id, "SEARCH_QUERY_BUILT", { query: text });
+    const queryRewriter = createQueryRewriter();
+    const rewritten = queryRewriter.rewrite(text);
+    const searchQuery = rewritten.semanticQuery || text;
+    const extensions = (rewritten.extensions.length > 0 ? rewritten.extensions : intent.extensions).length > 0
+      ? { extensions: (rewritten.extensions.length > 0 ? rewritten.extensions : intent.extensions) }
+      : undefined;
+    wfTransition(task.id, "LOCAL_SEARCH_RUNNING", { query: searchQuery });
+    const candidates = hybridSearch(searchQuery, { ...extensions, limit: 10 });
+    wfTransition(task.id, "CANDIDATES_RANKED", { count: candidates.length });
+    const topCandidate = candidates[0];
+    const approval = await protocol.createApproval(task.id, {
+      approvalType: "file.transfer.offer",
+      requesterAgentId: "local-user",
+      ownerAgentId: protocol.createLocalIdentity().agentId,
+      selectedFileId: topCandidate ? String(topCandidate.id) : null,
+      boundFilePath: topCandidate?.filePath ?? null,
+      boundSha256: null,
+      boundSizeBytes: topCandidate?.sizeBytes ?? null,
+    });
+    wfTransition(task.id, "APPROVAL_REQUIRED", { approvalId: approval.id, candidateCount: candidates.length });
+    if (sourceMessageId) chatRepo.markMessageStatus(sourceMessageId, "delivered");
+    chatRepo.appendMessage({
+      conversationId,
+      taskId: task.id,
+      senderAgentInstanceId: protocol.createLocalIdentity().agentId,
+      messageType: "agent_status",
+      text: candidates.length > 0 ? `Your agent found ${candidates.length} candidates` : "Your agent did not find matching files",
+      payload: { phase: candidates.length > 0 ? "input_required" : "completed" },
+      deliveryStatus: "delivered"
+    });
+    chatRepo.appendMessage({
+      conversationId,
+      taskId: task.id,
+      senderAgentInstanceId: protocol.createLocalIdentity().agentId,
+      messageType: "approval",
+      text: "Approval required",
+      payload: {
+        approval_id: approval.id,
+        task_id: task.id,
+        requester: "You",
+        request_text: text,
+        status: approval.status,
+        expires_at: approval.expiresAt,
+        selected_candidate_id: approval.selectedFileId,
+        candidates: candidates.map((candidate) => ({
+          candidate_id: String(candidate.id),
+          file_name: candidate.fileName,
+          display_path: candidate.displayPath,
+          extension: candidate.extension,
+          mime_type: "application/octet-stream",
+          size_bytes: candidate.sizeBytes,
+          modified_at: candidate.modifiedAt,
+          match_score: candidate.score,
+          match_reason: candidate.reason,
+          safety_labels: ["Approval required", "Local path hidden from recipient"]
+        }))
+      },
+      deliveryStatus: "delivered"
+    });
+    if (topCandidate) {
+      const callbackPort = Number(process.env.SANDBOX_PORT ?? 3399);
+      notifyBridge({
+        approvalId: approval.id,
+        taskId: task.id,
+        candidateId: String(topCandidate.id),
+        requesterName: protocol.createLocalIdentity().agentId,
+        requestedItem: text,
+        topCandidateFileName: topCandidate.fileName,
+        localAgentCallbackPort: callbackPort,
+      }).catch(() => {
+        // In-app approval remains the source of truth.
+      });
+    }
+    epRecord(task.id, "SEARCH_COMPLETED", `User searched for "${text}"`, { query: text, intent, candidateCount: candidates.length });
+    return {
+      taskId: task.id,
+      approvalId: approval.id,
+      candidates: candidates.map((c) => ({
+        id: c.id, fileName: c.fileName, displayPath: c.displayPath, extension: c.extension,
+        sizeBytes: c.sizeBytes, modifiedAt: c.modifiedAt, score: c.score, reason: c.reason,
+      }))
+    };
+  }
+
   server.post("/chat/messages", async (request) => {
     const { text, conversationId } = parseBody(ChatMessageSchema, request.body);
     const convId = conversationId ?? `conv-${Date.now()}`;
@@ -904,16 +1255,142 @@ export function buildServer(
     };
   });
 
+  server.post("/chat/conversations", async (request) => {
+    const body = parseBody(ChatConversationSchema, request.body);
+    const cloud = cloudStore.get();
+    const conversation = chatRepo.createConversation({
+      orgId: cloud?.orgId ?? null,
+      localUserId: cloud?.userId ?? null,
+      localAgentInstanceId: cloud?.agentInstanceId ?? localIdentity.agentId,
+      peerUserId: body.peer_user_id ?? null,
+      peerAgentInstanceId: body.peer_agent_instance_id ?? null,
+      mode: body.mode ?? (body.peer_agent_instance_id ? "cloud_relay" : "local"),
+      title: body.title
+    });
+    chatRepo.appendMessage({
+      conversationId: conversation.id,
+      senderAgentInstanceId: cloud?.agentInstanceId ?? localIdentity.agentId,
+      messageType: "system_event",
+      text: body.peer_agent_instance_id ? "Relay chat ready. File requests become A2A tasks." : "Local chat ready.",
+      payload: { severity: "success" },
+      deliveryStatus: "delivered"
+    });
+    return { conversation: conversationToUi(conversation, chatRepo.getMessages(conversation.id)) };
+  });
+
   server.get("/chat/conversations", async () => {
-    const db = getDb();
-    const rows = db.prepare("SELECT DISTINCT conversation_id FROM messages ORDER BY MAX(created_at) DESC").all() as Array<{ conversation_id: string }>;
-    return { conversations: rows.map((r) => ({ id: r.conversation_id, mode: "single-device" })) };
+    const cloud = cloudStore.get();
+    chatRepo.getOrCreateLocalConversation(cloud?.agentInstanceId ?? localIdentity.agentId);
+    return {
+      conversations: chatRepo.listConversations().map((conversation) =>
+        conversationToUi(conversation, chatRepo.getMessages(conversation.id))
+      )
+    };
   });
 
   server.get("/chat/conversations/:id/messages", async (request) => {
     const { id } = request.params as { id: string };
-    const window = memGetWindow(id, 10000);
-    return { conversationId: id, messages: window };
+    const messages = chatRepo.getMessages(id).map(messageToTimeline);
+    return { conversationId: id, messages };
+  });
+
+  server.post("/chat/conversations/:id/messages", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const body = parseBody(ChatConversationSendSchema, request.body);
+    const cloud = cloudStore.get();
+    const conversation = chatRepo.getConversation(id);
+    if (!conversation) return reply.status(404).send({ error: "Conversation not found" });
+    const messageId = body.client_message_id ?? `msg_${randomUUID()}`;
+    const isFileRequest = body.send_as === "file_request";
+    const a2aTaskId = isFileRequest ? `task_${randomUUID()}` : null;
+    chatRepo.appendMessage({
+      id: messageId,
+      conversationId: id,
+      taskId: a2aTaskId,
+      senderUserId: cloud?.userId ?? null,
+      senderAgentInstanceId: cloud?.agentInstanceId ?? localIdentity.agentId,
+      receiverAgentInstanceId: conversation.peer_agent_instance_id,
+      messageType: isFileRequest ? "file_request" : "human",
+      text: body.text,
+      payload: isFileRequest ? {
+        requester: cloud?.displayName ?? cloud?.userEmail ?? "You",
+        target: conversation.title,
+        natural_language_request: body.text,
+        query: body.text,
+        status: "submitted"
+      } : {},
+      deliveryStatus: "local_pending"
+    });
+
+    if (conversation.mode === "cloud_relay" && conversation.peer_agent_instance_id) {
+      const token = cloud?.deviceAccessToken;
+      if (!cloud || !token) {
+        chatRepo.markMessageStatus(messageId, "failed", "Device is not enrolled.");
+        chatRepo.queueOutbox(messageId, id, { text: body.text, send_as: body.send_as }, "Device is not enrolled.");
+        return reply.status(409).send({ error: "Device is not enrolled.", conversation_id: id, message_id: messageId });
+      }
+      try {
+        const relay = await new RelayClient(new ControlPlaneClient(cloud.controlPlaneUrl)).send({
+          to_agent_instance_id: conversation.peer_agent_instance_id,
+          a2a_task_id: a2aTaskId ?? randomUUID(),
+          type: isFileRequest ? "file.request" : "message.send",
+          payload: isFileRequest
+            ? { kind: "file_request", text: body.text, requestText: body.text }
+            : { kind: "message", text: body.text },
+          idempotency_key: body.idempotency_key ?? `ui-${messageId}`
+        }, token);
+        chatRepo.markMessageStatus(messageId, "sent");
+        if (isFileRequest) {
+          chatRepo.appendMessage({
+            conversationId: id,
+            taskId: a2aTaskId,
+            senderAgentInstanceId: cloud.agentInstanceId,
+            receiverAgentInstanceId: conversation.peer_agent_instance_id,
+            messageType: "agent_status",
+            text: "Waiting for remote approval",
+            payload: { relay_task_id: relay.relay_task_id, phase: "input_required" },
+            deliveryStatus: "sent"
+          });
+        }
+        return {
+          ok: true,
+          conversation_id: id,
+          message_id: messageId,
+          relay_task_id: relay.relay_task_id,
+          task_id: a2aTaskId ?? undefined,
+          type: isFileRequest ? "file_request" : "message",
+          delivery_status: "sent"
+        };
+      } catch (err) {
+        const error = err instanceof Error ? err.message : String(err);
+        chatRepo.markMessageStatus(messageId, "failed", error);
+        chatRepo.queueOutbox(messageId, id, { text: body.text, send_as: body.send_as }, error);
+        return reply.status(503).send({ error, conversation_id: id, message_id: messageId });
+      }
+    }
+
+    if (!isFileRequest) {
+      chatRepo.markMessageStatus(messageId, "delivered");
+      chatRepo.appendMessage({
+        conversationId: id,
+        senderAgentInstanceId: localIdentity.agentId,
+        messageType: "agent_status",
+        text: `I received your message: "${body.text}". This is a personal agent chat.`,
+        payload: { phase: "completed" },
+        deliveryStatus: "delivered"
+      });
+      return { ok: true, conversation_id: id, message_id: messageId, type: "message", delivery_status: "delivered" };
+    }
+
+    const local = await localFileRequestFlow(body.text, id, messageId);
+    return {
+      ok: true,
+      conversation_id: id,
+      message_id: messageId,
+      task_id: local.taskId,
+      type: "approval_required",
+      delivery_status: "delivered"
+    };
   });
 
   server.post("/files/index-roots", async (request) => {
@@ -985,9 +1462,21 @@ export function buildServer(
 
   server.post("/approvals/:id/approve", async (request, reply) => {
     const { id } = request.params as { id: string };
-    const approval = protocol.applyApprovalDecision(id, "approve");
-    if (!approval) return reply.status(404).send({ error: "Approval not found" });
-    return approval;
+    const body = (request.body ?? {}) as { idempotency_key?: string };
+    const decision = protocol.applyApprovalDecisionWithResult(id, "approve", { idempotencyKey: body.idempotency_key });
+    if (!decision.approval) return reply.status(404).send({ error: "Approval not found" });
+    if (decision.outcome === "denied") return reply.status(409).send({ error: decision.error, approval: decision.approval });
+    const cloudTransfer = await approvalTransfers.scheduleForApproval(decision.approval);
+    if (decision.outcome === "applied") {
+      appendApprovalDecisionTimeline(chatRepo, decision.approval.taskId, "approved", {
+        approvalId: decision.approval.id,
+        fileName: decision.approval.boundFilePath ? decision.approval.boundFilePath.split(/[\\/]/).pop() : "Selected file",
+        sha256: decision.approval.boundSha256,
+        sizeBytes: decision.approval.boundSizeBytes,
+        transferId: cloudTransfer.transferId ?? undefined
+      });
+    }
+    return { ...decision.approval, cloudTransfer };
   });
 
   server.post("/approvals/:id/rebind-file", async (request, reply) => {
@@ -1031,16 +1520,28 @@ export function buildServer(
 
   server.post("/approvals/:id/reject", async (request, reply) => {
     const { id } = request.params as { id: string };
-    const approval = protocol.applyApprovalDecision(id, "reject");
-    if (!approval) return reply.status(404).send({ error: "Approval not found" });
-    return approval;
+    const body = (request.body ?? {}) as { idempotency_key?: string };
+    const decision = protocol.applyApprovalDecisionWithResult(id, "reject", { idempotencyKey: body.idempotency_key });
+    if (!decision.approval) return reply.status(404).send({ error: "Approval not found" });
+    if (decision.outcome === "denied") return reply.status(409).send({ error: decision.error, approval: decision.approval });
+    if (decision.outcome === "applied") {
+      appendApprovalDecisionTimeline(chatRepo, decision.approval.taskId, "rejected", { approvalId: decision.approval.id });
+    }
+    return decision.approval;
   });
 
   server.post("/approvals/:id/feedback", async (request, reply) => {
     const { id } = request.params as { id: string };
     const body = (request.body ?? {}) as { feedback?: string; rejectedFileIds?: number[]; originalQuery?: string };
-    const approval = protocol.applyApprovalDecision(id, "feedback", body.feedback);
+    const decision = protocol.applyApprovalDecisionWithResult(id, "feedback", {
+      feedback: body.feedback,
+      idempotencyKey: `${id}|feedback|${body.feedback ?? ""}`
+    });
+    const approval = decision.approval;
     if (!approval) return reply.status(404).send({ error: "Approval not found" });
+    if (decision.outcome === "denied") return reply.status(409).send({ error: decision.error, approval });
+    if (decision.outcome === "replay") return { approval, newApproval: null, candidates: [] };
+    appendApprovalDecisionTimeline(chatRepo, approval.taskId, "feedback", { approvalId: approval.id, feedback: body.feedback });
 
     // Re-run search with feedback: refine the query and exclude the previously rejected file IDs.
     const originalQuery = body.originalQuery ?? (approval.taskId ? (wfGetTask(approval.taskId)?.metadataJson?.query as string | undefined) ?? "" : "");
@@ -1068,6 +1569,18 @@ export function buildServer(
       boundSizeBytes: top?.sizeBytes ?? null,
     });
     try { wfTransition(approval.taskId, "APPROVAL_REQUIRED", { approvalId: newApproval.id, candidateCount: newCandidates.length, refined: true }); } catch { /* ignore */ }
+    appendRefinedApprovalTimeline(chatRepo, approval.taskId, newApproval.id, body.feedback ?? "", newCandidates.map((candidate) => ({
+      candidate_id: String(candidate.id),
+      file_name: candidate.fileName,
+      display_path: candidate.displayPath,
+      extension: candidate.extension,
+      mime_type: "application/octet-stream",
+      size_bytes: candidate.sizeBytes,
+      modified_at: candidate.modifiedAt,
+      match_score: candidate.score,
+      match_reason: candidate.reason,
+      safety_labels: ["Approval required", "Local path hidden from recipient"]
+    })));
 
     return {
       ok: true,
@@ -1079,7 +1592,7 @@ export function buildServer(
   });
 
   server.post("/approvals/notification-callback", async (request) => {
-    const body = (request.body ?? {}) as { approvalId?: string; taskId?: string; action?: string; feedback?: string };
+    const body = (request.body ?? {}) as { approvalId?: string; taskId?: string; action?: string; feedback?: string; idempotencyKey?: string; idempotency_key?: string };
     const action = (body.action ?? "approve") as "approve" | "reject" | "feedback";
     if (action !== "approve" && action !== "reject" && action !== "feedback") {
       return { ok: false, status: "invalid", error: `Unknown action: ${body.action}` };
@@ -1089,23 +1602,30 @@ export function buildServer(
     if (current.taskId !== (body.taskId ?? "")) {
       return { ok: false, status: "task-mismatch" };
     }
-    const wasReplay = current.status !== "pending";
-    if (wasReplay) {
+    const decision = protocol.applyApprovalDecisionWithResult(body.approvalId ?? "", action, {
+      feedback: body.feedback,
+      idempotencyKey: body.idempotency_key ?? body.idempotencyKey ?? `${current.id}|${current.taskId}|${action}`
+    });
+    const cloudTransfer = action === "approve" && decision.approval
+      ? await approvalTransfers.scheduleForApproval(decision.approval)
+      : null;
+    if (decision.outcome === "denied") {
       return {
-        ok: true,
+        ok: false,
         approvalId: current.id,
         taskId: current.taskId,
-        status: current.status,
-        replay: true,
+        status: decision.approval?.status ?? current.status,
+        replay: false,
+        error: decision.error
       };
     }
-    const updated = protocol.applyApprovalDecision(body.approvalId ?? "", action, body.feedback);
     return {
       ok: true,
       approvalId: current.id,
       taskId: current.taskId,
-      status: updated?.status ?? "unknown",
-      replay: false,
+      status: decision.approval?.status ?? "unknown",
+      replay: decision.replay,
+      cloudTransfer,
     };
   });
 
@@ -1411,6 +1931,8 @@ export function buildServer(
     return reply.type("text/html; charset=utf-8").send(asset.content);
   });
 
+  server.get("/favicon.ico", async (_request, reply) => reply.status(204).send());
+
   server.get("/assets/*", async (request, reply) => {
     const params = request.params as { "*": string };
     const assetPath = params["*"];
@@ -1567,6 +2089,289 @@ function contentType(path: string): string {
 
 function parseBody<T>(schema: ZodSchema<T>, body: unknown): T {
   return schema.parse(body);
+}
+
+function isCloudConnectivityError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const maybeCodedError = error as Error & { code?: unknown };
+  const code = typeof maybeCodedError.code === "string" ? maybeCodedError.code : "";
+  return (
+    ["ECONNREFUSED", "ETIMEDOUT", "ENOTFOUND", "EAI_AGAIN"].includes(code) ||
+    /Cloud request .* timed out|fetch failed|connect ECONNREFUSED/i.test(error.message)
+  );
+}
+
+function getRequestedControlPlaneUrl(body: unknown): string {
+  if (body && typeof body === "object" && "control_plane_url" in body) {
+    const raw = (body as { control_plane_url?: unknown }).control_plane_url;
+    if (typeof raw === "string" && raw.trim()) {
+      return raw.trim();
+    }
+  }
+  return defaultControlPlaneUrl();
+}
+
+function localAgentUrl(): string {
+  const host = process.env.SANDBOX_HOST ?? "127.0.0.1";
+  const port = process.env.SANDBOX_PORT ?? "3399";
+  return `http://${host}:${port}`;
+}
+
+function defaultOrgSlug(): string {
+  return process.env.DEFAULT_ORG_SLUG?.trim() || DEFAULT_DEV_ORG_SLUG;
+}
+
+function publicCloudIdentity(identity: LocalCloudIdentity): Omit<LocalCloudIdentity, "userAccessToken" | "deviceAccessToken" | "refreshToken"> & {
+  hasUserAccessToken: boolean;
+  hasDeviceAccessToken: boolean;
+  hasRefreshToken: boolean;
+} {
+  const { userAccessToken, deviceAccessToken, refreshToken, ...safe } = identity;
+  return {
+    ...safe,
+    hasUserAccessToken: Boolean(userAccessToken),
+    hasDeviceAccessToken: Boolean(deviceAccessToken),
+    hasRefreshToken: Boolean(refreshToken)
+  };
+}
+
+function requireCloudIdentity(identity: LocalCloudIdentity | null, reply: FastifyReply): LocalCloudIdentity | null {
+  if (!identity) {
+    reply.status(401).send({ error: "CLOUD_NOT_CONFIGURED", message: "Cloud login is required" });
+    return null;
+  }
+  return identity;
+}
+
+function requireUserAccessToken(identity: LocalCloudIdentity, reply: FastifyReply): string | null {
+  if (!identity.userAccessToken) {
+    reply.status(401).send({ error: "CLOUD_USER_TOKEN_REQUIRED", message: "Cloud login is required" });
+    return null;
+  }
+  return identity.userAccessToken;
+}
+
+function requireDeviceAccessToken(identity: LocalCloudIdentity, reply: FastifyReply): string | null {
+  if (!identity.deviceAccessToken) {
+    reply.status(401).send({ error: "CLOUD_DEVICE_TOKEN_REQUIRED", message: "Cloud enrollment is required" });
+    return null;
+  }
+  return identity.deviceAccessToken;
+}
+
+function conversationToUi(conversation: ChatConversationRecord, messages: ChatMessageRecord[]) {
+  const last = messages.at(-1);
+  return {
+    id: conversation.id,
+    title: conversation.title,
+    subtitle: conversation.peer_agent_instance_id ? `Relay peer ${shortId(conversation.peer_agent_instance_id)}` : "Single-device local mode",
+    agentInstanceId: conversation.peer_agent_instance_id,
+    presence: conversation.peer_agent_instance_id ? "unknown" : "online",
+    unread: conversation.unread_count,
+    lastMessage: last ? summarizeChatMessage(last) : "No messages yet",
+    pendingApprovals: messages.filter((message) => message.message_type === "approval").length,
+    transferCount: messages.filter((message) => message.message_type === "transfer" || message.message_type === "receipt").length,
+    messages: messages.map(messageToTimeline)
+  };
+}
+
+function messageToTimeline(message: ChatMessageRecord): Record<string, unknown> {
+  const payload = message.payload_json;
+  if (message.message_type === "human") {
+    return {
+      kind: "human",
+      id: message.id,
+      conversation_id: message.conversation_id,
+      sender_user_id: message.sender_user_id,
+      sender_agent_instance_id: message.sender_agent_instance_id,
+      receiver_agent_instance_id: message.receiver_agent_instance_id,
+      text: message.text ?? "",
+      created_at: message.created_at,
+      delivery_status: message.delivery_status
+    };
+  }
+  if (message.message_type === "file_request") {
+    return {
+      kind: "file_request",
+      id: message.id,
+      task_id: message.task_id ?? String(payload.task_id ?? message.id),
+      requester: String(payload.requester ?? "You"),
+      target: String(payload.target ?? "Peer"),
+      natural_language_request: String(payload.natural_language_request ?? message.text ?? ""),
+      query: String(payload.query ?? message.text ?? ""),
+      status: String(payload.status ?? message.delivery_status),
+      created_at: message.created_at
+    };
+  }
+  if (message.message_type === "approval") {
+    return {
+      kind: "approval",
+      id: message.id,
+      created_at: message.created_at,
+      card: {
+        approval_id: String(payload.approval_id ?? payload.approvalId ?? message.id),
+        task_id: String(payload.task_id ?? payload.taskId ?? message.task_id ?? ""),
+        requester: String(payload.requester ?? "remote agent"),
+        request_text: String(payload.request_text ?? payload.requestText ?? message.text ?? "File request"),
+        candidates: Array.isArray(payload.candidates) ? payload.candidates : [],
+        selected_candidate_id: payload.selected_candidate_id ? String(payload.selected_candidate_id) : null,
+        status: String(payload.status ?? "pending"),
+        feedback_text: payload.feedback_text ? String(payload.feedback_text) : null,
+        expires_at: String(payload.expires_at ?? message.created_at),
+        privacy_labels: Array.isArray(payload.privacy_labels) ? payload.privacy_labels : ["Local path hidden from recipient", "Approval required"]
+      }
+    };
+  }
+  if (message.message_type === "transfer") {
+    return {
+      kind: "transfer",
+      id: message.id,
+      transfer_id: String(payload.transfer_id ?? message.id),
+      task_id: String(payload.task_id ?? message.task_id ?? ""),
+      file_name: String(payload.file_name ?? message.text ?? "File"),
+      size_bytes: Number(payload.size_bytes ?? 0),
+      sha256: String(payload.sha256 ?? ""),
+      progress_percent: Number(payload.progress_percent ?? 0),
+      status: String(payload.status ?? "preparing"),
+      created_at: message.created_at
+    };
+  }
+  if (message.message_type === "receipt") {
+    return {
+      kind: "receipt",
+      id: message.id,
+      transfer_id: String(payload.transfer_id ?? message.id),
+      task_id: String(payload.task_id ?? message.task_id ?? ""),
+      file_name: String(payload.file_name ?? message.text ?? "File"),
+      size_bytes: Number(payload.size_bytes ?? 0),
+      sha256: String(payload.sha256 ?? ""),
+      sender: String(payload.sender ?? "remote agent"),
+      stored_path_display: String(payload.stored_path_display ?? "Agentic App Storage"),
+      received_at: message.created_at,
+      hash_verified: Boolean(payload.hash_verified ?? false)
+    };
+  }
+  if (message.message_type === "agent_status") {
+    return {
+      kind: "agent_status",
+      id: message.id,
+      task_id: message.task_id ?? String(payload.task_id ?? message.id),
+      status_text: message.text ?? "",
+      phase: String(payload.phase ?? "working"),
+      created_at: message.created_at,
+      details: payload
+    };
+  }
+  return {
+    kind: "system_event",
+    id: message.id,
+    event_type: String(payload.event_type ?? payload.severity ?? "info"),
+    text: message.text ?? "",
+    severity: String(payload.severity ?? "info"),
+    created_at: message.created_at
+  };
+}
+
+function summarizeChatMessage(message: ChatMessageRecord): string {
+  if (message.text) return message.text;
+  if (message.message_type === "approval") return "Approval required";
+  if (message.message_type === "transfer") return "Transfer update";
+  if (message.message_type === "receipt") return "File received";
+  return message.message_type;
+}
+
+function appendApprovalDecisionTimeline(
+  chatRepo: ChatRepository,
+  taskId: string,
+  decision: "approved" | "rejected" | "feedback",
+  details: Record<string, unknown>
+): void {
+  const conversation = chatRepo.listConversations().find((item) =>
+    chatRepo.getMessages(item.id).some((message) => message.task_id === taskId)
+  );
+  if (!conversation) return;
+  if (decision === "approved") {
+    const fileName = String(details.fileName ?? "Selected file");
+    chatRepo.appendMessage({
+      conversationId: conversation.id,
+      taskId,
+      messageType: "agent_status",
+      text: `You approved ${fileName}`,
+      payload: { phase: "approved", approval_id: details.approvalId },
+      deliveryStatus: "delivered"
+    });
+    chatRepo.appendMessage({
+      conversationId: conversation.id,
+      taskId,
+      messageType: "transfer",
+      text: fileName,
+      payload: {
+        transfer_id: details.transferId ?? `pending_${taskId}`,
+        task_id: taskId,
+        file_name: fileName,
+        size_bytes: Number(details.sizeBytes ?? 0),
+        sha256: String(details.sha256 ?? ""),
+        progress_percent: 100,
+        status: "stored"
+      },
+      deliveryStatus: "delivered"
+    });
+    return;
+  }
+  if (decision === "rejected") {
+    chatRepo.appendMessage({
+      conversationId: conversation.id,
+      taskId,
+      messageType: "system_event",
+      text: "File request rejected",
+      payload: { severity: "warning", approval_id: details.approvalId },
+      deliveryStatus: "delivered"
+    });
+    return;
+  }
+  chatRepo.appendMessage({
+    conversationId: conversation.id,
+    taskId,
+    messageType: "agent_status",
+    text: "Feedback submitted. Search is being refined.",
+    payload: { phase: "feedback_requested", approval_id: details.approvalId, feedback: details.feedback },
+    deliveryStatus: "delivered"
+  });
+}
+
+function appendRefinedApprovalTimeline(
+  chatRepo: ChatRepository,
+  taskId: string,
+  approvalId: string,
+  feedback: string,
+  candidates: Array<Record<string, unknown>>
+): void {
+  const conversation = chatRepo.listConversations().find((item) =>
+    chatRepo.getMessages(item.id).some((message) => message.task_id === taskId)
+  );
+  if (!conversation) return;
+  chatRepo.appendMessage({
+    conversationId: conversation.id,
+    taskId,
+    messageType: "approval",
+    text: "Updated approval required",
+    payload: {
+      approval_id: approvalId,
+      task_id: taskId,
+      requester: "remote agent",
+      request_text: feedback ? `Refined search: ${feedback}` : "Refined file request",
+      status: "pending",
+      expires_at: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+      selected_candidate_id: candidates[0]?.candidate_id ? String(candidates[0].candidate_id) : null,
+      feedback_text: feedback,
+      candidates
+    },
+    deliveryStatus: "delivered"
+  });
+}
+
+function shortId(value: string): string {
+  return value.length <= 14 ? value : `${value.slice(0, 6)}...${value.slice(-4)}`;
 }
 
 function writeSse(raw: NodeJS.WritableStream, event: string, data: unknown): void {

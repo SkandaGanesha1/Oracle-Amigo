@@ -23,7 +23,7 @@ export class A2Av1PushNotificationStore {
     const id = config.id ?? randomUUID();
     const stored: A2Av1TaskPushNotificationConfig = {
       taskId,
-      pushNotificationConfig: { ...config, id }
+      taskPushNotificationConfig: { ...config, id }
     };
     const list = this.configs.get(taskId) ?? [];
     list.push(stored);
@@ -34,7 +34,7 @@ export class A2Av1PushNotificationStore {
   /** Get a single config by taskId + configId. */
   get(taskId: string, configId: string): A2Av1TaskPushNotificationConfig | null {
     const list = this.configs.get(taskId) ?? [];
-    return list.find((c) => c.pushNotificationConfig.id === configId) ?? null;
+    return list.find((c) => c.taskPushNotificationConfig.id === configId) ?? null;
   }
 
   /** List all configs for a task. */
@@ -45,7 +45,7 @@ export class A2Av1PushNotificationStore {
   /** Delete a config; returns true if removed. */
   delete(taskId: string, configId: string): boolean {
     const list = this.configs.get(taskId) ?? [];
-    const idx = list.findIndex((c) => c.pushNotificationConfig.id === configId);
+    const idx = list.findIndex((c) => c.taskPushNotificationConfig.id === configId);
     if (idx < 0) return false;
     list.splice(idx, 1);
     this.configs.set(taskId, list);
@@ -110,21 +110,21 @@ export async function deliverToTask(
   const configs = store.list(taskId);
   const results: PushNotificationDeliveryResult[] = [];
   for (const c of configs) {
-    const url = c.pushNotificationConfig.url;
-    const headers = buildPushNotificationHeaders(c.pushNotificationConfig, body);
+    const url = c.taskPushNotificationConfig.url;
+    const headers = buildPushNotificationHeaders(c.taskPushNotificationConfig, body);
     try {
       const res = await fetchImpl(url, { method: "POST", headers, body });
       results.push({
         ok: res.ok,
         statusCode: res.status,
-        configId: c.pushNotificationConfig.id ?? "",
+        configId: c.taskPushNotificationConfig.id ?? "",
         url
       });
     } catch (err) {
       results.push({
         ok: false,
         error: err instanceof Error ? err.message : String(err),
-        configId: c.pushNotificationConfig.id ?? "",
+        configId: c.taskPushNotificationConfig.id ?? "",
         url
       });
     }

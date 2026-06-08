@@ -11,8 +11,9 @@ import {
 } from "./types.js";
 
 /**
- * Stable canonical JSON (sorted keys, no whitespace).
- * Used for JWS signing of Agent Cards.
+ * RFC 8785-style canonical JSON subset used for Agent Card signing.
+ * It recursively sorts object keys, omits undefined object members through
+ * JSON serialization, and emits no insignificant whitespace.
  */
 export function canonicalizeCard(card: Record<string, unknown>): string {
   return JSON.stringify(sortKeysDeep(card));
@@ -134,16 +135,17 @@ export function buildV1AgentCard(input: V1CardBuildInput, ctx: V1CardBuildContex
  * Sign the canonicalized card with RS256 (RFC 7515 compact JWS).
  *
  * Per the A2A v1 spec, the protected header includes `alg`, `kid`, `typ`,
- * and the payload is the base64url(JSON of the unsigned card).
+ * and the payload is the base64url(canonical JSON of the unsigned card).
  */
 export function signCardWithRs256(
   unsigned: Omit<A2Av1AgentCard, "signatures">,
   privateKeyPem: string,
   kid: string
 ): A2Av1AgentCard {
-  const payload = Buffer.from(JSON.stringify(unsigned), "utf8").toString("base64url");
-  const header = { alg: "RS256", typ: "JWT", kid };
-  const protectedHeader = Buffer.from(JSON.stringify(header), "utf8").toString("base64url");
+  const unsignedCanonical = canonicalizeCard(unsigned as unknown as Record<string, unknown>);
+  const payload = Buffer.from(unsignedCanonical, "utf8").toString("base64url");
+  const header = { alg: "RS256", kid, typ: "JOSE" };
+  const protectedHeader = Buffer.from(canonicalizeCard(header), "utf8").toString("base64url");
   const signingInput = `${protectedHeader}.${payload}`;
   const signer = createSign("RSA-SHA256");
   signer.update(signingInput);
@@ -175,7 +177,7 @@ export function verifySignedCard(
   // Reconstruct the unsigned card (strip signatures) and re-canonicalize
   const unsigned: Omit<A2Av1AgentCard, "signatures"> = { ...card };
   delete (unsigned as Partial<A2Av1AgentCard>).signatures;
-  const payload = Buffer.from(JSON.stringify(unsigned), "utf8").toString("base64url");
+  const payload = Buffer.from(canonicalizeCard(unsigned as unknown as Record<string, unknown>), "utf8").toString("base64url");
   const signingInput = `${sig.protected}.${payload}`;
 
   const verifier = createVerify("RSA-SHA256");

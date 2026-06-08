@@ -1,5 +1,6 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
-import { toAuthContext, toDeviceAuthContext, verifyAccessToken, verifyDeviceToken } from "./TokenService.js";
+import { hashOpaqueToken, toAuthContext, toDeviceAuthContext, verifyAccessToken, verifyDeviceToken } from "./TokenService.js";
+import { getDb } from "../db/connection.js";
 import { resolveSession as resolveAdminSession, cookieName as adminCookieName, touchSession } from "../admin/AdminSessionService.js";
 import type { AuthContext, DeviceAuthContext } from "../types/cloud.js";
 import type { ResolvedSession } from "../admin/AdminSessionService.js";
@@ -59,6 +60,38 @@ export function requireDeviceAuth() {
     }
     try {
       const claims = verifyDeviceToken(token);
+      const db = getDb();
+      const tokenRow = db.prepare(`
+        SELECT * FROM device_tokens
+        WHERE org_id = ? AND user_id = ? AND device_id = ? AND token_hash = ?
+      `).get(claims.org, claims.user, claims.device, hashOpaqueToken(token)) as Record<string, unknown> | undefined;
+      if (!tokenRow || tokenRow.revoked_at) {
+        reply.code(401).send({ error: "DEVICE_TOKEN_REVOKED", message: "Device token is not active" });
+        return reply;
+      }
+      if (new Date(String(tokenRow.expires_at)).getTime() < Date.now()) {
+        reply.code(401).send({ error: "DEVICE_TOKEN_EXPIRED", message: "Device token has expired" });
+        return reply;
+      }
+      const row = db.prepare(`
+        SELECT d.status AS device_status, ai.status AS agent_instance_status, a.status AS agent_status, u.status AS user_status
+        FROM devices d
+        JOIN agent_instances ai ON ai.org_id = d.org_id AND ai.device_id = d.id
+        JOIN agents a ON a.org_id = ai.org_id AND a.id = ai.agent_id
+        JOIN users u ON u.org_id = d.org_id AND u.id = d.user_id
+        WHERE d.org_id = ? AND d.id = ? AND ai.id = ? AND ai.agent_id = ? AND d.user_id = ?
+      `).get(claims.org, claims.device, claims.sub, claims.agent, claims.user) as Record<string, unknown> | undefined;
+      if (!row) {
+        reply.code(401).send({ error: "DEVICE_NOT_FOUND", message: "Device or agent instance is not enrolled" });
+        return reply;
+      }
+      if (row.user_status !== "active" || row.device_status !== "active" || row.agent_status !== "active" || row.agent_instance_status !== "active") {
+        reply.code(403).send({
+          error: "DEVICE_DISABLED",
+          message: "Disabled or revoked devices cannot use device-authenticated routes"
+        });
+        return reply;
+      }
       req.deviceContext = toDeviceAuthContext(claims);
       // also populate authContext for backward compat
       req.authContext = {

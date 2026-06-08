@@ -11,16 +11,27 @@
     "dev": "tsx src/server.ts",
     "dev:agent": "tsx src/server.ts",
     "dev:ui": "vite --host 127.0.0.1",
+    "dev:control-plane": "npm --prefix apps/control-plane run dev",
+    "build:control-plane": "npm --prefix apps/control-plane run build",
+    "start:control-plane": "npm --prefix apps/control-plane run start",
+    "test:control-plane": "npm --prefix apps/control-plane test",
+    "dev:admin-portal": "npm --prefix apps/admin-portal run dev",
+    "build:admin-portal": "npm --prefix apps/admin-portal run build",
+    "test:admin-portal": "npm --prefix apps/admin-portal test",
     "dev:notification-bridge": "dotnet run --project apps/notification-bridge-windows",
     "demo": "tsx examples/demo-personal-agent.ts",
     "demo:dry": "node --import ./scripts/register-dry-run.mjs --import tsx examples/demo-personal-agent.ts",
     "demo:single-device": "tsx scripts/demo-single-device.ts",
     "demo:loopback-two-agents": "tsx scripts/demo-loopback.ts",
+    "test:e2e:relay": "tsx scripts/e2e-two-agent-relay-test.ts",
     "test": "vitest run --config vitest.config.ts",
     "test:e2e": "vitest run --config vitest.config.ts --reporter=verbose tests/LoopbackA2A.test.ts",
+    "test:e2e:frontend:vitest": "npm test -- tests/ChatFrontendWorkflow.test.ts",
+    "test:e2e:frontend:playwright": "playwright test --config playwright.config.mjs",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.ui.json --noEmit",
     "start": "node dist/server.js",
-    "build": "tsc && vite build"
+    "build": "tsc && vite build",
+    "build:all": "npm run build && npm run build:control-plane && npm run build:admin-portal"
   },
   "dependencies": {
     "@a2a-js/sdk": "^0.3.13",
@@ -40,6 +51,7 @@
     "zod": "^3.25.36"
   },
   "devDependencies": {
+    "@playwright/test": "^1.60.0",
     "@tailwindcss/vite": "^4.3.0",
     "@types/node": "^24.0.0",
     "@types/react": "^19.2.15",

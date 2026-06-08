@@ -34,6 +34,7 @@ describe("SQLite database foundation", () => {
     ).map((r) => r.name);
     for (const expected of [
       "local_profiles", "agent_cards", "peer_sessions", "conversations", "messages",
+      "conversation_participants", "chat_messages", "message_delivery_attempts", "outbox",
       "a2a_tasks", "workflow_events", "file_index", "approval_requests",
       "transfers", "received_files", "memories", "episodic_events", "audit_events",
     ]) {
