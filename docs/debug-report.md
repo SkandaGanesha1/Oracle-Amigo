@@ -554,5 +554,144 @@ Date: 2026-06-08
 
 ### Remaining Known Limitations
 
-- Relay E2E uses fixed local ports `3399` and `3400`; a stale or concurrent listener can cause `EADDRINUSE`. The rerun passed after no listener remained on `3399`.
+- Relay E2E originally used fixed local ports `3399` and `3400`; this was later fixed in the two-device readiness hardening update by allocating free loopback ports.
 - Playwright browser binaries are installed outside the repo under the user Playwright cache and are not committed.
+
+## Two-Device Readiness Hardening Update
+
+Date: 2026-06-08
+
+### Scope
+
+This pass implemented the requested verification-driven hardening plan without rewriting the relay-first stack. The concrete fixes address command determinism and port contention found during the evidence pass:
+
+- Root `npm test` originally failed because the loopback A2A harness used fixed ports `3399` and `3400`, and `3399` was already held by a running local agent.
+- Admin portal tests originally failed before test collection because Vitest/Vite/esbuild attempted an upward directory read while resolving `apps/admin-portal/vitest.config.ts` under the managed Windows workspace.
+- Relay E2E already reached the acceptance marker, but printed a late Alice `EADDRINUSE` on `127.0.0.1:3399`; the harness now allocates free loopback ports.
+
+### Changes Made
+
+- `src/loopback/LoopbackTestHarness.ts`: default loopback test ports now come from free `127.0.0.1` ports unless explicit `portA`/`portB` options are provided.
+- `apps/admin-portal/package.json`: admin portal `test` now runs a package-local Node wrapper.
+- `apps/admin-portal/scripts/run-vitest.mjs`: added the same deterministic Vitest runner pattern already used by the control-plane package, including `--configLoader runner`.
+- `apps/admin-portal/vitest.config.mjs`: replaced the TypeScript config used by the package script with a package-rooted ESM config.
+- `scripts/e2e-two-agent-relay-test.ts`: Alice and Bob now run on dynamically allocated free loopback ports.
+
+### Required Command Checklist
+
+- `npm.cmd install` - passed; npm reported packages up to date, 1 critical audit finding, and pending `allow-scripts` warnings for native/build packages.
+- `npm.cmd run typecheck` - passed.
+- `npm.cmd test` - passed after dynamic loopback ports: 38 test files passed, 1 skipped; 283 tests passed, 1 skipped.
+- `npm.cmd run build` - passed; Vite generated `public/index.html`, `public/assets/index-DWbbZpl7.css`, and `public/assets/index-Dk173ouv.js`.
+- `npm.cmd run test:control-plane` - passed: 4 files, 29 tests.
+- `npm.cmd run build:control-plane` - passed.
+- `npm.cmd run test:admin-portal` - failed before the admin runner fix with `Cannot read directory "../../../..": Access is denied`; passed after the wrapper fix: 1 file, 7 tests.
+- `npm.cmd run build:admin-portal` - passed.
+- `npm.cmd run test:e2e:relay` - passed and printed `PASS two-agent relay file request`.
+- `npm.cmd --prefix apps/control-plane run typecheck` - passed.
+- `npm.cmd --prefix apps/control-plane test` - passed: 4 files, 29 tests.
+- `npm.cmd --prefix apps/control-plane run build` - passed.
+- `npm.cmd --prefix apps/admin-portal run typecheck` - passed.
+- `npm.cmd --prefix apps/admin-portal test` - passed after the wrapper fix: 1 file, 7 tests.
+- `npm.cmd --prefix apps/admin-portal run build` - passed.
+
+### Relay Acceptance Evidence
+
+The relay-first harness now verifies the intended spine end to end:
+
+`signup -> enroll -> heartbeat -> admin presence -> directory -> relay file request -> remote approval -> relay upload/download -> SHA-256 receipt -> admin task/transfer/audit visibility`
+
+The final acceptance run printed:
+
+```text
+PASS two-agent relay file request
+```
+
+### Remaining Known Limitations
+
+- `npm install` still reports 1 critical audit finding; this pass did not run `npm audit fix --force` because that can introduce unrelated dependency churn.
+- Root tests still intentionally skip the legacy `tests/TwoLaptopE2E.test.ts`; relay-first readiness is covered by `npm run test:e2e:relay`.
+- Node's experimental SQLite warning appears in some test output under Node 24; it is informational and did not fail verification.
+
+## Two-Device Card Hardening Update
+
+Date: 2026-06-08
+
+### Scope
+
+Implemented the remaining visible P0 hardening items without changing the relay-first architecture:
+
+- A2A v1 subscribe route proof and compatibility documentation.
+- JCS-style Agent Card canonicalization for signing, verification, and fingerprinting.
+- Cloud-reachable control-plane Agent Cards that do not expose local agent URLs.
+- Directory relay metadata for two-device discovery.
+- Two-laptop docs cleanup for Node 24, dynamic relay E2E ports, and relay-first product behavior.
+
+### Changes Made
+
+- `src/protocol/a2a-v1/AgentCardV1.ts`: added strict canonical JSON behavior, top-level `signatures` exclusion, unsupported value rejection, and undefined cleanup in the card builder.
+- `apps/control-plane/src/enrollment/CloudAgentCard.ts`: added cloud-card rewrite/sanitize helpers plus relay inbox and Agent Card URL builders.
+- `apps/control-plane/src/enrollment/EnrollmentRoutes.ts`: `/v1/agents/:agent_instance_id/card` now returns the cloud-reachable card view and signs it when `AGENT_CARD_SIGNING_PRIVATE_KEY_PEM` is configured.
+- `apps/control-plane/src/directory/DirectoryService.ts`: directory agent rows now include `relay_inbox_url`, `agent_card_url`, and `agent_card_hash`, while preserving existing UI compatibility fields.
+- `src/cloud/DirectoryClient.ts` and `ui/src/types.ts`: updated types for the richer directory payload.
+- `tests/A2Av1.test.ts` and `apps/control-plane/tests/control-plane.test.ts`: added regression coverage for canonicalization, subscribe route behavior, cloud card rewriting, signing verification, cross-org scoping, revoked-device denial, and directory metadata.
+- `docs/two-laptop-deployment.md`, `docs/a2a-v1-compatibility.md`, `docs/api-contract.md`, and `docs/research-update.md`: updated to match the implemented relay-first contract.
+
+### Verification
+
+- `npm.cmd install` - passed; npm still reports 1 critical audit finding and allow-scripts warnings for `esbuild`/`ssh2` packages. No force fix was run.
+- `npm.cmd run typecheck` - passed.
+- `npm.cmd test -- tests/A2Av1.test.ts` - passed: 37 tests.
+- `npm.cmd --prefix apps/control-plane test -- tests/control-plane.test.ts` - passed via package test wrapper: 4 files, 35 tests.
+- `npm.cmd test` - passed: 38 files passed, 1 skipped; 287 tests passed, 1 skipped.
+- `npm.cmd run build` - passed.
+- `npm.cmd run test:control-plane` - passed: 4 files, 35 tests.
+- `npm.cmd run build:control-plane` - passed.
+- `npm.cmd run test:admin-portal` - passed: 1 file, 7 tests.
+- `npm.cmd run build:admin-portal` - passed.
+- `npm.cmd run test:e2e:relay` - passed and printed `PASS two-agent relay file request`.
+- `npm.cmd --prefix apps/control-plane run typecheck` - passed.
+- `npm.cmd --prefix apps/control-plane test` - passed: 4 files, 35 tests.
+- `npm.cmd --prefix apps/control-plane run build` - passed.
+- `npm.cmd --prefix apps/admin-portal run typecheck` - passed.
+- `npm.cmd --prefix apps/admin-portal test` - passed: 1 file, 7 tests.
+- `npm.cmd --prefix apps/admin-portal run build` - passed.
+
+### Remaining Known Limitations
+
+- Agent Cards are only re-signed by the control plane when `AGENT_CARD_SIGNING_PRIVATE_KEY_PEM` is configured. Without it, the rewritten cloud card is intentionally unsigned.
+- `npm install` still reports the existing critical audit finding; dependency force-upgrade was out of scope for this pass.
+- The legacy `tests/TwoLaptopE2E.test.ts` remains skipped; relay-first two-device readiness is covered by `npm run test:e2e:relay`.
+
+## ANP, sqlite-vec, Retrieval, and Approval Hardening Update
+
+Date: 2026-06-08
+
+### Scope
+
+Completed a narrow Phase 2-4 verification hardening pass:
+
+- ANP signed payloads remain snake_case-only; camelCase aliases are compatibility fields and are not signed material.
+- DID resolution now fails closed for malformed `did:key` values and malformed/unsupported `did:wba` shapes.
+- sqlite-vec partition-key migration preserves compatible embeddings and leaves no `_staging` tables behind.
+- Hybrid retrieval still paginates after MMR with `slice(offset, offset + limit)`.
+- Approval callback idempotency and approval-to-transfer behavior are DB-backed and still produce exactly one transfer on approve.
+
+### Changes Made
+
+- `src/security/DidResolver.ts`: tightened `did:wba` parsing to accept only the supported `ed25519` bootstrap forms and reject malformed segment counts, empty fingerprints, invalid ports, and unsupported algorithms before network resolution.
+- `tests/AnpHardening.test.ts`: added regression coverage for unsigned camelCase aliases, malformed `did:key` values, successful `did:wba` well-known resolution, and `did:wba` failure cases.
+- `tests/FileIndexerReindex.test.ts`: strengthened the staging cleanup assertion to reject any remaining table whose name ends in `_staging`, not only `file_embeddings_staging`.
+- `docs/anp-hardening.md`: clarified the supported DID-WBA bootstrap forms and the signed/unsigned compatibility-field boundary.
+
+### Verification
+
+- `npm.cmd test -- tests/AnpHardening.test.ts tests/FileIndexerReindex.test.ts tests/HybridRetrieval.test.ts tests/NotificationCallbackIdempotency.test.ts` - passed: 4 files, 55 tests.
+- `npm.cmd run typecheck` - passed.
+- `npm.cmd run test:e2e:relay` - passed and printed `PASS two-agent relay file request`.
+- `npm.cmd test` - passed: 38 files passed, 1 skipped; 292 tests passed, 1 skipped.
+
+### Remaining Known Limitations
+
+- This remains an ANP-style hardened handshake adapter, not full decentralized ANP network compliance.
+- DID-WBA support is intentionally limited to the local bootstrap resolver implemented in `src/security/DidResolver.ts`; full DID document processing and open-network ANP discovery remain out of scope.

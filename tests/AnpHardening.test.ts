@@ -121,6 +121,25 @@ describe("AnpCanonicalPayload", () => {
     expect(anpPayloadFingerprint(f1)).not.toBe(anpPayloadFingerprint(f2));
   });
 
+  it("ignores camelCase compatibility aliases when building the signed canonical payload", () => {
+    const fields = makeFields({
+      offer_id: "signed-offer",
+      from_did: "did:key:zsigned",
+      to_peer: "signed-peer",
+      created_at: "2026-01-01T00:00:00.000Z",
+      expires_at: "2026-01-01T00:01:00.000Z",
+    });
+    const withAliases = {
+      ...fields,
+      offerId: "unsigned-alias-offer",
+      fromDid: "did:key:zunsigned",
+      peer: "unsigned-alias-peer",
+      createdAt: "1999-01-01T00:00:00.000Z",
+      expiresAt: "1999-01-01T00:01:00.000Z",
+    } as AnpCanonicalFields & Record<string, string>;
+    expect(canonicalizeAnpPayload(withAliases)).toBe(canonicalizeAnpPayload(fields));
+  });
+
   it("sign/verify round-trip succeeds with correct key", () => {
     const { privateKey, publicKey } = makeIdentity();
     const fields = makeFields();
@@ -212,6 +231,56 @@ describe("DidResolver", () => {
     expect(await resolveDid("did:unknown:abc")).toBeNull();
   });
 
+  it("returns null for malformed did:key values", async () => {
+    const rawPub = "ef".repeat(32);
+    const wrongCodec = `did:key:z${base58btcEncode(Buffer.concat([Buffer.from([0xec, 0x01]), Buffer.from(rawPub, "hex")]))}`;
+    const shortKey = `did:key:z${base58btcEncode(Buffer.concat([Buffer.from([0xed, 0x01]), Buffer.from("ef".repeat(31), "hex")]))}`;
+    expect(await resolveDid("did:key:not-multibase")).toBeNull();
+    expect(await resolveDid("did:key:z0invalid")).toBeNull();
+    expect(await resolveDid(wrongCodec)).toBeNull();
+    expect(await resolveDid(shortKey)).toBeNull();
+  });
+
+  it("resolves did:wba through well-known metadata with a hex Ed25519 public key", async () => {
+    const rawPub = "aa".repeat(32);
+    const did = "did:wba:agent.example:ed25519:fingerprint";
+    const calls: string[] = [];
+    const fetchImpl = async (url: string | URL | Request) => {
+      calls.push(String(url));
+      return new Response(JSON.stringify({ did, publicKey: rawPub }), { status: 200 });
+    };
+    const res = await resolveDid(did, { fetchImpl });
+    expect(res).not.toBeNull();
+    expect(res!.method).toBe("wba");
+    expect(res!.controller).toBe("agent.example");
+    expect(res!.publicKeyHex).toBe(rawPub);
+    expect(calls).toEqual(["https://agent.example/.well-known/did.json"]);
+  });
+
+  it("returns null for did:wba resolution failure cases", async () => {
+    const did = "did:wba:agent.example:ed25519:fingerprint";
+    const rawPub = "aa".repeat(32);
+    const ok = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
+    expect(await resolveDid("did:wba::ed25519:fingerprint", {
+      fetchImpl: async () => ok({ did, publicKey: rawPub }),
+    })).toBeNull();
+    expect(await resolveDid("did:wba:agent.example:rsa:fingerprint", {
+      fetchImpl: async () => ok({ did, publicKey: rawPub }),
+    })).toBeNull();
+    expect(await resolveDid("did:wba:agent.example:70000:ed25519:fingerprint", {
+      fetchImpl: async () => ok({ did, publicKey: rawPub }),
+    })).toBeNull();
+    expect(await resolveDid(did, {
+      fetchImpl: async () => ok({ did, publicKey: rawPub }, 404),
+    })).toBeNull();
+    expect(await resolveDid(did, {
+      fetchImpl: async () => ok({ did: "did:wba:other.example:ed25519:fingerprint", publicKey: rawPub }),
+    })).toBeNull();
+    expect(await resolveDid(did, {
+      fetchImpl: async () => ok({ did, publicKey: "aa".repeat(31) }),
+    })).toBeNull();
+  });
+
   it("DidCache caches successful resolutions", async () => {
     const cache = new DidCache();
     const rawPub = "cd".repeat(32);
@@ -300,6 +369,20 @@ describe("Handshake end-to-end with hardening", () => {
     const offer = createHandshakeOffer(a.ident, "peer-b", ctx);
     const v = await verifyHandshakeOffer(offer, a.publicKey, ctx);
     expect(v.valid).toBe(true);
+  });
+
+  it("mutating compatibility aliases does not change signed offer verification", () => {
+    const a = makeIdentity();
+    const ctx = createHandshakeContext();
+    const offer = createHandshakeOffer(a.ident, "peer-b", ctx);
+    expect(verifyHandshakeOfferSync({
+      ...offer,
+      offerId: "unsigned-alias-offer",
+      peer: "unsigned-alias-peer",
+      createdAt: "1999-01-01T00:00:00.000Z",
+      expiresAt: "1999-01-01T00:01:00.000Z",
+      fromDid: "did:key:zunsigned-alias",
+    }, a.publicKey)).toBe(true);
   });
 
   it("rejects a replayed offer (same nonce submitted twice)", async () => {

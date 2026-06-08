@@ -4,6 +4,7 @@ const now = new Date("2026-06-08T00:00:00.000Z").toISOString();
 
 test.describe("Oracle Amigo chat frontend", () => {
   test("renders the auth screen with accessible login controls", async ({ page }) => {
+    await mockAuthRequired(page);
     await page.goto("/");
 
     await expect(page.getByRole("region", { name: "Agentic Chat" })).toBeVisible();
@@ -40,6 +41,37 @@ test.describe("Oracle Amigo chat frontend", () => {
   });
 });
 
+async function mockAuthRequired(page) {
+  const status = {
+    cloud: {
+      profileId: "playwright-auth",
+      controlPlaneUrl: "http://127.0.0.1:8080",
+      orgId: null,
+      userId: null,
+      userEmail: null,
+      displayName: null,
+      deviceId: null,
+      agentId: null,
+      agentInstanceId: null,
+      relayInboxUrl: null,
+      status: "disconnected",
+      hasUserAccessToken: false,
+      hasDeviceAccessToken: false,
+      hasRefreshToken: false,
+      updatedAt: now
+    },
+    heartbeat: { running: false, lastResult: null, lastError: null },
+    inbox: { running: false, lastItemCount: 0, lastError: null },
+    relayMode: "polling",
+    defaults: {
+      localAgentUrl: "http://127.0.0.1:5173",
+      controlPlaneUrl: "http://127.0.0.1:8080",
+      orgSlug: "local-dev"
+    }
+  };
+  await page.route("**/cloud/status", (route) => route.fulfill({ json: status }));
+}
+
 async function mockEnrolledAgent(page) {
   const status = {
     cloud: {
@@ -71,6 +103,21 @@ async function mockEnrolledAgent(page) {
   await page.route("**/approvals/pending", (route) => route.fulfill({ json: { approvals: [] } }));
   await page.route("**/storage/files", (route) => route.fulfill({ json: { files: [] } }));
   await page.route("**/audit/events", (route) => route.fulfill({ json: { events: [], chainValid: { valid: true } } }));
+  await page.route("**/chat/conversations/*/messages", (route) => {
+    if (route.request().method() === "POST") {
+      return route.fulfill({
+        json: {
+          ok: true,
+          conversation_id: "local-agent",
+          message_id: "playwright-message",
+          relay_task_id: "relay-file-1",
+          type: "file_request",
+          delivery_status: "sent"
+        }
+      });
+    }
+    return route.fulfill({ json: { conversationId: "local-agent", messages: [] } });
+  });
   await page.route("**/relay/send-message", (route) => route.fulfill({ json: { relay_task_id: "relay-msg-1", status: "sent" } }));
   await page.route("**/relay/send-file-request", (route) => route.fulfill({ json: { relay_task_id: "relay-file-1", status: "sent" } }));
 }

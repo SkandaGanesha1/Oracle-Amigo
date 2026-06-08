@@ -10,21 +10,62 @@ import {
   type A2Av1Skill
 } from "./types.js";
 
-/**
- * RFC 8785-style canonical JSON subset used for Agent Card signing.
- * It recursively sorts object keys, omits undefined object members through
- * JSON serialization, and emits no insignificant whitespace.
- */
 export function canonicalizeCard(card: Record<string, unknown>): string {
-  return JSON.stringify(sortKeysDeep(card));
+  return canonicalizeJson(stripTopLevelSignatures(card), "$");
 }
 
-function sortKeysDeep(v: unknown): unknown {
-  if (Array.isArray(v)) return v.map(sortKeysDeep);
+export function canonicalizeJson(value: unknown, path = "$"): string {
+  if (value === null) return "null";
+  if (typeof value === "string") return JSON.stringify(value);
+  if (typeof value === "boolean") return value ? "true" : "false";
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) {
+      throw new Error(`JCS canonical JSON does not support non-finite number at ${path}`);
+    }
+    return JSON.stringify(value);
+  }
+  if (typeof value === "undefined" || typeof value === "function" || typeof value === "symbol" || typeof value === "bigint") {
+    throw new Error(`JCS canonical JSON does not support ${typeof value} at ${path}`);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((item, index) => canonicalizeJson(item, `${path}[${index}]`)).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    const obj = value as Record<string, unknown>;
+    const members = Object.keys(obj)
+      .sort(compareCodePoints)
+      .map((key) => `${JSON.stringify(key)}:${canonicalizeJson(obj[key], `${path}.${key}`)}`);
+    return `{${members.join(",")}}`;
+  }
+  throw new Error(`JCS canonical JSON does not support value at ${path}`);
+}
+
+function stripTopLevelSignatures(card: Record<string, unknown>): Record<string, unknown> {
+  if (!("signatures" in card)) return card;
+  const { signatures: _signatures, ...unsigned } = card;
+  return unsigned;
+}
+
+function compareCodePoints(a: string, b: string): number {
+  const ac = Array.from(a);
+  const bc = Array.from(b);
+  const len = Math.min(ac.length, bc.length);
+  for (let i = 0; i < len; i++) {
+    const av = ac[i].codePointAt(0) ?? 0;
+    const bv = bc[i].codePointAt(0) ?? 0;
+    if (av !== bv) return av - bv;
+  }
+  return ac.length - bc.length;
+}
+
+function removeUndefinedObjectMembers(v: unknown): unknown {
+  if (Array.isArray(v)) return v.map(removeUndefinedObjectMembers);
   if (v && typeof v === "object") {
     const obj = v as Record<string, unknown>;
     const out: Record<string, unknown> = {};
-    for (const k of Object.keys(obj).sort()) out[k] = sortKeysDeep(obj[k]);
+    for (const k of Object.keys(obj)) {
+      if (typeof obj[k] !== "undefined") out[k] = removeUndefinedObjectMembers(obj[k]);
+    }
     return out;
   }
   return v;
@@ -125,10 +166,11 @@ export function buildV1AgentCard(input: V1CardBuildInput, ctx: V1CardBuildContex
     tenant: ctx.tenant
   };
 
+  const cleanUnsigned = removeUndefinedObjectMembers(unsigned) as Omit<A2Av1AgentCard, "signatures">;
   if (ctx.signingKey) {
-    return signCardWithRs256(unsigned, ctx.signingKey.privateKeyPem, ctx.signingKey.kid);
+    return signCardWithRs256(cleanUnsigned, ctx.signingKey.privateKeyPem, ctx.signingKey.kid);
   }
-  return { ...unsigned } as A2Av1AgentCard;
+  return { ...cleanUnsigned } as A2Av1AgentCard;
 }
 
 /**
@@ -194,7 +236,7 @@ export function cardFingerprint(
 ): string {
   const hasSignatures = "signatures" in card && (card as A2Av1AgentCard).signatures;
   const unsigned = hasSignatures
-    ? { ...(card as A2Av1AgentCard), signatures: undefined }
+    ? removeUndefinedObjectMembers({ ...(card as A2Av1AgentCard), signatures: undefined })
     : (card as Omit<A2Av1AgentCard, "signatures">);
   return createHash("sha256").update(canonicalizeCard(unsigned as unknown as Record<string, unknown>)).digest("hex");
 }

@@ -6,7 +6,7 @@ Oracle Amigo implements A2A v1.0.0 locally for HTTP+JSON agent cards, task messa
 
 - Agent Card v1 uses `protocolVersion: "1.0"` and publishes `supportedInterfaces`.
 - Runtime v1 Agent Card and Task payload tests assert that no `kind` discriminator is emitted.
-- `POST /v1/message:send`, `GET /v1/tasks/:id`, `GET /v1/tasks`, `POST /v1/tasks/:id:cancel`, and official-style `POST /v1/tasks/:id:subscribe` are covered.
+- `POST /v1/message:send`, `GET /v1/tasks/:id`, `GET /v1/tasks`, `POST /v1/tasks/:id:cancel`, and the official public `POST /v1/tasks/:id:subscribe` route are covered.
 - Push notification config responses emit `taskPushNotificationConfig`.
 - Legacy `pushNotificationConfig` input is accepted for backward compatibility, but v1 responses emit the official field.
 - Agent Card signing canonicalizes the card payload with signatures excluded and uses JOSE protected headers with `typ: "JOSE"`.
@@ -16,8 +16,8 @@ Oracle Amigo implements A2A v1.0.0 locally for HTTP+JSON agent cards, task messa
 
 ## Compatibility-Only Surfaces
 
-- The Fastify router rewrites colon verbs internally so public A2A URLs such as `/v1/tasks/:id:subscribe` can be supported reliably.
-- The compatibility subscribe URL `/v1/tasks/subscribe/:id` remains available for older local callers.
+- The Fastify router rewrites colon verbs internally so public A2A URLs such as `/v1/tasks/:id:subscribe` can be supported reliably without changing the public contract.
+- The rewritten `/v1/tasks/subscribe/:id` URL remains available only as a legacy/local compatibility route for older callers.
 - Legacy `pushNotificationConfig` request input remains accepted to avoid breaking existing clients.
 - A2A v0.3-era internal code remains in the repository for legacy local flows; it is not the external v1 contract.
 

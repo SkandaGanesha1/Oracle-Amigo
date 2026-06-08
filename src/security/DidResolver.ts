@@ -78,11 +78,14 @@ async function resolveDidWba(did: string, options: ResolverOptions): Promise<Did
   // did:wba:host:port:ed25519:<fingerprint> OR did:wba:host:ed25519:<fingerprint>
   const parts = did.split(":");
   // ["did", "wba", host, port?, "ed25519", fingerprint]
-  if (parts.length < 5 || parts[2].length === 0) return null;
+  if ((parts.length !== 5 && parts.length !== 6) || parts[2].length === 0) return null;
   const host = parts[2];
+  const algorithm = parts.length === 6 ? parts[4] : parts[3];
+  if (algorithm !== "ed25519") return null;
   const port = parts.length === 6 ? Number(parts[3]) : undefined;
   if (port !== undefined && (Number.isNaN(port) || port <= 0 || port > 65535)) return null;
   const fingerprint = parts[parts.length - 1];
+  if (fingerprint.length === 0) return null;
   const url = port
     ? `https://${host}:${port}/.well-known/did.json`
     : `https://${host}/.well-known/did.json`;

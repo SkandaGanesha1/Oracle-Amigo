@@ -216,6 +216,22 @@ describe("A2A v1.0.0 — AgentCardV1 builder and JWS", () => {
     expect(a).toBe(b);
   });
 
+  it("canonicalizeCard excludes top-level signatures from the payload", () => {
+    expect(canonicalizeCard({ b: 1, signatures: [{ signature: "ignored" }], a: 2 })).toBe('{"a":2,"b":1}');
+  });
+
+  it("canonicalizeCard rejects values that are not valid JCS JSON", () => {
+    expect(() => canonicalizeCard({ a: undefined })).toThrow(/undefined/);
+    expect(() => canonicalizeCard({ a: Number.NaN })).toThrow(/non-finite/);
+    expect(() => canonicalizeCard({ a: Number.POSITIVE_INFINITY })).toThrow(/non-finite/);
+    expect(() => canonicalizeCard({ a: () => "x" })).toThrow(/function/);
+  });
+
+  it("canonicalizeCard preserves array order and sorts unicode object keys by code point", () => {
+    const out = canonicalizeCard({ z: [2, 1], "\u{1f600}": true, a: { b: 2, a: 1 } });
+    expect(out).toBe('{"a":{"a":1,"b":2},"z":[2,1],"😀":true}');
+  });
+
   it("JWS RS256 sign + verify round-trip", () => {
     const { publicKey, privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
     const card = buildV1AgentCard(
@@ -477,6 +493,19 @@ describe("A2A v1.0.0 — HTTP+JSON routes (full integration)", () => {
     expect(res.headers.get("content-type")).toContain("text/event-stream");
     const text = await res.text();
     expect(text).toContain("statusUpdate");
+  });
+
+  it("POST /v1/tasks/subscribe/:id remains a compatibility route", async () => {
+    const created = (await (await fetch(`${baseUrl}/v1/message:send`, {
+      method: "POST",
+      headers: { "Content-Type": A2A_V1_MEDIA_TYPE },
+      body: JSON.stringify({
+        message: { messageId: newServerTaskId(), role: "ROLE_USER", parts: [{ text: "x" }] }
+      })
+    })).json()) as A2Av1Task;
+    const res = await fetch(`${baseUrl}/v1/tasks/subscribe/${created.id}`, { method: "POST" });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/event-stream");
   });
 
   it("POST /v1/tasks/:id/pushNotificationConfigs creates a config", async () => {

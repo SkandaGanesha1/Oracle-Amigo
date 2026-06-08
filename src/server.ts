@@ -1,5 +1,5 @@
 import "dotenv/config";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createReadStream, existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { extname, join, resolve, sep } from "node:path";
@@ -1647,6 +1647,32 @@ export function buildServer(
     if (!existsSync(stored.storedPath)) return reply.status(404).send({ error: "File not found on disk" });
     const stream = createReadStream(stored.storedPath);
     return reply.type("application/octet-stream").header("Content-Disposition", `inline; filename="${stored.originalFileName}"`).send(stream);
+  });
+
+  server.get("/storage/files/:id/verify", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const stored = getStoredFile(id);
+    if (!stored) return reply.status(404).send({ error: "File not found" });
+    if (!existsSync(stored.storedPath)) return reply.status(404).send({ error: "File not found on disk" });
+    const hash = createHash("sha256");
+    let sizeBytes = 0;
+    await new Promise<void>((resolve, reject) => {
+      const stream = createReadStream(stored.storedPath);
+      stream.on("data", (chunk: Buffer | string) => {
+        hash.update(chunk);
+        sizeBytes += Buffer.byteLength(chunk);
+      });
+      stream.on("end", resolve);
+      stream.on("error", reject);
+    });
+    const actualSha256 = hash.digest("hex");
+    return {
+      id,
+      sha256: actualSha256,
+      expected_sha256: stored.sha256,
+      hash_verified: actualSha256 === stored.sha256,
+      size_bytes: sizeBytes
+    };
   });
 
   server.get("/storage/files/:id/download", async (request, reply) => {

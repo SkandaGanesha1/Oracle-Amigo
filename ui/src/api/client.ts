@@ -40,6 +40,7 @@ export const api = {
   feedback: approvalsApi.feedback,
   rebindFile: approvalsApi.rebindFile,
   files: filesApi.receivedFiles,
+  verifyFile: filesApi.verifyFile,
   audit: auditApi.events,
   relayInboxStatus: relayApi.inboxStatus
 };

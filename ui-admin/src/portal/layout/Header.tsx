@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { RefreshCw, Server, Activity } from "lucide-react";
 import { useEffect, useState, type FC } from "react";
 import { fetchAdminInfo, type AdminInfo } from "../api/queries";
@@ -7,6 +7,7 @@ import { TimeAgo } from "../components/TimeAgo";
 
 export const Header: FC = () => {
   const [now, setNow] = useState<number>(() => Date.now());
+  const queryClient = useQueryClient();
 
   useEffect(() => {
     const t = window.setInterval(() => setNow(Date.now()), 1000);
@@ -20,8 +21,8 @@ export const Header: FC = () => {
   });
 
   const handleRefreshAll = () => {
-    info.refetch();
-    window.dispatchEvent(new CustomEvent("oracle-amigo.admin.refresh-all"));
+    void info.refetch();
+    void queryClient.invalidateQueries({ queryKey: ["admin"] });
   };
 
   return (

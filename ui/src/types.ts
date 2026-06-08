@@ -34,7 +34,9 @@ export interface DirectoryUser {
   email: string;
   display_name: string;
   status: string;
+  presence?: PresenceState;
   active_agent_instances: number;
+  agents?: AgentInstance[];
 }
 
 export interface AgentInstance {
@@ -42,8 +44,11 @@ export interface AgentInstance {
   agent_id: string;
   device_id: string;
   display_name: string;
+  device_name?: string;
   status: string;
   relay_inbox_url: string;
+  agent_card_url: string;
+  agent_card_hash: string;
   last_seen_at: string | null;
 }
 

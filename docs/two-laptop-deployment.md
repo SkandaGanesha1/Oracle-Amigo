@@ -25,8 +25,8 @@ PASS two-agent relay file request
 The script starts:
 
 - control plane on a temporary localhost port
-- Agent A on `127.0.0.1:3399` with profile `alice`
-- Agent B on `127.0.0.1:3400` with profile `bob`
+- Agent A on a free local loopback port with profile `alice`
+- Agent B on a different free local loopback port with profile `bob`
 
 It signs up both users, enrolls both devices, heartbeats, verifies admin presence, searches directory, sends a relay file request, creates Bob's approval, approves it, transfers through the control-plane transfer API, verifies SHA-256, and checks admin task/transfer/audit visibility.
 
@@ -108,4 +108,5 @@ The local agent callback endpoint is `/approvals/notification-callback`. Callbac
 - Heartbeat fails after revocation: expected. Admin device revoke revokes device tokens and associated agent instances.
 - Relay inbox remains empty: check `GET /cloud/status` and `GET /relay/inbox/status` on the receiver.
 - File requests create approvals; approval now triggers cloud transfer upload, receiver download, SHA-256 verification, local storage, receipt, and admin transfer completion through the local runtimes.
+- Product file-request traffic must use the control-plane relay. Direct local-agent URLs are only for local compatibility demos and low-level A2A development checks.
 - A2A payload examples must not include `kind` for v1 protocol objects.

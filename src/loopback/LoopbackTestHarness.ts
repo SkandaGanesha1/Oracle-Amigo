@@ -1,4 +1,5 @@
 import { mkdirSync, rmSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildServer } from "../server.js";
@@ -9,8 +10,7 @@ export async function startLoopbackAgents(options: { portA?: number; portB?: num
   mkdirSync(tmpA, { recursive: true });
   mkdirSync(tmpB, { recursive: true });
 
-  const portA = options.portA ?? 3399;
-  const portB = options.portB ?? 3400;
+  const [portA, portB] = await resolvePorts(options);
 
   const storageA = join(tmpA, "storage");
   const dbPathA = join(tmpA, "oracle-amigo.db");
@@ -51,4 +51,31 @@ export async function startLoopbackAgents(options: { portA?: number; portB?: num
       try { rmSync(tmpB, { recursive: true }); } catch { /* ignore */ }
     },
   };
+}
+
+async function resolvePorts(options: { portA?: number; portB?: number }): Promise<[number, number]> {
+  if (options.portA && options.portB) return [options.portA, options.portB];
+  if (options.portA) return [options.portA, await getFreePort([options.portA])];
+  if (options.portB) return [await getFreePort([options.portB]), options.portB];
+  const portA = await getFreePort();
+  const portB = await getFreePort([portA]);
+  return [portA, portB];
+}
+
+async function getFreePort(exclude: number[] = []): Promise<number> {
+  for (;;) {
+    const port = await new Promise<number>((resolve, reject) => {
+      const server = createServer();
+      server.unref();
+      server.on("error", reject);
+      server.listen(0, "127.0.0.1", () => {
+        const address = server.address();
+        server.close(() => {
+          if (typeof address === "object" && address) resolve(address.port);
+          else reject(new Error("Unable to allocate a loopback port"));
+        });
+      });
+    });
+    if (!exclude.includes(port)) return port;
+  }
 }

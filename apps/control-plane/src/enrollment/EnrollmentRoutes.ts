@@ -4,6 +4,8 @@ import { requireUserAuth, requireDeviceAuth } from "./../auth/AuthMiddleware.js"
 import { enroll } from "./EnrollmentService.js";
 import { getDb } from "./../db/connection.js";
 import type { Device, AgentInstance, Agent } from "./../types/cloud.js";
+import { loadConfig } from "../config.js";
+import { toCloudAgentCard } from "./CloudAgentCard.js";
 
 const EnrollSchema = z.object({
   device: z.object({
@@ -119,7 +121,15 @@ export async function registerEnrollmentRoutes(app: FastifyInstance, publicBaseU
     }
     try {
       const card = JSON.parse(String(row.agent_card_json));
-      reply.send(card);
+      const cfg = loadConfig();
+      const signingKey = cfg.AGENT_CARD_SIGNING_PRIVATE_KEY_PEM
+        ? { privateKeyPem: cfg.AGENT_CARD_SIGNING_PRIVATE_KEY_PEM, kid: cfg.AGENT_CARD_SIGNING_KEY_ID }
+        : undefined;
+      reply.send(toCloudAgentCard(card, {
+        publicBaseUrl,
+        agentInstanceId: agent_instance_id,
+        signingKey
+      }));
     } catch {
       reply.code(500).send({ error: "INVALID_CARD", message: "Stored agent card is not valid JSON" });
     }

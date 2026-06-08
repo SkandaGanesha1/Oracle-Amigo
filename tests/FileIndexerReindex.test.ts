@@ -113,7 +113,9 @@ describe("FileIndexer.reindexAll", () => {
     expect(migrated!.tenant_id).toBe("default");
     expect(migrated!.agent_id).toBe("default");
     expect(migrated!.source_type).toBe("file");
-    const staging = db.prepare("SELECT name FROM sqlite_master WHERE name = 'file_embeddings_staging'").get();
-    expect(staging).toBeUndefined();
+    const staging = db
+      .prepare("SELECT name FROM sqlite_master WHERE name LIKE ? ESCAPE '\\' ORDER BY name")
+      .all("%\\_staging") as Array<{ name: string }>;
+    expect(staging).toEqual([]);
   });
 });

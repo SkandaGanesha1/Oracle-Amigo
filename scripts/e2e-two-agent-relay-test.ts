@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn, type ChildProcess } from "node:child_process";
+import { createServer } from "node:net";
 import { buildApp } from "../apps/control-plane/src/main.js";
 import { resetConfigForTest } from "../apps/control-plane/src/config.js";
 import { closeAll } from "../apps/control-plane/src/db/connection.js";
@@ -52,8 +53,9 @@ async function main(): Promise<void> {
   const agents: AgentProc[] = [];
   try {
     await controlPlane.listen({ host: "127.0.0.1", port: cpPort });
-    const alice = await startAgent("alice", 3399);
-    const bob = await startAgent("bob", 3400);
+    const [alicePort, bobPort] = await allocateAgentPorts();
+    const alice = await startAgent("alice", alicePort);
+    const bob = await startAgent("bob", bobPort);
     agents.push(alice, bob);
 
     const aliceSignup = await agentJson(alice, "/cloud/signup", {
@@ -188,6 +190,30 @@ async function startAgent(name: "alice" | "bob", port: number): Promise<AgentPro
 
 function stopAgent(agent: AgentProc): void {
   if (!agent.child.killed) agent.child.kill();
+}
+
+async function allocateAgentPorts(): Promise<[number, number]> {
+  const first = await getFreePort();
+  let second = await getFreePort();
+  while (second === first) second = await getFreePort();
+  return [first, second];
+}
+
+async function getFreePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = createServer();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      server.close(() => {
+        if (address && typeof address === "object") {
+          resolve(address.port);
+        } else {
+          reject(new Error("Failed to allocate a free loopback port"));
+        }
+      });
+    });
+  });
 }
 
 async function agentGet(agent: AgentProc, path: string): Promise<any> {

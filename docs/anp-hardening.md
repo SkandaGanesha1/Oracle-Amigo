@@ -11,6 +11,7 @@ This document describes the ANP-style identity and handshake hardening currently
 - Replay protection through stored `(peer, offer_id, nonce)` tuples.
 - DID/public-key verification for supported DID resolver paths.
 - Peer session persistence with `peer_agent_id`, `peer_agent_instance_id`, `peer_did`, `peer_public_key`, `trust_level`, `session_id`/row id, `created_at`, and `expires_at`.
+- DID-WBA bootstrap resolution for `did:wba:<host>:ed25519:<fingerprint>` and `did:wba:<host>:<port>:ed25519:<fingerprint>` through `/.well-known/did.json`.
 
 ## Not Yet Implemented
 
@@ -59,3 +60,5 @@ Every signed field is security-sensitive. Tests mutate `offer_id`, `from_agent_i
 ## Compatibility Notes
 
 The HTTP handshake endpoints still expose camelCase aliases such as `offerId`, `createdAt`, and `fromDid` for older local callers. Those aliases are not the signed material. The signed payload uses the snake_case fields listed above.
+
+Regression tests assert that mutating camelCase aliases does not affect signature verification when the signed snake_case fields are unchanged, while mutating any snake_case signed field fails verification.

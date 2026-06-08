@@ -5,7 +5,9 @@ export interface CloudUserSummary {
   email: string;
   display_name: string;
   status: string;
+  presence?: string;
   active_agent_instances: number;
+  agents?: CloudAgentInstance[];
 }
 
 export interface CloudAgentInstance {
@@ -13,8 +15,11 @@ export interface CloudAgentInstance {
   agent_id: string;
   device_id: string;
   display_name: string;
+  device_name?: string;
   status: string;
   relay_inbox_url: string;
+  agent_card_url: string;
+  agent_card_hash: string;
   last_seen_at: string | null;
 }
 

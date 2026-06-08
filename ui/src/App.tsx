@@ -10,7 +10,6 @@ import {
   Command,
   FileCheck,
   FileText,
-  FolderOpen,
   Hash,
   Inbox,
   KeyRound,
@@ -298,6 +297,29 @@ export function App() {
               });
             }
           }}
+          onRetryMessage={async (message) => {
+            dispatch({ type: "clearQueued", id: message.id });
+            await queryClient.invalidateQueries({ queryKey: ["chat", "conversations", selectedConversation.id, "messages"] });
+            const retry = humanMessage(selectedConversation.id, message.text, status, selectedConversation.agentInstanceId);
+            dispatch({ type: "appendMessage", conversationId: selectedConversation.id, message: retry });
+            try {
+              const result = await api.sendChatMessage(selectedConversation.id, {
+                text: message.text,
+                send_as: isFileRequest(message.text) ? "file_request" : "normal",
+                idempotency_key: `ui-retry-${retry.id}`,
+                client_message_id: retry.id
+              });
+              dispatch({ type: "updateMessage", conversationId: selectedConversation.id, messageId: retry.id, patch: { delivery_status: result.delivery_status } as Partial<TimelineMessage> });
+            } catch (err) {
+              dispatch({ type: "updateMessage", conversationId: selectedConversation.id, messageId: retry.id, patch: { delivery_status: "failed" } as Partial<TimelineMessage> });
+              dispatch({ type: "queue", message: retry });
+              dispatch({
+                type: "appendMessage",
+                conversationId: selectedConversation.id,
+                message: systemMessage("Retry failed. Message is still waiting for connection.", "warning", err instanceof Error ? err.message : undefined)
+              });
+            }
+          }}
         />
         <RightPanel
           className={mobilePane === "details" ? "mobile-visible" : ""}
@@ -582,6 +604,7 @@ function ChatWindow(props: {
   onBack: () => void;
   onOpenDetails: () => void;
   onSend: (text: string) => Promise<void>;
+  onRetryMessage: (message: Extract<TimelineMessage, { kind: "human" }>) => Promise<void>;
 }) {
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
@@ -635,7 +658,7 @@ function ChatWindow(props: {
                 className="virtual-message"
                 style={{ transform: `translateY(${item.start}px)` }}
               >
-                <MessageBubble message={message} />
+                <MessageBubble message={message} onRetry={props.onRetryMessage} />
               </div>
             );
           })}
@@ -643,7 +666,7 @@ function ChatWindow(props: {
       </div>
       <footer className="composer" aria-label="Message composer">
         <div className="composer-tools">
-          <button type="button" className="icon-button" title="Attach file"><Paperclip /></button>
+          <button type="button" className="icon-button" title="Direct attachment is not enabled. Use a file request so the owner can approve transfer." disabled aria-disabled="true"><Paperclip /></button>
           <div className="suggestions" aria-label="Command suggestions">
             {["/request-file", "/send-file", "/agent-card", "/status"].map((item) => <button type="button" key={item} onClick={() => setDraft(item + " ")}>{item}</button>)}
           </div>
@@ -676,13 +699,13 @@ function ChatWindow(props: {
   );
 }
 
-function MessageBubble({ message }: { message: TimelineMessage }) {
+function MessageBubble({ message, onRetry }: { message: TimelineMessage; onRetry: (message: Extract<TimelineMessage, { kind: "human" }>) => Promise<void> }) {
   if (message.kind === "human") {
     return (
       <article className={`bubble human ${message.delivery_status === "failed" ? "failed" : ""}`}>
         <p>{message.text}</p>
         <span>{formatTime(message.created_at)} - {message.delivery_status.replace("_", " ")}</span>
-        {message.delivery_status === "failed" && <button type="button" className="retry-button">Retry</button>}
+        {message.delivery_status === "failed" && <button type="button" className="retry-button" onClick={() => void onRetry(message)}>Retry</button>}
       </article>
     );
   }
@@ -871,7 +894,29 @@ function ApprovalCenter(props: {
 
 function ReceivedFilesView({ files }: { files: StoredFile[] }) {
   const [query, setQuery] = useState("");
+  const [verification, setVerification] = useState<Record<string, { status: "checking" | "verified" | "failed"; text: string }>>({});
   const filtered = files.filter((file) => file.originalFileName.toLowerCase().includes(query.toLowerCase()));
+  async function verifyFile(file: StoredFile) {
+    setVerification((current) => ({ ...current, [file.id]: { status: "checking", text: "Checking hash..." } }));
+    try {
+      const result = await api.verifyFile(file.id);
+      setVerification((current) => ({
+        ...current,
+        [file.id]: {
+          status: result.hash_verified ? "verified" : "failed",
+          text: result.hash_verified ? "Hash verified" : "Hash mismatch"
+        }
+      }));
+    } catch (err) {
+      setVerification((current) => ({
+        ...current,
+        [file.id]: {
+          status: "failed",
+          text: err instanceof Error ? err.message : "Hash verification failed"
+        }
+      }));
+    }
+  }
   return (
     <section className="panel-section">
       <div className="search-box"><Search /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search received files" /></div>
@@ -884,10 +929,14 @@ function ReceivedFilesView({ files }: { files: StoredFile[] }) {
             <span>{formatBytes(file.sizeBytes)} - {formatTime(file.receivedAt)}</span>
             <code>{file.sha256.slice(0, 18)}...</code>
             <div className="file-actions">
-              <a href={`/storage/files/${file.id}/download`} download>Open</a>
-              <button type="button">Verify hash</button>
-              <button type="button"><FolderOpen /> Show</button>
+              <a href={`/storage/files/${file.id}/open`} target="_blank" rel="noreferrer">Open</a>
+              <a href={`/storage/files/${file.id}/download`} download>Download</a>
+              <button type="button" onClick={() => void verifyFile(file)} disabled={verification[file.id]?.status === "checking"}>
+                {verification[file.id]?.status === "checking" ? <Loader2 className="spin" /> : <Hash />}
+                Verify hash
+              </button>
             </div>
+            {verification[file.id] && <small className={`verification ${verification[file.id].status}`}>{verification[file.id].text}</small>}
           </div>
         </article>
       ))}
@@ -925,10 +974,10 @@ function SettingsPanel({ status }: { status: CloudStatus }) {
       <StatusTile label="Relay poll" value={status.inbox.lastError ? `error: ${status.inbox.lastError}` : `${status.inbox.lastItemCount} recent`} icon={<Inbox />} />
       <StatusTile label="Notification bridge" value="local callback ready" icon={<Bell />} />
       <StatusTile label="Storage location" value="Agentic App Storage" icon={<Archive />} />
-      <div className="toggle-list">
-        <label><input type="checkbox" defaultChecked /> Require approval before file transfer</label>
-        <label><input type="checkbox" defaultChecked /> Hide local paths from recipients</label>
-        <label><input type="checkbox" /> Enable experimental E2E encryption</label>
+      <div className="toggle-list" aria-label="Configured safety policy">
+        <span>Approval before file transfer: enabled by workflow policy</span>
+        <span>Local paths hidden from recipients: enforced by server payloads</span>
+        <span>Experimental E2E encryption: not enabled; using relay-encrypted transfer</span>
       </div>
     </section>
   );

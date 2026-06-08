@@ -943,6 +943,21 @@ code {
   cursor: pointer;
 }
 
+.verification {
+  display: inline-flex;
+  margin-top: 6px;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.verification.verified {
+  color: var(--success);
+}
+
+.verification.failed {
+  color: var(--danger);
+}
+
 .audit-list {
   display: grid;
   gap: 12px;
@@ -979,7 +994,8 @@ code {
   margin-top: 8px;
 }
 
-.toggle-list label {
+.toggle-list label,
+.toggle-list span {
   display: flex;
   gap: 8px;
   color: var(--muted);

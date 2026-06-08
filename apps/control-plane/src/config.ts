@@ -35,7 +35,10 @@ const ConfigSchema = z.object({
   // Useful for first-run setup when no admin account exists yet. Never set in production.
   ADMIN_BOOTSTRAP_TOKEN: z.string().optional(),
   // Production first-admin setup requires an explicit short-lived operator decision.
-  ADMIN_SETUP_ENABLED: z.enum(["true", "false"]).default("false")
+  ADMIN_SETUP_ENABLED: z.enum(["true", "false"]).default("false"),
+  // Optional RS256 key used to re-sign control-plane rewritten cloud Agent Cards.
+  AGENT_CARD_SIGNING_PRIVATE_KEY_PEM: z.string().optional(),
+  AGENT_CARD_SIGNING_KEY_ID: z.string().default("control-plane-agent-card")
 });
 
 export type Config = z.infer<typeof ConfigSchema>;

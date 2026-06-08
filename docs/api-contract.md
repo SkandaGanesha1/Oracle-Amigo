@@ -21,14 +21,14 @@ All control-plane product APIs use the `/v1` prefix. Local-agent `/cloud/*` and 
 | `POST` | `/v1/enrollment/complete` | user bearer token | Enroll or update device, agent, and agent instance; issue DB-backed device token. |
 | `GET` | `/v1/devices/me` | user bearer token | List current user's devices. |
 | `GET` | `/v1/agents/me` | user bearer token | List current user's agents and instances. |
-| `GET` | `/v1/agents/:agent_instance_id/card` | device bearer token | Return an agent card for an org-local agent instance. |
+| `GET` | `/v1/agents/:agent_instance_id/card` | device bearer token | Return a cloud-reachable, org-scoped Agent Card for an active agent instance. |
 
 ## Directory And Contacts
 
 | Method | Route | Auth | Purpose |
 |---|---|---|---|
-| `GET` | `/v1/directory/users?q=` | user bearer token | Search users within the authenticated organization only. |
-| `GET` | `/v1/directory/users/:user_id/agents` | user bearer token | List active agents for a user in the authenticated organization. |
+| `GET` | `/v1/directory/users?q=` | user bearer token | Search users within the authenticated organization only; agent rows include relay inbox URL, Agent Card URL, and card hash. |
+| `GET` | `/v1/directory/users/:user_id/agents` | user bearer token | List active agents for a user in the authenticated organization with relay/card metadata. |
 | `POST` | `/v1/contacts/request` | user bearer token | Request a contact relationship. |
 | `POST` | `/v1/contacts/:contact_id/accept` | user bearer token | Accept a pending contact request where the caller is the target user. |
 | `GET` | `/v1/contacts` | user bearer token | List caller's contacts. |
@@ -80,6 +80,7 @@ Admin authentication routes remain under `/v1/admin/auth/*` and are documented i
 
 - Device-authenticated routes must validate the bearer token signature, the token hash row, expiry, revocation state, and active user/device/agent/agent-instance status.
 - Cross-org directory, relay, transfer, and agent-card access is denied by always scoping reads and writes to the authenticated org.
+- Control-plane served Agent Cards must not expose local-only URLs or filesystem paths; public card URLs are derived from `CONTROL_PLANE_PUBLIC_URL`.
 - Transfer APIs must never accept or return local filesystem paths. File names, sizes, hashes, transfer IDs, and storage handles are allowed.
 - A local agent must not upload a file before explicit user approval binds the approval ID, task ID, selected file, local path, file name, size, SHA-256, sender, receiver, and timestamp.
 - A2A extended agent cards require auth; public agent-card data must not expose internal diagnostic capabilities.

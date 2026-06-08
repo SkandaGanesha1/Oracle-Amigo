@@ -4,12 +4,14 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { buildServer } from "../src/server.js";
 import { _resetDb, getDb } from "../src/db/connection.js";
+import { storeReceivedRelayFile } from "../src/storage/AgenticStorage.js";
 
 let tmpRoot: string;
 
 beforeEach(() => {
   tmpRoot = mkdtempSync(join(tmpdir(), "chat-persistence-"));
   process.env.AGENTIC_DB_PATH = join(tmpRoot, "agent.db");
+  process.env.AGENTIC_STORAGE_ROOT = join(tmpRoot, "storage");
   process.env.AGENTIC_DISABLE_RUNTIME_AUTOSTART = "true";
   _resetDb();
 });
@@ -17,6 +19,7 @@ beforeEach(() => {
 afterEach(() => {
   _resetDb();
   delete process.env.AGENTIC_DB_PATH;
+  delete process.env.AGENTIC_STORAGE_ROOT;
   delete process.env.AGENTIC_DISABLE_RUNTIME_AUTOSTART;
   try { rmSync(tmpRoot, { recursive: true, force: true }); } catch { /* ignore */ }
 });
@@ -77,6 +80,32 @@ describe("persisted chat API", () => {
     expect(body).toContain("Local path hidden from recipient");
     expect(body).not.toContain("bound_file_path");
     expect(body).not.toContain("boundFilePath");
+    await server.close();
+  });
+
+  it("verifies a stored received file hash without exposing local paths", async () => {
+    const server = buildServer();
+    const data = Buffer.from("verified file bytes");
+    const { createHash } = await import("node:crypto");
+    const sha256 = createHash("sha256").update(data).digest("hex");
+    const stored = storeReceivedRelayFile({
+      transferId: "transfer-verify",
+      senderAgentId: "agent-sender",
+      fileName: "verified.txt",
+      data,
+      sha256
+    });
+
+    const res = await server.inject({ method: "GET", url: `/storage/files/${stored.id}/verify` });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({
+      id: stored.id,
+      sha256,
+      expected_sha256: sha256,
+      hash_verified: true,
+      size_bytes: data.length
+    });
+    expect(JSON.stringify(res.json())).not.toContain(stored.storedPath);
     await server.close();
   });
 });

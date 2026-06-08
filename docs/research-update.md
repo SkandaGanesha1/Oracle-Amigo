@@ -93,3 +93,34 @@ Implementation assumptions applied:
 - Production admin setup must be explicitly enabled with `ADMIN_SETUP_ENABLED=true`; otherwise setup is guarded even when no admin exists.
 - Frontend workflow tests use the repo's current stable test tool, Vitest, to verify source/build contracts. Browser-level Playwright coverage remains recommended but not stable in this local environment.
 - The relay-first E2E harness validates relay-first behavior with automatic local-runtime approval-to-cloud-transfer handoff: Bob approval uploads through the cloud relay, Alice downloads, verifies SHA-256, stores the file locally, and records receipt.
+
+## Two-Device Readiness Verification Update
+
+Date: 2026-06-08
+
+Official references rechecked for this hardening pass:
+
+- A2A latest specification: https://a2a-protocol.org/latest/specification/
+- A2A repository specification: https://github.com/a2aproject/A2A/blob/main/docs/specification.md
+- Windows App Notifications for .NET apps: https://learn.microsoft.com/en-us/windows/apps/develop/notifications/app-notifications/app-notifications-dotnet
+- sqlite-vec vec0 virtual table docs: https://alexgarcia.xyz/sqlite-vec/features/vec0.html
+
+Repository reality after verification:
+
+- A2A v1 alignment remains test-backed for the locally implemented surfaces: colon-verb task subscribe, `taskPushNotificationConfig` response shape, protected extended cards, signed agent cards, relay-reachable card advertising, and no v1 runtime `kind` part discriminators in generated payloads.
+- The repo should still describe ANP as an "ANP-style hardened handshake adapter" unless/until full decentralized ANP discovery and production network messaging are implemented. The present codebase has DID/handshake hardening tests, not a complete ANP network stack.
+- sqlite-vec assumptions remain unchanged: migrations must preserve compatible vec0 rows or force reindexing, and hybrid retrieval pagination must apply after final ranking/MMR with `slice(offset, offset + limit)`.
+- Windows notification approval behavior must continue to assume duplicate callbacks and repeated user actions. The implementation is expected to rely on DB-backed idempotency and terminal approval states, not UI-only callback suppression.
+- Relay-first two-device readiness is now verified by the dedicated E2E command, which exercises signup, enrollment, heartbeat, directory, relay task delivery, approval promotion, relay transfer, SHA-256 receipt, and admin task/transfer/audit visibility.
+- Local/offline compatibility is preserved: loopback tests now use dynamic ports by default, but explicit ports are still accepted for compatibility scripts and manual demos.
+
+## Two-Device Card Hardening Update
+
+Date: 2026-06-08
+
+Implementation assumptions applied:
+
+- The public A2A subscribe contract remains `POST /v1/tasks/{id}:subscribe`. The internal Fastify rewrite path is retained only as a compatibility route.
+- Agent Card signing now uses a stricter JCS-style canonical JSON helper that excludes top-level `signatures`, rejects unsupported JSON values, recursively sorts object keys, and preserves array order.
+- Control-plane served Agent Cards are relay-facing views of stored local cards. They rewrite HTTP+JSON URLs from local agent URLs to `CONTROL_PLANE_PUBLIC_URL`, strip existing signatures, sanitize local-only URLs/paths, and re-sign only when `AGENT_CARD_SIGNING_PRIVATE_KEY_PEM` is configured.
+- Directory agent rows now carry `relay_inbox_url`, `agent_card_url`, and `agent_card_hash`, all scoped to the authenticated organization and derived from `CONTROL_PLANE_PUBLIC_URL`.

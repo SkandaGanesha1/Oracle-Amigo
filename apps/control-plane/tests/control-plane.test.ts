@@ -1,4 +1,5 @@
 import { mkdtempSync, rmSync } from "node:fs";
+import { generateKeyPairSync } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -7,14 +8,19 @@ import { resetConfigForTest } from "../src/config.js";
 import { closeAll } from "../src/db/connection.js";
 import { getDb } from "../src/db/connection.js";
 import type { FastifyInstance } from "fastify";
+import { verifySignedCard } from "../../../src/protocol/a2a-v1/AgentCardV1.js";
+import type { A2Av1AgentCard } from "../../../src/protocol/a2a-v1/types.js";
 
 let app: FastifyInstance;
 let dataDir: string;
+let cardPublicKeyPem = "";
 
 beforeAll(async () => {
   dataDir = mkdtempSync(join(tmpdir(), "control-plane-test-"));
   const dbPath = join(dataDir, "test.db");
   const store = join(dataDir, "transfers");
+  const cardKeys = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  cardPublicKeyPem = cardKeys.publicKey.export({ type: "spki", format: "pem" }).toString();
   resetConfigForTest({
     CONTROL_PLANE_PORT: "9999",
     CONTROL_PLANE_HOST: "127.0.0.1",
@@ -33,7 +39,9 @@ beforeAll(async () => {
     ARGON2_MEMORY_COST: "19456",
     ARGON2_TIME_COST: "2",
     ARGON2_PARALLELISM: "1",
-    CONTROL_PLANE_ENV: "test"
+    CONTROL_PLANE_ENV: "test",
+    AGENT_CARD_SIGNING_PRIVATE_KEY_PEM: cardKeys.privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+    AGENT_CARD_SIGNING_KEY_ID: "test-control-plane-card"
   });
   // Close any existing connection from prior tests
   closeAll();
@@ -56,6 +64,7 @@ describe("control-plane", () => {
   let agentInstanceId = "";
   let deviceId = "";
   let agentId = "";
+  let userId = "";
 
   it("GET /health returns ok", async () => {
     const res = await app.inject({ method: "GET", url: "/health" });
@@ -81,6 +90,7 @@ describe("control-plane", () => {
     expect(body.access_token).toBeTruthy();
     expect(body.refresh_token).toBeTruthy();
     expect(body.user.email).toBe(userEmail);
+    userId = body.user.user_id;
     accessToken = body.access_token;
   });
 
@@ -129,9 +139,23 @@ describe("control-plane", () => {
         version: "0.1.0",
         capabilities: ["encryptedMessage", "signedMessage", "fileTransfer"],
         agent_card: {
+          protocolVersion: "1.0",
           name: "Alice's Oracle",
           version: "0.1.0",
-          supportedInterfaces: []
+          url: "http://127.0.0.1:3399",
+          provider: { organization: "Oracle Amigo", url: "http://localhost:3399/provider" },
+          supportedInterfaces: [
+            {
+              url: "http://127.0.0.1:3399/v1",
+              protocolBinding: "HTTP+JSON",
+              protocolVersion: "1.0",
+              extensions: []
+            }
+          ],
+          capabilities: { streaming: true, pushNotifications: true },
+          defaultInputModes: ["text/plain", "application/json"],
+          defaultOutputModes: ["text/plain", "application/json"],
+          skills: [{ id: "file.request", name: "File Request", description: "Request files" }]
         }
       }
     };
@@ -178,6 +202,113 @@ describe("control-plane", () => {
     expect(res.json().ok).toBe(true);
   });
 
+  it("GET /v1/directory/users returns relay metadata for active agents", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: "/v1/directory/users?q=alice",
+      headers: { authorization: `Bearer ${accessToken}` }
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    const user = body.users.find((u: { email: string }) => u.email === userEmail);
+    expect(user).toBeDefined();
+    expect(user.active_agent_instances).toBe(1);
+    const agent = user.agents[0];
+    expect(agent.relay_inbox_url).toBe("http://127.0.0.1:9999/v1/relay/a2a/inbox");
+    expect(agent.agent_card_url).toBe(`http://127.0.0.1:9999/v1/agents/${agentInstanceId}/card`);
+    expect(agent.agent_card_hash).toBeTruthy();
+    expect(JSON.stringify(agent)).not.toMatch(/localhost|127\.0\.0\.1:3399/);
+  });
+
+  it("GET /v1/directory/users/:id/agents returns card URLs for the user", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: `/v1/directory/users/${encodeURIComponent(userId)}/agents`,
+      headers: { authorization: `Bearer ${accessToken}` }
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.agents[0].relay_inbox_url).toBe("http://127.0.0.1:9999/v1/relay/a2a/inbox");
+    expect(body.agents[0].agent_card_url).toBe(`http://127.0.0.1:9999/v1/agents/${agentInstanceId}/card`);
+  });
+
+  it("GET /v1/agents/:id/card returns a signed cloud-reachable card", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: `/v1/agents/${agentInstanceId}/card`,
+      headers: { authorization: `Bearer ${deviceToken}` }
+    });
+    expect(res.statusCode).toBe(200);
+    const card = res.json() as A2Av1AgentCard;
+    expect(card.url).toBe("http://127.0.0.1:9999");
+    expect(card.supportedInterfaces.some((i) => i.protocolBinding === "HTTP+JSON" && i.url === "http://127.0.0.1:9999/v1")).toBe(true);
+    expect(JSON.stringify(card)).not.toMatch(/localhost|127\.0\.0\.1:3399|file:\/\//);
+    expect(card.skills.some((s) => s.id === "file.request")).toBe(true);
+    expect(card.signatures?.[0].header.typ).toBe("JOSE");
+    const verified = verifySignedCard(card, cardPublicKeyPem);
+    expect(verified.url).toBe("http://127.0.0.1:9999");
+    expect(() => verifySignedCard({ ...card, name: "Tampered" }, cardPublicKeyPem)).toThrow(/JWS signature verification failed/);
+  });
+
+  it("GET /v1/agents/:id/card rejects normal user tokens", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: `/v1/agents/${agentInstanceId}/card`,
+      headers: { authorization: `Bearer ${accessToken}` }
+    });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it("GET /v1/agents/:id/card does not expose cards across orgs", async () => {
+    getDb().prepare("INSERT INTO organizations (id, name, slug, created_at) VALUES (?, ?, ?, ?)")
+      .run("org_other_card_test", "Other Org", "other-org", new Date().toISOString());
+    const otherSignup = await app.inject({
+      method: "POST",
+      url: "/v1/auth/signup",
+      payload: {
+        org_slug: "other-org",
+        email: `other-${Date.now()}@example.com`,
+        password: userPassword,
+        display_name: "Other"
+      }
+    });
+    expect(otherSignup.statusCode).toBe(201);
+    const otherAccessToken = otherSignup.json().access_token;
+    const otherEnrollment = await app.inject({
+      method: "POST",
+      url: "/v1/enrollment/complete",
+      headers: { authorization: `Bearer ${otherAccessToken}` },
+      payload: {
+        device: {
+          device_name: "Other Laptop",
+          public_key: "-----BEGIN PUBLIC KEY-----\nOTHERKEYOTHERKEYOTHERKEYOTHERKEYOTHER\n-----END PUBLIC KEY-----"
+        },
+        agent: {
+          display_name: "Other Agent",
+          version: "0.1.0",
+          capabilities: ["a2a.v1"],
+          agent_card: {
+            protocolVersion: "1.0",
+            name: "Other Agent",
+            version: "0.1.0",
+            supportedInterfaces: [],
+            capabilities: {},
+            defaultInputModes: ["text/plain"],
+            defaultOutputModes: ["text/plain"],
+            skills: []
+          }
+        }
+      }
+    });
+    expect(otherEnrollment.statusCode).toBe(200);
+    const res = await app.inject({
+      method: "GET",
+      url: `/v1/agents/${agentInstanceId}/card`,
+      headers: { authorization: `Bearer ${otherEnrollment.json().device_access_token}` }
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
   it("denies heartbeat after the device is revoked", async () => {
     getDb().prepare("UPDATE devices SET status = 'revoked' WHERE id = ?").run(deviceId);
     const res = await app.inject({
@@ -190,6 +321,16 @@ describe("control-plane", () => {
         agent_id: agentId,
         status: "online"
       }
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error).toBe("DEVICE_DISABLED");
+  });
+
+  it("denies agent-card fetch after the device is revoked", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: `/v1/agents/${agentInstanceId}/card`,
+      headers: { authorization: `Bearer ${deviceToken}` }
     });
     expect(res.statusCode).toBe(403);
     expect(res.json().error).toBe("DEVICE_DISABLED");
