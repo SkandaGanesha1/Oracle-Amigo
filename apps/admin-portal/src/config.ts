@@ -4,6 +4,7 @@ const ConfigSchema = z.object({
   ADMIN_PORTAL_PORT: z.coerce.number().int().min(1).max(65535).default(3398),
   ADMIN_PORTAL_HOST: z.string().default("127.0.0.1"),
   CONTROL_PLANE_URL: z.string().url().default("http://127.0.0.1:8080"),
+  LOCAL_AGENT_URL: z.string().url().default("http://127.0.0.1:3401"),
   // Path to the built admin SPA. In dev, the Vite dev server serves on :5174 directly so this
   // adapter is only used in production. Default points at the ui-admin dist output.
   ADMIN_STATIC_ROOT: z.string().default("public"),

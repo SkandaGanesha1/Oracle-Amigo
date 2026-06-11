@@ -22,7 +22,7 @@ export const AgentDecisionSchema = z.discriminatedUnion("type", [
     reason: z.string().min(1),
     status: z.enum(["found", "not_found", "need_help"]),
     message: z.string().min(1),
-    selectedFileId: z.string().optional()
+    selectedFileId: z.preprocess((value) => value === null ? undefined : value, z.string().optional())
   })
 ]);
 

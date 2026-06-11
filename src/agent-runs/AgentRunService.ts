@@ -131,7 +131,7 @@ export class AgentRunService {
         const sandboxSession = await this.createSandboxProbe(runId, input);
         this.patchRun(runId, { sandboxSession });
       }
-      await this.runReasoningLoop(runId);
+      await withRunTimeout(this.runReasoningLoop(runId), Number(process.env.AGENT_RUN_TIMEOUT_MS ?? 120000));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.upsertStep(this.requireRun(runId).runId, {
@@ -143,7 +143,13 @@ export class AgentRunService {
         stderr: message,
         durationMs: 0
       });
-      this.patchRun(runId, { status: "failed" });
+      this.patchRun(runId, {
+        status: "failed",
+        finalAnswer: {
+          status: "need_help",
+          message
+        }
+      });
     }
   }
 
@@ -516,6 +522,19 @@ function explainGondolinStartupError(error: unknown): string {
     return `${message}. Windows denied Gondolin image-cache symlink creation; run real Gondolin from WSL2 Ubuntu or start the server with SANDBOX_DRY_RUN=true for Windows-local UI testing.`;
   }
   return message;
+}
+
+function withRunTimeout<T>(work: Promise<T>, timeoutMs: number): Promise<T> {
+  const cappedTimeout = Math.max(1000, timeoutMs);
+  let timer: NodeJS.Timeout | null = null;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(`Agent run timed out after ${cappedTimeout}ms.`));
+    }, cappedTimeout);
+  });
+  return Promise.race([work, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
 }
 
 function cloneRun(run: AgentRunResult): AgentRunResult {

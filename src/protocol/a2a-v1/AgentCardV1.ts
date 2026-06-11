@@ -22,6 +22,9 @@ export function canonicalizeJson(value: unknown, path = "$"): string {
     if (!Number.isFinite(value)) {
       throw new Error(`JCS canonical JSON does not support non-finite number at ${path}`);
     }
+    if (Object.is(value, -0)) {
+      throw new Error(`JCS canonical JSON does not support negative zero at ${path}`);
+    }
     return JSON.stringify(value);
   }
   if (typeof value === "undefined" || typeof value === "function" || typeof value === "symbol" || typeof value === "bigint") {

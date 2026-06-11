@@ -30,9 +30,9 @@ describe("static UI", () => {
     expect(css.headers["content-type"]).toContain("text/css");
     expect(js.statusCode).toBe(200);
     expect(js.headers["content-type"]).toContain("text/javascript");
-    expect(js.body).toContain("Agentic Chat");
-    expect(js.body).toContain("Approval Center");
-    expect(js.body).toContain("/relay/send-file-request");
+    expect(js.body).toContain("Conversations");
+    expect(js.body).toContain("Inspector");
+    expect(js.body).toContain("File Transfer");
     expect(js.body).toContain("/cloud/status");
     await server.close();
   });

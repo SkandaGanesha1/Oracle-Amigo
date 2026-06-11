@@ -1,4 +1,5 @@
 import { platform, release } from "node:os";
+import { AuthClient } from "../cloud/AuthClient.js";
 import { EnrollmentClient, type EnrollRequest } from "../cloud/EnrollmentClient.js";
 import { ControlPlaneClient } from "../cloud/ControlPlaneClient.js";
 import { LocalCloudIdentityStore, defaultProfileId } from "../cloud/LocalCloudIdentityStore.js";
@@ -24,6 +25,17 @@ export class AgentRegistrationService {
     const identity = this.store.getOrCreate(profileId);
     if (!identity.userAccessToken) {
       throw new Error("Login or signup is required before enrollment");
+    }
+    let userAccessToken = identity.userAccessToken;
+    const userRefreshToken = identity.userRefreshToken ?? identity.refreshToken;
+    if (userRefreshToken) {
+      const bundle = await new AuthClient(new ControlPlaneClient(identity.controlPlaneUrl)).refresh(userRefreshToken);
+      this.store.save(profileId, {
+        controlPlaneUrl: identity.controlPlaneUrl,
+        userAccessToken: bundle.access_token,
+        status: identity.status === "disconnected" ? "authenticated" : identity.status
+      });
+      userAccessToken = bundle.access_token;
     }
     const localIdentity = generateOrLoadIdentity(identity.displayName ?? "Local User", resolveDbPath());
     const port = process.env.AGENTIC_AGENT_PORT ?? process.env.SANDBOX_PORT ?? "3399";
@@ -55,7 +67,7 @@ export class AgentRegistrationService {
         agent_card: agentCard
       }
     };
-    const result = await new EnrollmentClient(new ControlPlaneClient(identity.controlPlaneUrl)).enroll(req, identity.userAccessToken);
+    const result = await new EnrollmentClient(new ControlPlaneClient(identity.controlPlaneUrl)).enroll(req, userAccessToken);
     this.store.save(profileId, {
       orgId: result.org_id,
       userId: result.user_id,
@@ -64,7 +76,7 @@ export class AgentRegistrationService {
       agentInstanceId: result.agent_instance_id,
       relayInboxUrl: result.relay_inbox_url,
       deviceAccessToken: result.device_access_token,
-      refreshToken: result.refresh_token,
+      deviceRefreshToken: result.refresh_token,
       status: "enrolled"
     });
     return result;

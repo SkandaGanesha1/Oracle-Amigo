@@ -3,6 +3,8 @@ import { localAgentClient } from "./localAgentClient";
 
 export const filesApi = {
   receivedFiles: () => localAgentClient.get<{ files: StoredFile[] }>("/storage/files"),
+  openUrl: (fileId: string) => `/storage/files/${encodeURIComponent(fileId)}/open`,
+  downloadUrl: (fileId: string) => `/storage/files/${encodeURIComponent(fileId)}/download`,
   verifyFile: (fileId: string) =>
     localAgentClient.get<{
       id: string;

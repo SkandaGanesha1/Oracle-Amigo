@@ -11,6 +11,7 @@ import { LocalCloudIdentityStore, defaultProfileId } from "../cloud/LocalCloudId
 import { RelayClient } from "../cloud/RelayClient.js";
 import { getTask } from "../workflow/TaskWorkflow.js";
 import type { ApprovalRecord } from "../protocol/PersonalAgentProtocol.js";
+import { withRecoveredDeviceToken } from "./CloudTokenRecovery.js";
 
 export interface ApprovalTransferResult {
   status: "completed" | "skipped" | "failed";
@@ -68,39 +69,42 @@ export class ApprovalTransferOrchestrator {
       this.db.prepare("UPDATE approval_requests SET bound_sha256 = ?, bound_size_bytes = ? WHERE id = ?")
         .run(sha256, sizeBytes, approval.id);
 
-      const cp = new ControlPlaneClient(identity.controlPlaneUrl);
-      const files = new FileRelayClient(cp);
-      const relay = new RelayClient(cp);
       const fileName = basename(approval.boundFilePath);
 
       this.updateJob(approval.id, "init_started");
-      const init = await files.init({
-        to_agent_instance_id: approval.requesterAgentId,
-        file_name: fileName,
-        file_size: sizeBytes,
-        sha256,
-        relay_task_id: relayTaskId
-      }, identity.deviceAccessToken);
-
-      this.updateJob(approval.id, "uploading", init.transfer_id);
-      await files.upload(init.transfer_id, bytes, identity.deviceAccessToken);
-
-      await relay.send({
-        to_agent_instance_id: approval.requesterAgentId,
-        a2a_task_id: approval.taskId,
-        type: "file.transfer.available",
-        payload: {
-          transfer_id: init.transfer_id,
-          relay_task_id: relayTaskId,
-          approval_id: approval.id,
-          task_id: approval.taskId,
+      const init = await withRecoveredDeviceToken(this.store, this.profileId, async (fresh) =>
+        new FileRelayClient(new ControlPlaneClient(fresh.controlPlaneUrl)).init({
+          to_agent_instance_id: approval.requesterAgentId,
           file_name: fileName,
           file_size: sizeBytes,
           sha256,
-          from_agent_instance_id: approval.ownerAgentId
-        },
-        idempotency_key: `transfer-available:${approval.id}`
-      }, identity.deviceAccessToken);
+          relay_task_id: relayTaskId
+        }, fresh.deviceAccessToken!)
+      );
+
+      this.updateJob(approval.id, "uploading", init.transfer_id);
+      await withRecoveredDeviceToken(this.store, this.profileId, async (fresh) =>
+        new FileRelayClient(new ControlPlaneClient(fresh.controlPlaneUrl)).upload(init.transfer_id, bytes, fresh.deviceAccessToken!)
+      );
+
+      await withRecoveredDeviceToken(this.store, this.profileId, async (fresh) =>
+        new RelayClient(new ControlPlaneClient(fresh.controlPlaneUrl)).send({
+          to_agent_instance_id: approval.requesterAgentId,
+          a2a_task_id: approval.taskId,
+          type: "file.transfer.available",
+          payload: {
+            transfer_id: init.transfer_id,
+            relay_task_id: relayTaskId,
+            approval_id: approval.id,
+            task_id: approval.taskId,
+            file_name: fileName,
+            file_size: sizeBytes,
+            sha256,
+            from_agent_instance_id: approval.ownerAgentId
+          },
+          idempotency_key: `transfer-available:${approval.id}`
+        }, fresh.deviceAccessToken!)
+      );
 
       this.updateJob(approval.id, "completed", init.transfer_id, null, new Date().toISOString());
       this.appendTransferTimeline(approval, init.transfer_id, fileName, sizeBytes, sha256);

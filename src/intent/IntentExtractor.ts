@@ -1,7 +1,8 @@
 import { z } from "zod";
 import { getLlmProvider, type LlmProvider } from "../oci/LlmProvider.js";
 
-const FILE_KEYWORDS = /\b(find|send|share|show|locate|get|open|search|look for|give me)\b/i;
+const FILE_ACTION_KEYWORDS = /\b(find|send|share|show|locate|get|open|search|look for|give me|request)\b/i;
+const FILE_OBJECT_KEYWORDS = /\b(file|files|document|documents|doc|docs|pdf|invoice|report|spreadsheet|presentation|deck|ppt|pptx|xls|xlsx|csv|txt|md|image|photo|zip|attachment|certificate)\b/i;
 const EXT_MAP: Record<string, string[]> = {
   pdf: ["pdf"], doc: ["doc", "docx"], docx: ["docx", "doc"],
   ppt: ["ppt", "pptx"], pptx: ["pptx", "ppt"], xls: ["xls", "xlsx"],
@@ -27,7 +28,8 @@ export interface IntentExtractor {
 
 export class RuleBasedIntentExtractor implements IntentExtractor {
   extract(text: string): IntentResult {
-    const hasFileKeyword = FILE_KEYWORDS.test(text);
+    const hasFileAction = FILE_ACTION_KEYWORDS.test(text);
+    const hasFileObject = FILE_OBJECT_KEYWORDS.test(text);
     const extMatches = [...text.matchAll(/\b(pdf|docx?|pptx?|xlsx?|csv|txt|md|png|jpe?g|zip|ts|js|json)\b/gi)].map((m) => m[1].toLowerCase());
     const extensions = [...new Set(extMatches.flatMap((e) => EXT_MAP[e] ?? [e]))];
     const dateMatch = text.match(DATE_PATTERN);
@@ -35,7 +37,7 @@ export class RuleBasedIntentExtractor implements IntentExtractor {
     const stopWords = new Set(["find", "send", "share", "show", "locate", "the", "file", "document", "please", "can", "you", "and", "for", "from", "get", "give", "open"]);
     const projectHints = words.filter((w) => !stopWords.has(w) && !extMatches.includes(w));
 
-    const isFileRequest = hasFileKeyword || extensions.length > 0;
+    const isFileRequest = extensions.length > 0 || (hasFileAction && hasFileObject);
 
     return {
       intent: isFileRequest ? "file_request" : "normal_chat",
@@ -44,7 +46,7 @@ export class RuleBasedIntentExtractor implements IntentExtractor {
       extensions,
       projectHints,
       dateHint: dateMatch ? dateMatch[0] : null,
-      confidence: isFileRequest ? (hasFileKeyword && extensions.length > 0 ? 0.95 : 0.7) : 0.6,
+      confidence: isFileRequest ? (hasFileAction && extensions.length > 0 ? 0.95 : 0.75) : 0.65,
     };
   }
 }

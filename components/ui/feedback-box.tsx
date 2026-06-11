@@ -18,7 +18,7 @@ export const FeedbackBox: FC<{
       <textarea
         value={text}
         onChange={(e) => setText(e.target.value)}
-        placeholder="Type correction feedback..."
+        placeholder="Type correction feedback to refine file search..."
         rows={2}
         disabled={disabled}
         className="w-full resize-none rounded border border-white/10 bg-black/25 p-2 text-xs text-white placeholder-white/30 outline-none transition focus:border-white/20 disabled:opacity-50"
@@ -29,7 +29,7 @@ export const FeedbackBox: FC<{
         onClick={handleSubmit}
         className="rounded bg-amber-500/80 px-3 py-1.5 text-xs font-medium text-black transition hover:bg-amber-400 disabled:opacity-50"
       >
-        Search Again
+        Search Again with Feedback
       </button>
     </div>
   );

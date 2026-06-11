@@ -120,6 +120,13 @@ describe("admin portal source integrity", () => {
     expect(src).toContain("/v1/admin/orgs/");
   });
 
+  it("admin overview counts online devices from backend presence status", () => {
+    const src = readPortalSource("ui-admin/src/portal/pages/OverviewPage.tsx");
+    expect(src).toContain('String(row.status ?? "").toLowerCase() === "online"');
+    expect(src).toContain('status === "online" ? "green"');
+    expect(src).toContain('status === "stale"');
+  });
+
   it("API client is cookie-based and never logs the token", () => {
     const src = readPortalSource("ui-admin/src/portal/api/client.ts");
     expect(src).toContain("credentials");

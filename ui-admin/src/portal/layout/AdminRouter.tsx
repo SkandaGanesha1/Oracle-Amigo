@@ -8,8 +8,10 @@ import { TasksPage } from "../pages/TasksPage";
 import { TransfersPage } from "../pages/TransfersPage";
 import { ApprovalsPage } from "../pages/ApprovalsPage";
 import { AuditPage } from "../pages/AuditPage";
+import { PolicyRulesPage } from "../pages/PolicyRulesPage";
 import { SecurityPage } from "../pages/SecurityPage";
 import { OrgSnapshotPage } from "../pages/OrgSnapshotPage";
+import { ComponentLabPage } from "../pages/ComponentLabPage";
 
 function parseHash(): { path: string } {
   const hash = (typeof window !== "undefined" ? window.location.hash : "") || "#/";
@@ -36,7 +38,9 @@ export const AdminRouter: FC = () => {
   if (route.path === "/transfers") return <TransfersPage />;
   if (route.path === "/approvals") return <ApprovalsPage />;
   if (route.path === "/audit") return <AuditPage />;
+  if (route.path === "/policy") return <PolicyRulesPage />;
   if (route.path === "/security") return <SecurityPage />;
+  if (route.path === "/components") return <ComponentLabPage />;
   if (route.path.startsWith("/orgs/")) {
     const id = decodeURIComponent(route.path.split("/").pop() ?? "");
     return <OrgSnapshotPage orgId={id} />;

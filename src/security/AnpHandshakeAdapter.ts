@@ -36,11 +36,6 @@ export type HandshakeOffer = {
   created_at: string;
   expires_at: string;
   nonce: string;
-  offerId: string;
-  peer: string;
-  createdAt: string;
-  expiresAt: string;
-  fromDid: string;
   signature: string;
 };
 
@@ -55,13 +50,7 @@ export type HandshakeResponse = {
   created_at: string;
   expires_at: string;
   nonce: string;
-  responseId: string;
-  offerId: string;
-  peer: string;
   status: "accepted" | "rejected";
-  createdAt: string;
-  expiresAt: string;
-  fromDid: string;
   signature: string;
 };
 
@@ -127,11 +116,6 @@ export function createHandshakeOffer(
     nonce: fields.nonce,
     created_at: fields.created_at,
     expires_at: fields.expires_at,
-    offerId: fields.offer_id,
-    peer: fields.to_peer,
-    createdAt: fields.created_at,
-    expiresAt: fields.expires_at,
-    fromDid: fields.from_did,
     signature,
   };
 }
@@ -154,14 +138,14 @@ export async function verifyHandshakeOffer(
 ): Promise<OfferVerification> {
   const fields: AnpCanonicalFields = {
     protocol: offer.protocol,
-    offer_id: offer.offer_id ?? offer.offerId,
+    offer_id: offer.offer_id ?? (offer as HandshakeOffer & { offerId?: string }).offerId,
     from_agent_id: offer.from_agent_id,
     from_agent_instance_id: offer.from_agent_instance_id,
-    from_did: offer.from_did ?? offer.fromDid,
-    to_peer: offer.to_peer ?? offer.peer,
+    from_did: offer.from_did ?? (offer as HandshakeOffer & { fromDid?: string }).fromDid,
+    to_peer: offer.to_peer ?? (offer as HandshakeOffer & { peer?: string }).peer,
     nonce: offer.nonce,
-    created_at: offer.created_at ?? offer.createdAt,
-    expires_at: offer.expires_at ?? offer.expiresAt,
+    created_at: offer.created_at ?? (offer as HandshakeOffer & { createdAt?: string }).createdAt,
+    expires_at: offer.expires_at ?? (offer as HandshakeOffer & { expiresAt?: string }).expiresAt,
   };
   if (fields.protocol !== ANP_HANDSHAKE_PROTOCOL) {
     return { valid: false, reason: "unknown_protocol" };
@@ -198,7 +182,7 @@ export function createHandshakeResponse(
     from_agent_id: identity.agentId,
     from_agent_instance_id: identity.agentId,
     from_did: identity.did,
-    to_peer: offer.to_peer ?? offer.peer,
+    to_peer: offer.to_peer ?? (offer as HandshakeOffer & { peer?: string }).peer,
     nonce: offer.nonce,
     created_at: now.toISOString(),
     expires_at: expiresAt.toISOString(),
@@ -207,7 +191,7 @@ export function createHandshakeResponse(
   return {
     protocol: responseFields.protocol,
     response_id: responseId,
-    offer_id: offer.offer_id ?? offer.offerId,
+    offer_id: offer.offer_id ?? (offer as HandshakeOffer & { offerId?: string }).offerId,
     from_agent_id: responseFields.from_agent_id,
     from_agent_instance_id: responseFields.from_agent_instance_id,
     from_did: responseFields.from_did,
@@ -215,13 +199,7 @@ export function createHandshakeResponse(
     created_at: responseFields.created_at,
     expires_at: responseFields.expires_at,
     nonce: responseFields.nonce,
-    responseId,
-    offerId: offer.offer_id ?? offer.offerId,
-    peer: responseFields.to_peer,
     status: "accepted",
-    createdAt: responseFields.created_at,
-    expiresAt: responseFields.expires_at,
-    fromDid: responseFields.from_did,
     signature,
   };
 }
@@ -236,14 +214,14 @@ export async function verifyHandshakeResponse(
   if (response.status !== "accepted") return { valid: false, reason: "not_accepted" };
   const fields: AnpCanonicalFields = {
     protocol: response.protocol,
-    offer_id: response.responseId,
+    offer_id: (response as HandshakeResponse & { responseId?: string }).responseId ?? response.response_id,
     from_agent_id: response.from_agent_id,
     from_agent_instance_id: response.from_agent_instance_id,
-    from_did: (response as HandshakeResponse & { from_did?: string }).from_did ?? response.fromDid,
-    to_peer: (response as HandshakeResponse & { to_peer?: string }).to_peer ?? response.peer,
+    from_did: response.from_did ?? (response as HandshakeResponse & { fromDid?: string }).fromDid,
+    to_peer: response.to_peer ?? (response as HandshakeResponse & { peer?: string }).peer,
     nonce: response.nonce,
-    created_at: (response as HandshakeResponse & { created_at?: string }).created_at ?? response.createdAt,
-    expires_at: (response as HandshakeResponse & { expires_at?: string }).expires_at ?? response.expiresAt,
+    created_at: response.created_at ?? (response as HandshakeResponse & { createdAt?: string }).createdAt,
+    expires_at: response.expires_at ?? (response as HandshakeResponse & { expiresAt?: string }).expiresAt,
   };
   if (fields.protocol !== ANP_HANDSHAKE_PROTOCOL) {
     return { valid: false, reason: "unknown_protocol" };
@@ -258,7 +236,7 @@ export async function verifyHandshakeResponse(
   if (resolution.publicKeyHex !== publicKeyHex) {
     return { valid: false, reason: "did_key_mismatch" };
   }
-  if (!ctx.replayStore.checkAndRecord(fields.to_peer, response.responseId, response.nonce, ctx.now().getTime())) {
+  if (!ctx.replayStore.checkAndRecord(fields.to_peer, fields.offer_id, response.nonce, ctx.now().getTime())) {
     return { valid: false, reason: "replayed" };
   }
   return { valid: true };
@@ -355,14 +333,14 @@ export function verifyHandshakeOfferSync(
 ): boolean {
   const fields: AnpCanonicalFields = {
     protocol: offer.protocol,
-    offer_id: offer.offer_id ?? offer.offerId,
+    offer_id: offer.offer_id ?? (offer as HandshakeOffer & { offerId?: string }).offerId,
     from_agent_id: offer.from_agent_id,
     from_agent_instance_id: offer.from_agent_instance_id,
-    from_did: offer.from_did ?? offer.fromDid,
-    to_peer: offer.to_peer ?? offer.peer,
+    from_did: offer.from_did ?? (offer as HandshakeOffer & { fromDid?: string }).fromDid,
+    to_peer: offer.to_peer ?? (offer as HandshakeOffer & { peer?: string }).peer,
     nonce: offer.nonce,
-    created_at: offer.created_at ?? offer.createdAt,
-    expires_at: offer.expires_at ?? offer.expiresAt,
+    created_at: offer.created_at ?? (offer as HandshakeOffer & { createdAt?: string }).createdAt,
+    expires_at: offer.expires_at ?? (offer as HandshakeOffer & { expiresAt?: string }).expiresAt,
   };
   if (fields.protocol !== ANP_HANDSHAKE_PROTOCOL) return false;
   const timing = validateAnpTiming(fields);
@@ -377,14 +355,14 @@ export function verifyHandshakeResponseSync(
   if (response.status !== "accepted") return false;
   const fields: AnpCanonicalFields = {
     protocol: response.protocol,
-    offer_id: response.responseId,
+    offer_id: (response as HandshakeResponse & { responseId?: string }).responseId ?? response.response_id,
     from_agent_id: response.from_agent_id,
     from_agent_instance_id: response.from_agent_instance_id,
-    from_did: (response as HandshakeResponse & { from_did?: string }).from_did ?? response.fromDid,
-    to_peer: (response as HandshakeResponse & { to_peer?: string }).to_peer ?? response.peer,
+    from_did: response.from_did ?? (response as HandshakeResponse & { fromDid?: string }).fromDid,
+    to_peer: response.to_peer ?? (response as HandshakeResponse & { peer?: string }).peer,
     nonce: response.nonce,
-    created_at: (response as HandshakeResponse & { created_at?: string }).created_at ?? response.createdAt,
-    expires_at: (response as HandshakeResponse & { expires_at?: string }).expires_at ?? response.expiresAt,
+    created_at: response.created_at ?? (response as HandshakeResponse & { createdAt?: string }).createdAt,
+    expires_at: response.expires_at ?? (response as HandshakeResponse & { expiresAt?: string }).expiresAt,
   };
   if (fields.protocol !== ANP_HANDSHAKE_PROTOCOL) return false;
   const timing = validateAnpTiming(fields);

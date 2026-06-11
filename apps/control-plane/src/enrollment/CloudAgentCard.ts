@@ -16,7 +16,11 @@ export function relayInboxUrl(publicBaseUrl: string): string {
 }
 
 export function agentCardUrl(publicBaseUrl: string, agentInstanceId: string): string {
-  return `${trimTrailingSlash(publicBaseUrl)}/v1/agents/${encodeURIComponent(agentInstanceId)}/card`;
+  return relayAgentBaseUrl(publicBaseUrl, agentInstanceId);
+}
+
+export function relayAgentBaseUrl(publicBaseUrl: string, agentInstanceId: string): string {
+  return `${trimTrailingSlash(publicBaseUrl)}/v1/relay/a2a/${encodeURIComponent(agentInstanceId)}`;
 }
 
 export function toCloudAgentCard(
@@ -24,14 +28,15 @@ export function toCloudAgentCard(
   opts: CloudAgentCardOptions
 ): A2Av1AgentCard {
   const publicBaseUrl = trimTrailingSlash(opts.publicBaseUrl);
+  const agentBaseUrl = relayAgentBaseUrl(publicBaseUrl, opts.agentInstanceId);
   const unsigned = stripSignatures(sanitizePublicValue(storedCard, publicBaseUrl)) as Partial<A2Av1AgentCard>;
   const card: Omit<A2Av1AgentCard, "signatures"> = {
     protocolVersion: unsigned.protocolVersion ?? "1.0",
     name: typeof unsigned.name === "string" ? unsigned.name : "Oracle Amigo Agent",
     description: typeof unsigned.description === "string" ? unsigned.description : undefined,
-    url: publicBaseUrl,
+    url: agentBaseUrl,
     preferredTransport: unsigned.preferredTransport ?? "HTTP+JSON",
-    supportedInterfaces: cloudInterfaces(unsigned.supportedInterfaces, publicBaseUrl),
+    supportedInterfaces: cloudInterfaces(unsigned.supportedInterfaces, agentBaseUrl),
     iconUrl: typeof unsigned.iconUrl === "string" ? unsigned.iconUrl : undefined,
     provider: unsigned.provider,
     version: typeof unsigned.version === "string" ? unsigned.version : "0.1.0",
@@ -55,7 +60,7 @@ export function cloudAgentCardHash(card: A2Av1AgentCard): string {
   return cardFingerprint(card);
 }
 
-function cloudInterfaces(value: unknown, publicBaseUrl: string): A2Av1Interface[] {
+function cloudInterfaces(value: unknown, agentBaseUrl: string): A2Av1Interface[] {
   const source = Array.isArray(value) ? value : [];
   const out = source
     .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
@@ -63,7 +68,7 @@ function cloudInterfaces(value: unknown, publicBaseUrl: string): A2Av1Interface[
       const binding = typeof item.protocolBinding === "string" ? item.protocolBinding : "HTTP+JSON";
       const protocolVersion = item.protocolVersion === "1.0" ? item.protocolVersion : "1.0";
       const next: A2Av1Interface = {
-        url: binding === "HTTP+JSON" ? `${publicBaseUrl}/v1` : safeUrl(item.url, publicBaseUrl),
+        url: binding === "HTTP+JSON" ? `${agentBaseUrl}/v1` : safeUrl(item.url, agentBaseUrl),
         protocolBinding: binding as A2Av1Interface["protocolBinding"],
         protocolVersion,
         tenant: typeof item.tenant === "string" ? item.tenant : undefined,
@@ -73,7 +78,7 @@ function cloudInterfaces(value: unknown, publicBaseUrl: string): A2Av1Interface[
     });
   if (!out.some((item) => item.protocolBinding === "HTTP+JSON")) {
     out.unshift({
-      url: `${publicBaseUrl}/v1`,
+      url: `${agentBaseUrl}/v1`,
       protocolBinding: "HTTP+JSON",
       protocolVersion: "1.0",
       extensions: []

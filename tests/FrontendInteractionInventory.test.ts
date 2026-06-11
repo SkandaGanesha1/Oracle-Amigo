@@ -10,7 +10,7 @@ function read(rel: string): string {
 
 describe("frontend interaction inventory", () => {
   it("keeps chat received-file actions backed by explicit routes", () => {
-    const app = read("ui/src/App.tsx");
+    const app = read("ui/src/components/StreamLikeChat.tsx");
     const filesApi = read("ui/src/api/filesApi.ts");
     const server = read("src/server.ts");
 
@@ -23,20 +23,24 @@ describe("frontend interaction inventory", () => {
   });
 
   it("does not leave known chat buttons enabled without behavior", () => {
-    const app = read("ui/src/App.tsx");
+    const app = read("ui/src/components/StreamLikeChat.tsx");
 
-    expect(app).toContain("onClick={() => void onRetry(message)}");
+    expect(app).toContain("onClick={() => void onRetryMessage(message)}");
+    expect(app).toContain("onChange={(event) => props.onSearchDirectory(event.currentTarget.value)}");
+    expect(app).toContain("onStartConversation(user, primaryAgent)");
     expect(app).toContain("Direct attachment is not enabled");
-    expect(app).toContain("disabled aria-disabled=\"true\"><Paperclip");
+    expect(app).toContain("is-disabled");
+    expect(app).toContain("aria-label=\"Direct attachment is not enabled");
+    expect(app).toContain("<Paperclip aria-hidden=\"true\" />");
     expect(app).not.toContain("<button type=\"button\" className=\"icon-button\" title=\"Attach file\"><Paperclip /></button>");
     expect(app).not.toContain("<button type=\"button\">Verify hash</button>");
   });
 
   it("keeps settings policy rows read-only until a settings API exists", () => {
-    const app = read("ui/src/App.tsx");
+    const app = read("ui/src/components/StreamLikeChat.tsx");
 
     expect(app).toContain("Configured safety policy");
-    expect(app).toContain("Approval before file transfer: enabled by workflow policy");
+    expect(app).toContain("Approval before file transfer");
     expect(app).not.toContain("<input type=\"checkbox\" defaultChecked /> Require approval before file transfer");
     expect(app).not.toContain("Enable experimental E2E encryption</label>");
   });

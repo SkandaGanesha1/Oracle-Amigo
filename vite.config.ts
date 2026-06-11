@@ -13,7 +13,11 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
   resolve: {
     alias: {
-      "@": path.resolve(__dirname)
+      "@": path.resolve(__dirname),
+      "~/components": path.resolve(__dirname, "components"),
+      "~/lib": path.resolve(__dirname, "lib"),
+      "~/packages/ai": path.resolve(__dirname, "src/components/ai"),
+      "~": path.resolve(__dirname)
     }
   },
   build: {
@@ -24,11 +28,19 @@ export default defineConfig({
     host: "127.0.0.1",
     port: 5173,
     proxy: {
+      "/agent": localAgentTarget,
       "/audit": localAgentTarget,
       "/approvals": localAgentTarget,
       "/chat": localAgentTarget,
       "/cloud": localAgentTarget,
       "/health": localAgentTarget,
+      "/manifest.webmanifest": localAgentTarget,
+      "/search": localAgentTarget,
+      "/missions": localAgentTarget,
+      "/redactions": localAgentTarget,
+      "/notifications": localAgentTarget,
+      "/policy": localAgentTarget,
+      "/biometric": localAgentTarget,
       "/relay": localAgentTarget,
       "/storage": localAgentTarget
     }

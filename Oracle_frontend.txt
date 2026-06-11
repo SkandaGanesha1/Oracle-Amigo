@@ -1,0 +1,2114 @@
+You are Codex/OpenCode working inside this repository:
+
+https://github.com/SkandaGanesha1/Oracle-Amigo
+
+Act as the world’s top Senior Frontend Engineer and Agentic AI Product Engineer.
+
+Your task is to completely redesign and integrate the Oracle Amigo Agentic Chat frontend and Admin UI into a next-generation agentic communication application.
+
+The current UI looks like a beginner-level chat/dashboard. It has functional pieces, but the visual hierarchy, interaction model, component system, spacing, typography, message design, approval cards, agent workflow cards, and admin surfaces are not yet world-class.
+
+Your goal is to transform Oracle Amigo into a premium next-generation Agentic Chat application: the next era after Slack/WhatsApp, but built for personal agents, A2A relay tasks, file-request approvals, local file search, agent-to-agent communication, auditability, and enterprise monitoring.
+
+============================================================
+PRODUCT CONTEXT
+============================================================
+
+Oracle Amigo currently has:
+
+1. Local Agent
+   - local single-user personal agent
+   - file search
+   - approval workflow
+   - sqlite-vec retrieval
+   - local storage
+   - A2A task handling
+   - cloud clients
+   - heartbeat
+   - relay polling
+   - approval-to-transfer orchestrator
+
+2. Control Plane
+   - auth
+   - enrollment
+   - directory
+   - contacts
+   - presence
+   - A2A relay
+   - file transfer relay
+   - audit
+   - admin APIs
+
+3. Agentic Chat UI
+   - auth/enrollment
+   - directory
+   - conversations
+   - file request detection
+   - approvals
+   - received files
+   - audit
+   - diagnostics
+   - settings
+
+4. Admin Portal
+   - user/device/agent monitoring
+   - presence
+   - relay tasks
+   - transfers
+   - audit
+   - revocation/security
+
+The UI must support this product spine:
+
+signup
+→ login
+→ enroll device
+→ register personal agent
+→ heartbeat
+→ directory visibility
+→ start conversation
+→ send normal message
+→ detect file request
+→ send A2A file request
+→ remote local agent searches files
+→ remote approval card
+→ feedback/approve/reject
+→ approved file transfer
+→ SHA-256 verification
+→ file receipt
+→ audit
+→ admin visibility
+
+============================================================
+REFERENCES TO READ BEFORE CODING
+============================================================
+
+Read these sources before implementation and summarize findings in:
+
+docs/frontend-redesign-research.md
+
+AI/agentic components:
+https://www.shadcn.io/ai
+https://www.prompt-kit.com/
+https://www.prompt-kit.com/docs/chat-container
+https://www.prompt-kit.com/docs/message
+https://www.prompt-kit.com/docs/prompt-input
+https://www.prompt-kit.com/docs/file-upload
+https://www.prompt-kit.com/docs/tool
+https://www.prompt-kit.com/docs/reasoning
+https://www.prompt-kit.com/docs/steps
+https://www.prompt-kit.com/docs/thinking-bar
+https://www.prompt-kit.com/docs/text-shimmer
+https://www.prompt-kit.com/docs/feedback-bar
+https://www.prompt-kit.com/docs/scroll-button
+https://www.prompt-kit.com/docs/system-message
+https://www.prompt-kit.com/docs/markdown
+https://www.prompt-kit.com/docs/source
+https://www.prompt-kit.com/docs/code-block
+
+Enterprise primitives:
+https://heroui.com/en/docs/react/components/button
+https://heroui.com/en/docs/react/components/button-group
+https://heroui.com/en/docs/react/components/avatar
+https://heroui.com/en/docs/react/components/badge
+https://heroui.com/en/docs/react/components/chip
+https://heroui.com/en/docs/react/components/card
+https://heroui.com/en/docs/react/components/surface
+https://heroui.com/en/docs/react/components/input
+https://heroui.com/en/docs/react/components/input-group
+https://heroui.com/en/docs/react/components/search-field
+https://heroui.com/en/docs/react/components/text-area
+https://heroui.com/en/docs/react/components/tabs
+https://heroui.com/en/docs/react/components/drawer
+https://heroui.com/en/docs/react/components/modal
+https://heroui.com/en/docs/react/components/popover
+https://heroui.com/en/docs/react/components/toast
+https://heroui.com/en/docs/react/components/tooltip
+https://heroui.com/en/docs/react/components/table
+https://heroui.com/en/docs/react/components/progress-bar
+https://heroui.com/en/docs/react/components/progress-circle
+https://heroui.com/en/docs/react/components/skeleton
+https://heroui.com/en/docs/react/components/spinner
+https://heroui.com/en/docs/react/components/switch
+https://heroui.com/en/docs/react/components/dropdown
+https://heroui.com/en/docs/react/components/list-box
+https://heroui.com/en/docs/react/components/calendar
+https://heroui.com/en/docs/react/components/date-picker
+https://heroui.com/en/docs/react/components/scroll-shadow
+https://heroui.com/en/docs/react/components/alert
+https://heroui.com/en/docs/react/components/alert-dialog
+
+Admin/dashboard utility:
+https://flowbite-react.com/docs/components/sidebar
+https://flowbite-react.com/docs/components/navbar
+https://flowbite-react.com/docs/components/card
+https://flowbite-react.com/docs/components/badge
+https://flowbite-react.com/docs/components/alert
+https://flowbite-react.com/docs/components/modal
+https://flowbite-react.com/docs/components/tabs
+https://flowbite-react.com/docs/components/timeline
+https://flowbite-react.com/docs/components/progress
+https://flowbite-react.com/docs/components/table
+https://flowbite-react.com/docs/components/toast
+https://flowbite-react.com/docs/components/tooltip
+https://flowbite-react.com/docs/forms/file-input
+https://flowbite-react.com/docs/components/avatar
+https://flowbite-react.com/docs/components/dropdown
+https://flowbite-react.com/docs/components/breadcrumb
+https://flowbite-react.com/docs/components/pagination
+https://flowbite-react.com/docs/components/list-group
+https://flowbite-react.com/docs/components/accordion
+
+Stream Chat UX reference only:
+https://getstream.io/chat/docs/sdk/react/
+
+React and state:
+https://react.dev/
+https://react.dev/reference/react/useOptimistic
+https://react.dev/reference/react/useTransition
+https://tanstack.com/query/latest/docs/framework/react/overview
+https://tanstack.com/query/latest/docs/framework/react/guides/optimistic-updates
+https://tanstack.com/virtual/latest
+
+Accessibility:
+https://www.w3.org/WAI/ARIA/apg/
+https://www.w3.org/WAI/WCAG22/quickref/
+
+Do not use Stream Chat API. Do not add Stream as a dependency. Use Stream only as a UX reference for:
+- ChannelList
+- ChannelPreview
+- ChannelHeader
+- VirtualizedMessageList
+- MessageList
+- Message
+- Attachments
+- DateSeparator
+- MessageComposer
+- AttachmentSelector
+- TypingIndicator
+- Search
+- Thread
+- Notifications
+- Offline/read/delivery states
+
+Implement Oracle Amigo’s own equivalent components using the existing local-agent and control-plane APIs.
+
+============================================================
+IMPORTANT COMPONENT STRATEGY
+============================================================
+
+Do not blindly install every component from every library and create duplicates.
+
+Use a clean ownership model:
+
+1. shadcn AI / custom AI components
+   Use for agentic workflow components:
+   - Message
+   - Conversation
+   - Prompt Input
+   - Attachments
+   - Artifact
+   - Confirmation
+   - Reasoning
+   - Tool
+   - Task
+   - Agent
+   - Persona
+   - Plan
+   - Queue
+   - Checkpoint
+   - Sources
+   - Inline Citation
+   - Code Block
+   - Terminal
+   - File Tree
+   - Schema Display
+   - Loader/Shimmer
+   - Suggestion
+   - Toolbar
+   - Panel
+
+2. prompt-kit
+   Use for core chat mechanics:
+   - ChatContainer
+   - Message
+   - PromptInput
+   - PromptInputTextarea
+   - PromptInputActions
+   - PromptInputAction
+   - FileUpload
+   - Tool
+   - Reasoning
+   - Steps
+   - ThinkingBar
+   - TextShimmer
+   - FeedbackBar
+   - ScrollButton
+   - SystemMessage
+   - Markdown
+   - Source
+   - CodeBlock
+
+3. HeroUI
+   Use for accessible enterprise primitives in Agentic Chat:
+   - Button
+   - ButtonGroup
+   - Avatar
+   - Badge
+   - Chip
+   - Card
+   - Surface
+   - Input
+   - InputGroup
+   - SearchField
+   - TextArea
+   - Tabs
+   - Drawer
+   - Modal
+   - Popover
+   - Toast
+   - Tooltip
+   - Table
+   - ProgressBar
+   - ProgressCircle
+   - Skeleton
+   - Spinner
+   - Switch
+   - Dropdown
+   - ListBox
+   - Calendar
+   - DatePicker
+   - ScrollShadow
+   - Alert
+   - AlertDialog
+
+4. Flowbite React
+   Use only for admin portal and enterprise utility views:
+   - Sidebar
+   - Navbar
+   - Card
+   - Badge
+   - Alert
+   - Modal
+   - Tabs
+   - Timeline
+   - Progress
+   - Table
+   - Toast
+   - Tooltip
+   - FileInput
+   - Avatar
+   - Dropdown
+   - Breadcrumb
+   - Pagination
+   - ListGroup
+   - Accordion
+
+5. Do not duplicate primitives
+   - Do not use both Flowbite Card and HeroUI Card in Agentic Chat.
+   - Use HeroUI/Card or custom Surface in Agentic Chat.
+   - Use Flowbite Card only in Admin Portal.
+   - Use prompt-kit PromptInput for the chat composer.
+   - Use HeroUI TextArea/Input only for forms/settings/feedback where needed.
+   - Use custom OracleAmigoMessage components built on prompt-kit/shadcn AI, not Flowbite.
+
+============================================================
+INSTALLATION / DEPENDENCY TASKS
+============================================================
+
+Inspect package.json first. Do not reinstall dependencies that already exist.
+
+Install missing packages only.
+
+Suggested dependencies:
+
+npm install @heroui/react
+npm install flowbite flowbite-react
+npm install @tanstack/react-query @tanstack/react-virtual
+npm install zustand
+npm install framer-motion
+npm install lucide-react
+npm install class-variance-authority clsx tailwind-merge
+npm install zod react-hook-form @hookform/resolvers
+
+If prompt-kit components are not already present, add only the required components:
+
+npx shadcn add "https://prompt-kit.com/c/chat-container.json"
+npx shadcn add "https://prompt-kit.com/c/message.json"
+npx shadcn add "https://prompt-kit.com/c/prompt-input.json"
+npx shadcn add "https://prompt-kit.com/c/file-upload.json"
+npx shadcn add "https://prompt-kit.com/c/tool.json"
+npx shadcn add "https://prompt-kit.com/c/steps.json"
+npx shadcn add "https://prompt-kit.com/c/reasoning.json"
+npx shadcn add "https://prompt-kit.com/c/thinking-bar.json"
+npx shadcn add "https://prompt-kit.com/c/text-shimmer.json"
+npx shadcn add "https://prompt-kit.com/c/feedback-bar.json"
+npx shadcn add "https://prompt-kit.com/c/scroll-button.json"
+npx shadcn add "https://prompt-kit.com/c/system-message.json"
+npx shadcn add "https://prompt-kit.com/c/markdown.json"
+npx shadcn add "https://prompt-kit.com/c/source.json"
+npx shadcn add "https://prompt-kit.com/c/code-block.json"
+
+For shadcn AI components:
+- First try normal shadcn install if public component URL exists.
+- If unavailable or paid/pro-token gated, implement equivalent local components under:
+  ui/src/components/agentic-ai/
+- Keep their public APIs similar to the shadcn AI component concepts.
+
+Do not add GetStream dependency.
+Do not add Stream Chat API keys.
+Do not call Stream APIs.
+
+============================================================
+TARGET FRONTEND STRUCTURE
+============================================================
+
+Refactor the UI into this structure. Adapt to existing structure if already present.
+
+ui/src/
+  app/
+    AppShell.tsx
+    AppProviders.tsx
+    routes.tsx
+
+  design/
+    tokens.ts
+    theme.ts
+    typography.ts
+    surfaces.ts
+    statusColors.ts
+
+  components/
+    primitives/
+      OracleButton.tsx
+      OracleCard.tsx
+      OracleSurface.tsx
+      OracleBadge.tsx
+      OracleChip.tsx
+      OracleAvatar.tsx
+      OracleTooltip.tsx
+      OracleToast.tsx
+
+    agentic-ai/
+      AgenticMessage.tsx
+      AgenticConversation.tsx
+      AgenticPromptInput.tsx
+      AgenticAttachment.tsx
+      AgenticArtifact.tsx
+      AgenticConfirmation.tsx
+      AgenticReasoning.tsx
+      AgenticToolCall.tsx
+      AgenticTaskCard.tsx
+      AgentCard.tsx
+      AgentPersona.tsx
+      AgentPlan.tsx
+      AgentQueue.tsx
+      AgentCheckpoint.tsx
+      AgentSources.tsx
+      AgentInlineCitation.tsx
+      AgentCodeBlock.tsx
+      AgentTerminal.tsx
+      AgentFileTree.tsx
+      AgentSchemaDisplay.tsx
+      AgentLoader.tsx
+      AgentSuggestion.tsx
+      AgentToolbar.tsx
+      AgentPanel.tsx
+
+    stream-like/
+      ChannelList.tsx
+      ChannelPreview.tsx
+      ChannelHeader.tsx
+      VirtualizedMessageList.tsx
+      MessageList.tsx
+      MessageBubble.tsx
+      MessageActions.tsx
+      DateSeparator.tsx
+      AttachmentPreview.tsx
+      MessageComposer.tsx
+      TypingIndicator.tsx
+      SearchPanel.tsx
+      ThreadDrawer.tsx
+      OfflineBanner.tsx
+      UnreadDivider.tsx
+
+  features/
+    auth/
+      AuthScreen.tsx
+      SignupForm.tsx
+      LoginForm.tsx
+      ControlPlaneUrlField.tsx
+
+    enrollment/
+      DeviceEnrollmentScreen.tsx
+      DeviceFingerprintCard.tsx
+      AgentRegistrationCard.tsx
+      CapabilitiesReview.tsx
+      HeartbeatStatusCard.tsx
+
+    chat/
+      MainChatLayout.tsx
+      ConversationSidebar.tsx
+      DirectorySearch.tsx
+      ConversationList.tsx
+      ConversationListItem.tsx
+      ChatWindow.tsx
+      ConversationHeader.tsx
+      MessageTimeline.tsx
+      ComposerDock.tsx
+      FileRequestIntentChip.tsx
+      MessageDeliveryState.tsx
+      OfflineOutbox.tsx
+
+    approvals/
+      ApprovalCenter.tsx
+      ApprovalCard.tsx
+      CandidateFileCard.tsx
+      CandidateFileList.tsx
+      ApprovalExactBinding.tsx
+      ApprovalRiskHeader.tsx
+      ApprovalFeedbackBox.tsx
+      ApprovalTerminalState.tsx
+      ApprovalPolicyBadge.tsx
+
+    transfers/
+      TransferProgressCard.tsx
+      TransferStageStepper.tsx
+      FileReceiptCard.tsx
+      HashVerifiedBadge.tsx
+      RelayEncryptedBadge.tsx
+      LocalPathHiddenBadge.tsx
+
+    files/
+      ReceivedFilesPanel.tsx
+      SentFilesPanel.tsx
+      FilePreviewDrawer.tsx
+      FileTypeIcon.tsx
+      StorageBrowser.tsx
+      VerifyHashButton.tsx
+
+    inspector/
+      RightInspectorPanel.tsx
+      AgentInspectorTab.tsx
+      ApprovalsInspectorTab.tsx
+      FilesInspectorTab.tsx
+      AuditInspectorTab.tsx
+      DiagnosticsInspectorTab.tsx
+      TaskInspectorTab.tsx
+      SecurityInspectorTab.tsx
+      SettingsInspectorTab.tsx
+
+    diagnostics/
+      LocalAgentHealthCard.tsx
+      ControlPlaneHealthCard.tsx
+      RelayPollerStatusCard.tsx
+      NotificationBridgeStatusCard.tsx
+      IndexedFoldersCard.tsx
+      QueueDepthCard.tsx
+      DebugBundleButton.tsx
+
+    audit/
+      AuditTimeline.tsx
+      AuditEventCard.tsx
+      HashChainStatus.tsx
+
+  api/
+    localAgentClient.ts
+    cloudAuthApi.ts
+    cloudDirectoryApi.ts
+    chatApi.ts
+    relayApi.ts
+    approvalsApi.ts
+    filesApi.ts
+    auditApi.ts
+    diagnosticsApi.ts
+    types.ts
+
+  hooks/
+    useCloudStatus.ts
+    useCurrentProfile.ts
+    useSignup.ts
+    useLogin.ts
+    useEnrollDevice.ts
+    useDirectorySearch.ts
+    useContacts.ts
+    useConversations.ts
+    useConversationMessages.ts
+    useSendMessage.ts
+    useSendFileRequest.ts
+    usePendingApprovals.ts
+    useApproveFileRequest.ts
+    useRejectFileRequest.ts
+    useSubmitApprovalFeedback.ts
+    useReceivedFiles.ts
+    useAuditEvents.ts
+    useAgentDiagnostics.ts
+    useOfflineOutbox.ts
+
+  realtime/
+    RealtimeTransport.ts
+    PollingTransport.ts
+    SseTransport.ts
+    WebSocketTransport.ts
+
+  tests/
+    chat-ui.test.tsx
+    approval-card.test.tsx
+    composer.test.tsx
+    frontend-contract.test.ts
+    accessibility.test.tsx
+
+apps/admin-portal/src/
+  components/
+    AdminShell.tsx
+    AdminSidebar.tsx
+    AdminNavbar.tsx
+    AdminMetricCard.tsx
+    UsersTable.tsx
+    DevicesTable.tsx
+    AgentInstancesTable.tsx
+    PresenceTable.tsx
+    RelayTasksTable.tsx
+    TransfersTable.tsx
+    AuditEventsTable.tsx
+    AuditTimeline.tsx
+    RevocationDialog.tsx
+    SecuritySettingsPanel.tsx
+    AdminToastCenter.tsx
+
+============================================================
+DESIGN SYSTEM REQUIREMENTS
+============================================================
+
+Create Oracle Amigo design tokens.
+
+The UI must feel premium, modern, calm, and enterprise-ready.
+
+Use this visual direction:
+
+Name:
+Oracle Amigo Agentic Command Chat
+
+Personality:
+- next-generation agentic work cockpit
+- secure but friendly
+- premium but readable
+- enterprise-grade
+- not childish
+- not over-animated
+- not dashboard clutter
+- not beginner Tailwind blocks
+
+Theme:
+- dark-first
+- light mode optional
+- high contrast
+- subtle gradients
+- glass/surface only where useful
+- no harsh borders everywhere
+
+Color tokens:
+
+background:
+--oa-bg: #070A0F
+--oa-bg-elevated: #0D1117
+--oa-surface: #111827
+--oa-surface-2: #151C27
+--oa-surface-3: #1B2533
+
+text:
+--oa-text: #F8FAFC
+--oa-text-secondary: #CBD5E1
+--oa-text-muted: #94A3B8
+--oa-text-disabled: #64748B
+
+border:
+--oa-border: rgba(148, 163, 184, 0.14)
+--oa-border-strong: rgba(148, 163, 184, 0.24)
+
+accents:
+--oa-blue: #3B82F6
+--oa-cyan: #22D3EE
+--oa-purple: #A855F7
+--oa-green: #22C55E
+--oa-amber: #F59E0B
+--oa-red: #EF4444
+--oa-pink: #EC4899
+
+semantic:
+online: green
+heartbeat: cyan
+relay: blue
+approval: amber
+transfer: purple
+danger: red
+verified: green
+local-only: slate
+offline: gray
+
+Typography:
+- Use Inter, Geist, or system UI.
+- Base font size 14–15px.
+- Message text 15px or 16px.
+- Metadata 12px.
+- Status chips 12px.
+- Headings 18–22px.
+- Avoid oversized sidebar text.
+
+Spacing:
+- 4px base scale.
+- Dense but not cramped.
+- Chat cards with 12–16px padding.
+- Main layout with 16px gutters.
+- Right inspector sections with 16px vertical rhythm.
+
+Radius:
+- small controls: 10px
+- cards: 14px
+- important approval cards: 18px
+- composer: 22px
+- app panels: 18px
+
+Shadows:
+- subtle only
+- no heavy black shadows
+- important cards can use soft colored glow
+
+Motion:
+- 120ms hover/focus
+- 180ms panel transitions
+- 240ms drawer/modals
+- no infinite animations in the chat body
+- agent activity can use subtle pulse/shimmer
+
+============================================================
+CORE APP LAYOUT
+============================================================
+
+Replace the current UI with a cleaner 4-zone architecture:
+
+1. Top Command Bar
+   - Oracle Amigo logo/name
+   - signed-in email
+   - local agent online status
+   - heartbeat status
+   - relay polling status
+   - notification bridge status
+   - global command button
+   - settings/logout
+
+2. Left Sidebar
+   - compact workspace rail
+   - directory search
+   - contacts
+   - conversations
+   - unread/pending badges
+   - refresh/sync button
+   - collapsible sections
+
+3. Main Chat Area
+   - selected conversation header
+   - agent identity/presence
+   - message timeline
+   - agent activity and task events
+   - file request cards
+   - approval/transfer cards
+   - composer dock
+
+4. Right Inspector
+   - tabs:
+     Agent
+     Approvals
+     Files
+     Audit
+     Diagnostics
+     Settings
+   - context-aware content based on selected conversation/task/file/agent
+
+Responsive behavior:
+- Desktop: 3-column layout.
+- Tablet: inspector becomes drawer.
+- Mobile: sidebar becomes drawer, inspector hidden behind tabs.
+- Avoid horizontal overflow.
+- Message timeline must remain readable.
+
+============================================================
+AUTH AND ENROLLMENT UI
+============================================================
+
+Implement:
+
+AuthScreen
+- control-plane URL field
+- org slug field
+- signup tab
+- login tab
+- display name
+- email
+- password
+- connection test button
+- clear errors
+- success states
+
+DeviceEnrollmentScreen
+- show device name
+- show OS
+- show generated public key fingerprint
+- show DID if available
+- show personal agent display name
+- show capabilities:
+  file.request.search
+  file.transfer.offer
+  file.transfer.receive
+  human.approval.request
+- Enroll button
+- enrollment success animation
+- heartbeat active state
+- relay polling state
+
+Backend integration:
+- POST /cloud/signup
+- POST /cloud/login
+- POST /cloud/enroll
+- GET /cloud/status
+- GET /cloud/me
+
+============================================================
+CONVERSATION EXPERIENCE
+============================================================
+
+Implement Stream-like UX without Stream API.
+
+Create custom components:
+
+ChannelList
+- list conversations
+- unread count
+- pending approval count
+- last message
+- presence
+- transfer state
+
+ChannelPreview
+- avatar/agent avatar
+- name
+- email
+- last activity
+- badges:
+  online
+  personal agent available
+  approval required
+  file received
+  transfer failed
+
+ChannelHeader
+- selected contact/agent
+- relay peer ID shortened
+- presence
+- capabilities
+- open inspector button
+
+VirtualizedMessageList
+- use TanStack Virtual
+- supports thousands of messages
+- auto-scroll only when near bottom
+- date separators
+- unread divider
+- scroll-to-bottom button
+
+MessageBubble variants:
+- HumanIncomingMessage
+- HumanOutgoingMessage
+- AgentMessage
+- SystemMessage
+- RelayEventMessage
+- ToolCallMessage
+- TaskMessage
+- ApprovalMessage
+- TransferMessage
+- ReceiptMessage
+- ErrorMessage
+
+MessageComposer
+- prompt-kit PromptInput
+- multiline textarea
+- Enter sends
+- Shift+Enter newline
+- slash commands:
+  /request-file
+  /send-file
+  /agent-card
+  /status
+  /approvals
+  /files
+  /audit
+  /diagnostics
+- attach button
+- file-request detection chip
+- send as file request / normal message options
+- offline outbox indicator
+- send retry when failed
+
+Backend integration:
+- GET /chat/conversations
+- GET /chat/conversations/:id/messages
+- POST /chat/messages
+- POST /relay/send-message
+- POST /relay/send-file-request
+
+If exact endpoints differ, inspect existing API and adapt.
+
+============================================================
+FILE REQUEST DETECTION
+============================================================
+
+When user types something like:
+- “Can you send me the API design document?”
+- “Share latest PPT”
+- “Need the demo video”
+- “Send login service code file”
+- “Can you send that image?”
+
+Show an inline chip above composer:
+
+Looks like a file request
+[Send as File Request] [Send as Normal Message]
+
+File-request detection can be rule-based initially:
+keywords:
+send, share, need, attach, upload, file, document, pdf, ppt, image, video, code, script, config
+
+Create:
+FileRequestIntentChip.tsx
+
+If sent as file request:
+- create A2A task via local agent
+- use relay
+- show FileRequestBubble
+
+============================================================
+AGENTIC WORKFLOW UI
+============================================================
+
+Implement these components:
+
+AgentActivityBubble
+- shows:
+  “Bob’s agent is searching local files…”
+  “Waiting for Bob approval…”
+  “Hashing selected file…”
+  “Uploading to relay…”
+  “Verifying SHA-256…”
+
+Use prompt-kit:
+- ThinkingBar
+- TextShimmer
+- Reasoning
+- Steps
+- Tool
+
+A2ATaskCard
+- task ID shortened
+- state:
+  TASK_STATE_SUBMITTED
+  TASK_STATE_WORKING
+  TASK_STATE_INPUT_REQUIRED
+  TASK_STATE_COMPLETED
+  TASK_STATE_FAILED
+  TASK_STATE_CANCELED
+  TASK_STATE_REJECTED
+- timeline:
+  submitted
+  delivered
+  searching
+  approval_required
+  approved
+  transfer_initialized
+  uploaded
+  downloaded
+  verified
+  completed
+
+ToolCallCard
+- tool name:
+  file.search
+  file.hash
+  relay.send
+  transfer.upload
+  transfer.download
+  hash.verify
+- status:
+  pending
+  running
+  success
+  failed
+- input/output collapsed by default
+- developer mode can expand JSON
+
+SchemaDisplay
+- show A2A payload
+- show ANP handshake
+- show approval binding
+- show transfer receipt
+
+Backend integration:
+- task data from messages, approvals, transfers, audit
+- GET /audit/events
+- GET /relay/inbox/status
+- GET /cloud/status
+
+============================================================
+APPROVAL UI
+============================================================
+
+Approval must be the most polished and safest part of the app.
+
+Implement:
+
+ApprovalCard
+- requester
+- request text
+- candidate files
+- exact action summary
+- risk header
+- policy badge
+- local-path-hidden badge
+- Windows notification sync badge
+- approve/reject buttons
+- feedback textarea
+- search again button
+- choose manually button if backend supports it
+- terminal state
+
+CandidateFileCard
+- file icon
+- file name
+- owner-only display path
+- extension
+- size
+- modified date
+- match score
+- match reason
+- “local path hidden from requester” badge
+- preview button if safe
+
+ApprovalExactBinding
+Before approve:
+- selected candidate
+- target recipient
+- task ID
+- approval ID
+
+After approve:
+- SHA-256
+- size
+- exact file binding
+- timestamp
+
+Approval states:
+- pending
+- feedback_requested
+- search_refined
+- approved
+- rejected
+- expired
+- transfer_started
+- completed
+- failed
+
+Backend integration:
+- GET /approvals/pending
+- GET /approvals/:id
+- POST /approvals/:id/approve
+- POST /approvals/:id/reject
+- POST /approvals/:id/feedback
+- POST /approvals/notification-callback
+
+Rules:
+- Never let UI show “sent” until backend confirms transfer/receipt.
+- Duplicate approval clicks must be disabled.
+- If approval is terminal, buttons become disabled and show final status.
+- Show exact warning:
+  “Approving will send this exact file to this exact agent.”
+
+============================================================
+TRANSFER AND RECEIPT UI
+============================================================
+
+Implement:
+
+TransferProgressCard
+- file name
+- size
+- sender
+- receiver
+- transfer ID shortened
+- progress bar
+- stage stepper
+
+Transfer stages:
+1. Waiting for approval
+2. Hashing
+3. Initializing transfer
+4. Uploading
+5. Transfer available
+6. Downloading
+7. Verifying hash
+8. Stored
+9. Receipt sent
+10. Completed
+
+Badges:
+- SHA-256 bound
+- Hash verified
+- Local path hidden
+- Relay encrypted
+- E2E encryption not enabled, if true
+
+FileReceiptCard
+- file name
+- size
+- hash
+- sender
+- received time
+- stored location display
+- open file
+- show in folder
+- verify hash again
+
+Backend integration:
+- GET /storage/files
+- GET /storage/files/:id/open
+- GET /transfers
+- GET /audit/events
+
+============================================================
+RIGHT INSPECTOR
+============================================================
+
+Redesign the right panel.
+
+Use HeroUI:
+- Tabs
+- Card
+- Surface
+- ScrollShadow
+- Badge
+- Chip
+- Table
+- Skeleton
+- Alert
+
+Tabs:
+
+1. Agent
+   Components:
+   - AgentProfileCard
+   - AgentCapabilitiesList
+   - AgentCardPreview
+   - DeviceIdentityCard
+   - RelayEndpointCard
+   - TrustLevelBadge
+   - PresenceTimeline
+
+2. Approvals
+   Components:
+   - PendingApprovalsList
+   - ApprovalHistoryList
+   - ApprovalDetailsDrawer
+
+3. Files
+   Components:
+   - ReceivedFilesPanel
+   - SentFilesPanel
+   - TransferHistory
+   - StorageUsageMeter
+
+4. Audit
+   Components:
+   - AuditTimeline
+   - AuditEventCard
+   - HashChainStatus
+
+5. Diagnostics
+   Components:
+   - LocalAgentHealthCard
+   - ControlPlaneHealthCard
+   - HeartbeatStatusCard
+   - RelayPollerStatusCard
+   - NotificationBridgeStatusCard
+   - IndexedFoldersCard
+   - QueueDepthCard
+   - DebugBundleButton
+
+6. Settings
+   Components:
+   - ControlPlaneSettings
+   - NotificationSettings
+   - ApprovalPolicySettings
+   - IndexedFoldersSettings
+   - PrivacySettings
+   - Logout/Revoke Device
+
+============================================================
+ADMIN PORTAL REDESIGN
+============================================================
+
+Use Flowbite React for admin portal.
+
+Do not use Flowbite in the main Agentic Chat unless already present and necessary.
+
+Admin layout:
+- Flowbite Sidebar
+- Flowbite Navbar
+- Flowbite Cards
+- Flowbite Tables
+- Flowbite Badges
+- Flowbite Timeline
+- Flowbite Modal
+- Flowbite Toast
+- Flowbite Breadcrumb
+- Flowbite Pagination
+- Flowbite Dropdown
+- Flowbite Alert
+
+Admin pages:
+
+1. Dashboard
+   - total users
+   - active devices
+   - online agents
+   - relay tasks today
+   - transfers today
+   - failed tasks
+   - stale agents
+   - audit status
+
+2. Users
+   - table
+   - search
+   - status badges
+   - disable user
+   - view devices/agents
+
+3. Devices
+   - table
+   - OS
+   - last seen
+   - public key fingerprint
+   - status
+   - revoke device
+
+4. Agent Instances
+   - table
+   - capabilities
+   - version
+   - relay inbox
+   - last heartbeat
+   - disable agent
+
+5. Presence
+   - online/stale/offline
+   - heartbeat timeline
+   - queue depth
+   - relay poll status
+
+6. A2A Relay Tasks
+   - from/to
+   - task type
+   - state
+   - created/completed
+   - failure reason
+   - payload inspect drawer
+
+7. File Transfers
+   - sender
+   - receiver
+   - file name
+   - size
+   - SHA-256
+   - status
+   - expiry
+   - receipt
+
+8. Approvals
+   - requested
+   - approved/rejected
+   - task ID
+   - resource hash
+   - timestamp
+
+9. Audit Events
+   - timeline
+   - table
+   - filter
+   - export
+   - hash-chain verify
+
+10. Security / Revocation
+   - revoke device
+   - disable agent
+   - force logout
+   - rotate secrets later
+
+Admin backend:
+- GET /v1/admin/users
+- GET /v1/admin/devices
+- GET /v1/admin/agent-instances
+- GET /v1/admin/presence
+- GET /v1/admin/tasks
+- GET /v1/admin/transfers
+- GET /v1/admin/audit
+
+Rules:
+- Admin portal must not show file bytes.
+- Admin portal must not show local file paths.
+- Normal user token must not access admin APIs.
+- Add tests proving this.
+
+============================================================
+BACKEND INTEGRATION REQUIREMENTS
+============================================================
+
+Create typed API clients.
+
+ui/src/api/localAgentClient.ts
+- base URL from env/local config
+- typed fetch wrapper
+- handles errors
+- handles timeout
+- handles offline state
+
+ui/src/api/cloudAuthApi.ts
+- signup
+- login
+- logout
+- me
+
+ui/src/api/cloudDirectoryApi.ts
+- directory search
+- contacts
+
+ui/src/api/chatApi.ts
+- conversations
+- messages
+- send message
+
+ui/src/api/relayApi.ts
+- send relay message
+- send file request
+- inbox status
+
+ui/src/api/approvalsApi.ts
+- pending approvals
+- approve
+- reject
+- feedback
+
+ui/src/api/filesApi.ts
+- received files
+- open file
+- verify hash
+
+ui/src/api/auditApi.ts
+- audit events
+
+ui/src/api/diagnosticsApi.ts
+- health
+- heartbeat
+- relay status
+- notification bridge
+
+Use TanStack Query hooks:
+
+useCloudStatus()
+useCurrentProfile()
+useSignup()
+useLogin()
+useEnrollDevice()
+useDirectorySearch(query)
+useContacts()
+useConversations()
+useConversationMessages(conversationId)
+useSendMessage()
+useSendFileRequest()
+usePendingApprovals()
+useApproveFileRequest()
+useRejectFileRequest()
+useSubmitApprovalFeedback()
+useReceivedFiles()
+useAuditEvents()
+useAgentDiagnostics()
+useOfflineOutbox()
+
+Optimistic UI:
+- normal message send should appear immediately as pending
+- file request should appear immediately as submitted
+- failed sends show retry
+- approval click shows pending decision but does not show “sent” until backend confirms
+
+Polling:
+- messages every 2–5 seconds
+- pending approvals every 2–5 seconds
+- presence every 5–15 seconds
+- relay status every 2–5 seconds
+
+Add RealtimeTransport abstraction:
+RealtimeTransport
+  PollingTransport
+  SseTransport later
+  WebSocketTransport later
+
+Do not require WebSocket now.
+
+============================================================
+STREAM CHAT-LIKE COMPONENTS WITHOUT STREAM API
+============================================================
+
+Build these yourself.
+
+ChannelList
+- conversations grouped by:
+  active
+  pending approvals
+  file transfers
+  recent
+- search
+- refresh
+
+ChannelPreview
+- name
+- avatar
+- last message
+- status
+- badges
+- chevron
+
+ChannelHeader
+- peer name
+- peer agent ID
+- presence
+- relay status
+- action menu
+
+VirtualizedMessageList
+- TanStack Virtual
+- date separators
+- unread divider
+- auto-scroll
+- scroll-to-bottom
+
+MessageComposer
+- prompt-kit PromptInput
+- attachments
+- file request intent
+- slash commands
+- send states
+
+AttachmentPreview
+- file icon
+- image preview
+- PDF/code icon
+- size
+- remove button
+
+TypingIndicator / AgentActivityIndicator
+- human typing later
+- agent searching/working now
+
+ThreadDrawer / TaskDrawer
+- opens selected A2A task
+- task timeline
+- payload inspector
+- approval state
+- transfer state
+
+SearchPanel
+- search contacts
+- search conversation messages
+- search received files
+- search audit/task IDs
+
+OfflineBanner
+- local agent offline
+- control plane offline
+- relay unavailable
+
+============================================================
+ACCESSIBILITY REQUIREMENTS
+============================================================
+
+Target WCAG 2.2 AA basics.
+
+Implement:
+- keyboard navigation for sidebar, conversation list, message actions, composer, approval card
+- accessible names for icon buttons
+- visible focus states
+- aria-live for new messages and agent status updates
+- do not rely on color alone for status
+- approval buttons must be reachable by keyboard
+- modal/drawer focus trap
+- Escape closes drawer/modal
+- Enter/Shift+Enter behavior documented
+- high contrast text
+- reduced motion support
+
+Add tests where feasible:
+- approval buttons have accessible labels
+- composer can submit by keyboard
+- directory search is keyboard usable
+- modal focus trap works
+- no obvious axe violations if axe is installed
+
+============================================================
+VISUAL REDESIGN REQUIREMENTS
+============================================================
+
+Replace the current purple-heavy beginner UI with a polished Oracle Amigo design system.
+
+Design direction:
+- dark-first
+- enterprise-grade
+- premium agent cockpit
+- readable, calm, not over-animated
+- subtle gradients
+- better spacing
+- better typography
+- fewer harsh borders
+- stronger hierarchy
+
+The UI should feel like:
+- Slack/WhatsApp ease of use
+- Linear-level task polish
+- ChatGPT-like AI interaction
+- Raycast-like command speed
+- enterprise security dashboard
+
+Must fix:
+- too many equal borders
+- weak hierarchy
+- oversized sidebar items
+- basic message cards
+- generic tabs
+- no strong approval visual
+- no clear human vs agent vs system distinction
+- no premium empty state
+- no task timeline identity
+
+Message visual rules:
+- human outgoing: compact colored bubble
+- human incoming: neutral bubble
+- agent message: elevated card with agent icon
+- system event: subtle timeline entry
+- tool call: collapsible technical card
+- approval: high-importance card
+- transfer: progress/timeline card
+- receipt: artifact card
+- errors: clear retry card
+
+============================================================
+TESTING REQUIREMENTS
+============================================================
+
+Add or update tests.
+
+Frontend unit/component:
+- AuthScreen renders
+- DeviceEnrollmentScreen renders
+- DirectorySearch calls hook
+- ConversationList displays badges
+- MessageComposer sends text
+- FileRequestIntentChip appears
+- ApprovalCard approve/reject/feedback
+- TransferProgressCard stages
+- FileReceiptCard hash verified
+- RightInspector tabs
+- Diagnostics cards
+
+Frontend integration:
+- signup/login/enroll flow with mocked local agent
+- directory search flow
+- normal message optimistic send
+- file request send
+- remote approval card display
+- approval decision
+- transfer receipt display
+- offline state
+
+Browser E2E with Playwright if feasible:
+- signup/login
+- enroll device
+- directory search
+- start conversation
+- send normal message
+- send file request
+- approval card visible
+- approve file
+- transfer receipt visible
+- diagnostics visible
+
+Admin tests:
+- dashboard renders
+- users table
+- devices table
+- agent instances table
+- relay task table
+- transfers table
+- audit table
+- revocation modal
+- admin cannot expose local paths
+
+Run:
+npm run typecheck
+npm test
+npm run build
+npm run test:e2e:relay
+npm --prefix ui test
+npm --prefix ui run build
+npm --prefix apps/admin-portal test
+npm --prefix apps/admin-portal run build
+
+If commands differ, inspect package.json and use the correct scripts.
+
+============================================================
+ACCEPTANCE CRITERIA
+============================================================
+
+Do not mark complete until:
+
+1. UI no longer looks like the current screenshot.
+2. Agentic Chat has polished layout:
+   - top command bar
+   - sidebar
+   - virtualized message timeline
+   - premium composer
+   - right inspector
+3. Auth and enrollment screens work.
+4. Directory search works.
+5. Conversations work.
+6. Normal messages support optimistic send and retry.
+7. File request detection chip works.
+8. File request becomes A2A task.
+9. Approval card shows candidate files and exact action.
+10. Feedback refines search.
+11. Approve/reject works.
+12. Transfer progress card appears.
+13. Receipt card appears with hash verified badge.
+14. Received files panel works.
+15. Audit panel works.
+16. Diagnostics panel works.
+17. Admin portal redesigned with Flowbite-style enterprise UI.
+18. No duplicate component systems for the same purpose.
+19. No Stream Chat dependency.
+20. HeroUI installed and used for app primitives.
+21. Flowbite installed and used only for admin/enterprise utility UI.
+22. prompt-kit components installed or equivalent components implemented.
+23. shadcn AI concepts implemented or installed where available.
+24. Accessibility basics implemented.
+25. Tests/build pass.
+26. Existing backend and relay E2E still pass.
+
+============================================================
+IMPLEMENTATION ORDER
+============================================================
+
+Step 0:
+- Inspect current UI and admin portal.
+- Identify existing components to keep, replace, or delete.
+- Write docs/frontend-redesign-plan.md.
+
+Step 1:
+- Install missing dependencies.
+- Configure Tailwind/HeroUI/Flowbite safely.
+- Ensure no CSS collisions.
+
+Step 2:
+- Create design tokens and Oracle Amigo theme.
+- Replace global styles.
+
+Step 3:
+- Build AppShell:
+  top bar, sidebar, main chat, right inspector.
+
+Step 4:
+- Build typed API clients and TanStack Query hooks.
+
+Step 5:
+- Build auth and enrollment screens.
+
+Step 6:
+- Build directory and conversations.
+
+Step 7:
+- Build message timeline and composer.
+
+Step 8:
+- Build file request detection and A2A task cards.
+
+Step 9:
+- Build approval card and candidate file UI.
+
+Step 10:
+- Build transfer progress and receipt UI.
+
+Step 11:
+- Build right inspector tabs.
+
+Step 12:
+- Build diagnostics and audit panels.
+
+Step 13:
+- Redesign admin portal with Flowbite.
+
+Step 14:
+- Add frontend tests and Playwright E2E if feasible.
+
+Step 15:
+- Run full checks and fix failures.
+
+Step 16:
+- Update README/docs with screenshots or component notes.
+
+============================================================
+FINAL RESPONSE FORMAT
+============================================================
+
+When finished, report:
+
+1. Executive summary.
+2. What UI looked like before and what changed.
+3. Dependencies installed.
+4. Components added.
+5. Components removed/replaced.
+6. Files added.
+7. Files modified.
+8. Backend APIs integrated.
+9. Chat features completed.
+10. Approval/file-transfer UI completed.
+11. Admin portal features completed.
+12. Accessibility improvements.
+13. Tests run and results.
+14. Screens or routes to open.
+15. Known limitations.
+16. Next frontend improvements.
+
+Do not hide failures. If any build/test fails, report it clearly.
+
+For Oracle Amigo, these are the direct shadcn AI component links I would use for the agentic chat frontend layer. This maps to your current Oracle Amigo direction: local agent, chat UI, approvals, file-request tasks, A2A relay, diagnostics, received files, and future add-ons like meeting prep and RAG evidence.
+
+shadcn.io’s AI page describes these as React components for conversational AI, including messages, reasoning, tool use, streaming, and citations; the page lists the component set that includes Agent, Artifact, Attachments, Confirmation, Conversation, File Tree, Inline Citation, Message, Panel, Persona, Plan, Prompt Input, Queue, Reasoning, Schema Display, Sources, Suggestion, Task, Terminal, Tool, Toolbar, and others.
+
+Component	Direct docs link	Live preview link	Oracle Amigo usage
+Message	Message docs	Message preview	Human, agent, system, relay, and tool messages
+Conversation	Conversation docs	Conversation preview	Main chat thread / timeline
+Prompt Input	Prompt Input docs	Prompt Input preview	Bottom composer with slash commands, file requests, attachments
+Attachments	Attachments docs	Attachments preview	File upload, received files, local file preview
+Artifact	Artifact docs	Artifact preview	Final file receipt, generated report, future PPT/deck output
+Confirmation	Confirmation docs	Confirmation preview	Approve/reject file transfer, meeting booking, share request
+Reasoning	Reasoning docs	Reasoning preview	“Agent is searching local files…” collapsible trace
+Tool	Tool docs	Tool preview	File search, SHA-256 verification, relay upload, A2A send
+Task	Task docs	Task preview	A2A task lifecycle card
+
+Persona	Persona docs	Persona preview	Human/agent identity, role, trust profile
+Plan	Plan docs	Plan preview	Multi-step agent plan before execution
+Queue	Queue docs	Queue preview	Offline outbox, pending relay tasks, background transfers
+Checkpoint	Checkpoint docs	Checkpoint preview	Approval received, hash verified, transfer completed
+Sources	Sources docs	Sources preview	Future RAG evidence, document sources, meeting-prep citations
+Inline Citation	Inline Citation docs	Inline Citation preview	Inline evidence references for RAG / local document answers
+Code Block	Code Block docs	Code Block preview	Code file previews, command snippets, developer mode
+Terminal	Terminal docs	Terminal preview	Developer diagnostics, command output, debug traces
+File Tree	File Tree docs	File Tree preview	Code/document folder preview
+Schema Display	Schema Display docs	Schema Display preview	A2A / ANP / approval payload inspection
+Loader	Loader docs	Loader preview	Agent loading, relay polling, transfer preparation
+Shimmer	Shimmer docs	Shimmer preview	Premium loading placeholders / streaming state
+Suggestion	Suggestion docs	Suggestion preview	Quick replies: “Send as file request,” “Ask agent,” “Search again”
+Toolbar	Toolbar docs	Toolbar preview	Message actions, approval actions, file actions, developer actions
+Panel	Panel docs	Panel preview	Right inspector: Agent, Approvals, Files, Audit, Diagnostics
+Direct prompt-kit component links
+Component	Direct docs link	Direct install JSON	Use in Oracle Amigo
+ChatContainer	Chat Container docs	chat-container.json	Auto-scrolling chat timeline for human/agent messages
+Message	Message docs	message.json	Accessible human, agent, system, and task messages
+PromptInput	Prompt Input docs	prompt-input.json	Main composer for chat, file requests, and slash commands
+PromptInputTextarea	Prompt Input docs	prompt-input.json	Multiline text area inside the composer
+PromptInputActions	Prompt Input docs	prompt-input.json	Composer action area for attach, request-file, send
+PromptInputAction	Prompt Input docs	prompt-input.json	Individual composer action button with tooltip
+FileUpload	File Upload docs	file-upload.json	Manual file attach/send flow and drag-and-drop upload
+Tool	Tool docs	tool.json	File search, SHA-256 hashing, relay upload, A2A send
+Reasoning	Reasoning docs	reasoning.json	Collapsible “agent is searching / planning” trace
+Steps	Steps docs	steps.json	A2A task timeline: submitted → approval → transfer → receipt
+ThinkingBar	Thinking Bar docs	thinking-bar.json	Agent working state: searching, indexing, verifying, uploading
+TextShimmer	Text Shimmer docs	text-shimmer.json	Premium loading text: “Searching local files…”
+FeedbackBar	Feedback Bar docs	feedback-bar.json	“Was this candidate correct?” or file-search feedback
+ScrollButton	Scroll Button docs	scroll-button.json	Jump to latest message/task update
+SystemMessage	System Message docs	system-message.json	Relay status, security warnings, heartbeat updates
+Markdown	Markdown docs	markdown.json	Rich agent responses, summaries, meeting prep, task notes
+Source	Source docs	source.json	Future RAG sources, local document evidence, meeting-prep citations
+CodeBlock	Code Block docs	code-block.json	Code file previews, command snippets, developer diagnostics
+
+https://heroui.com/en/docs/react/components/button?utm_source=chatgpt.com
+
+https://heroui.com/en/docs/react/components/button-group?utm_source=chatgpt.com
+
+https://heroui.com/en/docs/react/components/avatar
+
+https://heroui.com/en/docs/react/components/badge?utm_source=chatgpt.com
+
+https://heroui.com/en/docs/react/components/chip?utm_source=chatgpt.com
+
+https://heroui.com/en/docs/react/components/card
+
+https://heroui.com/en/docs/react/components/surface
+
+https://heroui.com/en/docs/react/components/input?utm_source=chatgpt.com
+
+https://heroui.com/en/docs/react/components/input-group
+
+https://heroui.com/en/docs/react/components/search-field
+
+https://heroui.com/en/docs/react/components/text-area
+
+https://heroui.com/en/docs/react/components/tabs
+
+https://heroui.com/en/docs/react/components/drawer
+
+https://heroui.com/en/docs/react/components/modal
+
+https://heroui.com/en/docs/react/components/popover
+
+https://heroui.com/en/docs/react/components/toast
+
+https://heroui.com/en/docs/react/components/tooltip
+
+https://heroui.com/en/docs/react/components/table
+
+https://heroui.com/en/docs/react/components/progress-bar
+
+https://heroui.com/en/docs/react/components/progress-circle
+
+https://heroui.com/en/docs/react/components/skeleton
+
+https://heroui.com/en/docs/react/components/spinner
+
+https://heroui.com/en/docs/react/components/switch
+
+https://heroui.com/en/docs/react/components/dropdown
+
+https://heroui.com/en/docs/react/components/list-box
+
+https://heroui.com/en/docs/react/components/calendar
+
+https://heroui.com/en/docs/react/components/date-picker
+
+https://heroui.com/en/docs/react/components/scroll-shadow
+
+https://heroui.com/en/docs/react/components/alert
+
+https://heroui.com/en/docs/react/components/alert-dialog
+
+npm install @heroui/react
+
+https://heroui.com/en/docs/react/components/autocomplete
+
+https://heroui.com/en/docs/react/components/combo-box
+
+https://heroui.com/en/docs/react/components/select
+
+https://heroui.com/en/docs/react/components/pagination
+
+https://heroui.com/en/docs/react/components/kbd
+
+https://heroui.com/en/docs/react/components/separator
+
+https://heroui.com/en/docs/react/components/breadcrumbs#
+
+https://heroui.com/en/docs/react/components/meter
+
+https://heroui.com/en/docs/react/components/toggle-button
+
+https://heroui.com/en/docs/react/components/toggle-button-group
+
+HeroUI’s current docs list the full React component catalog, including Button, ButtonGroup, Avatar, Badge, Chip, Card, Surface, Input, InputGroup, SearchField, TextArea, Tabs, Drawer, Modal, Popover, Toast, Tooltip, Table, ProgressBar, ProgressCircle, Skeleton, Spinner, Switch, Dropdown, ListBox, Calendar, DatePicker, ScrollShadow, Toolbar, Alert, and AlertDialog. HeroUI also describes itself as accessible React components built on React Aria and Tailwind CSS, which makes it a good reference for an enterprise-grade agentic application UI.
+
+Direct HeroUI component links
+HeroUI primitive	Direct docs link	Use in Oracle Amigo
+Button	Button docs	Send, approve, reject, retry, enroll, start chat
+ButtonGroup	ButtonGroup docs	Grouped actions: Approve / Reject / Feedback, chat mode toggles
+Avatar	Avatar docs	User avatars, personal-agent avatars, contact list identities
+Badge	Badge docs	Online dot, unread count, pending approvals, relay status
+Chip	Chip docs	Status labels: Local Agent Online, Relay Polling, Hash Verified
+Card	Card docs	File cards, approval cards, task cards, agent cards
+Surface	Surface docs	Premium app panels, right inspector sections, chat surfaces
+Input	Input docs	Login/signup fields, settings fields, search filters
+InputGroup	InputGroup docs	Composer actions, command input, search with prefix/suffix buttons
+SearchField	SearchField docs	Directory search, command palette, received files search
+TextArea	TextArea docs	Chat composer, approval feedback, file-request refinement
+Tabs	Tabs docs	Right inspector: Agent, Approvals, Files, Audit, Settings
+Drawer	Drawer docs	Mobile inspector, approval details, file preview drawer
+Modal	Modal docs	Enrollment flow, file preview, contact request, diagnostics
+Popover	Popover docs	Agent capability popover, status explanation, quick actions
+Toast	Toast docs	Transfer complete, heartbeat lost, approval sent, relay failed
+Tooltip	Tooltip docs	Icon-only buttons, status badges, file hash explanation
+Table	Table docs	Admin portal, audit logs, transfers, devices, agent instances
+ProgressBar	ProgressBar docs	File upload/download progress, indexing progress
+ProgressCircle	ProgressCircle docs	Compact transfer progress, heartbeat/relay health indicators
+Skeleton	Skeleton docs	Loading conversations, directory results, approval cards
+Spinner	Spinner docs	Small loading states: searching, polling, verifying hash
+Switch	Switch docs	Settings toggles: notifications, relay polling, strict approval
+Dropdown	Dropdown docs	Message actions, contact actions, file actions, profile menu
+ListBox	ListBox docs	Command palette results, agent actions, file candidate menus
+Calendar	Calendar docs	Future meeting scheduling, availability selection
+DatePicker	DatePicker docs	Future meeting date selection, filter audit/transfer history
+ScrollShadow	ScrollShadow docs	Chat timeline, right inspector, long file/audit lists
+Toolbar	Toolbar docs	Message actions, composer actions, admin table actions
+Alert	Alert docs	Relay offline, unsafe action warning, transfer failed, auth expired
+AlertDialog	AlertDialog docs	Dangerous actions: revoke device, deny transfer, delete storage
+Recommended HeroUI install link
+
+HeroUI React package:
+
+HeroUI React npm package
+
+Install:
+
+npm install @heroui/react
+Recommended first HeroUI batch for Oracle Amigo
+
+Use these first because they directly improve your current Agentic Chat UI:
+
+Button
+ButtonGroup
+Avatar
+Badge
+Chip
+Card
+Surface
+Input
+InputGroup
+SearchField
+TextArea
+Tabs
+Drawer
+Modal
+Popover
+Toast
+Tooltip
+ProgressBar
+ProgressCircle
+Skeleton
+Spinner
+Dropdown
+ScrollShadow
+Toolbar
+Alert
+AlertDialog
+
+This gives you the foundation for:
+
+Agentic chat shell
+Directory search
+Conversation list
+Approval cards
+File candidate cards
+Transfer progress
+Right inspector
+Diagnostics
+Settings
+Admin portal shell
+Add these for admin and future scheduling
+
+Use these in the next phase:
+
+Table
+Switch
+ListBox
+Calendar
+DatePicker
+
+These map to:
+
+Admin portal tables
+Security/privacy toggles
+Command palette and action menus
+Future meeting scheduling
+Date-based audit and transfer filters
+Oracle Amigo-specific HeroUI mapping
+Chat shell
+
+Use:
+
+Surface
+Card
+Avatar
+Badge
+Chip
+ScrollShadow
+Toolbar
+Dropdown
+Tooltip
+
+For:
+
+Workspace top bar
+Local agent status
+Heartbeat status
+Relay polling status
+Conversation list
+Agent presence
+Message actions
+Composer
+
+Use:
+
+TextArea
+InputGroup
+Button
+ButtonGroup
+Popover
+Tooltip
+Dropdown
+ListBox
+
+For:
+
+Message composer
+/request-file command
+/send-file command
+/agent-card command
+/status command
+Mention user
+Mention agent
+File-request detection chip
+Approval workflow
+
+Use:
+
+Card
+Surface
+ButtonGroup
+Button
+TextArea
+Chip
+Badge
+AlertDialog
+ProgressBar
+Toast
+
+For:
+
+Candidate file approval
+Reject with reason
+Feedback refinement
+Transfer progress
+Hash verified
+Dangerous transfer warning
+Right inspector
+
+Use:
+
+Tabs
+Drawer
+Card
+Surface
+Table
+ScrollShadow
+Skeleton
+Spinner
+Alert
+
+For:
+
+Agent tab
+Approvals tab
+Files tab
+Audit tab
+Diagnostics tab
+Settings tab
+Loading states
+Error states
+Admin portal
+
+Use:
+
+Table
+Badge
+Chip
+Card
+Tabs
+Modal
+AlertDialog
+Toast
+ProgressBar
+Switch
+Dropdown
+SearchField
+DatePicker
+
+For:
+
+Users
+Devices
+Agent instances
+Presence
+Relay tasks
+File transfers
+Audit logs
+Revocation
+Security toggles
+Date filters
+Extra HeroUI links useful for Oracle Amigo
+Component	Direct link	Why it may help
+Autocomplete	Autocomplete docs	Mention users/agents, command palette, file search filters
+ComboBox	ComboBox docs	Select agent, select indexed folder, select transfer mode
+Select	Select docs	Settings, relay mode, approval policy, org selection
+Pagination	Pagination docs	Admin tables, audit logs, transfer history
+Kbd	Kbd docs	Keyboard shortcut hints in command palette
+Separator	Separator docs	Clean panel separation without excessive borders
+Breadcrumbs	Breadcrumbs docs	Admin portal navigation, task/file detail paths
+Meter	Meter docs	Storage usage, confidence score, approval risk score
+ToggleButton	ToggleButton docs	Toggle chat mode: Human / Agent / File Request
+ToggleButtonGroup	ToggleButtonGroup docs	Composer mode group, inspector filter toggles
+
+Start with the first batch, then add the admin/future-scheduling set. That gives Oracle Amigo a professional, accessible, enterprise-grade UI foundation without overloading the codebase.
+
+I have given you all the direct link and everything please install all the componenents and then integrate all of them with the present Agentic Chat UI and Admin UI by removing the present component and then even please integrate them with the backend for all and every componenet for it. So please implement all those components with respect to there usage. You only install components and then integrate them [Image 1] Even see the present frontend how it is looking dirtiliy where make it with respect to the present components and even with the given heroui components. 
+Frontend should have:
+
+1. Auth and enrollment
+- signup;
+- login;
+- control-plane URL;
+- enroll device;
+- show device fingerprint;
+- show personal agent registration;
+- show heartbeat status.
+
+2. Conversation experience
+- Slack/WhatsApp-style layout;
+- conversation sidebar;
+- directory search;
+- presence indicators;
+- message timeline;
+- message composer;
+- optimistic send;
+- failed-message retry;
+- offline outbox.
+
+3. Agentic workflow UI
+- file-request detection chip;
+- agent searching activity;
+- waiting-for-approval state;
+- approval card with file candidates;
+- feedback textbox;
+- approve/reject;
+- transfer progress;
+- file receipt;
+- hash verified badge;
+- local path hidden badge;
+- task timeline panel;
+- agent card panel.
+
+Where this has been the present frontend of our Agentic Chat but it is not having all the above mentioned components and make my application UI as an dynamic UI. Where I'm trying to build the next gen agentic based chat application where in the present gen those applications are Slack & Whatsapp. So I would like to build the next gen application of it. Where I'm also giving another link https://getstream.io/chat/docs/sdk/react/ where this has all the components of messaging UI. Where if I'm going to use the components from this source means it needs stream chat api but i can't afford it. So please give code implementation itself for that part or else find out if any other source gives the same type of components for free. Where you need to find out and implement all these in an advanced way where you need to clearly plan, please do advanced deep
+  research, do advanced web search, do advanced thinking, please think too longer, please find out everything in an accurate way,
+  where you are an Top Senior Frontend Developer Engineer , who know's what is really needed for this project 
+  * 2. Please find out and implement everything accurately and effectively, where you need to do advanced deep research,do advanced
+  wide research, do advanced planning and accurate integration with correct plan. And even don't repeat the same usage type of components. And where I need to build the best worldclass UI/UX. With user friendly interface with font size, font colour, font style, background combination colour, components size, and screen alignment size, etc... Where you only find out if the next gen Agentic chat is coming to the market means how are they going to look for the users . Will it be user friendly for them? Even figure out components size, screen alignments size, and all the alignments like you are an Senior Dynamic Frontend Developer who builds awsome frontends.

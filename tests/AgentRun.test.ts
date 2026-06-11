@@ -1,7 +1,7 @@
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AgentDecision, AgentReasoner, AgentReasoningContext } from "../src/agent-runs/AgentDecision.js";
+import { AgentDecisionSchema, type AgentDecision, type AgentReasoner, type AgentReasoningContext } from "../src/agent-runs/AgentDecision.js";
 import { buildServer } from "../src/server.js";
 
 vi.setConfig({ testTimeout: 30_000 });
@@ -213,6 +213,23 @@ describe("agent run API", () => {
     expect(reasoner.calls).toBe(3);
 
     await server.close();
+  });
+
+  it("accepts OCI final answers that omit a selected file by returning null", () => {
+    const decision = AgentDecisionSchema.parse({
+      type: "final_answer",
+      reason: "No match was found.",
+      status: "not_found",
+      message: "No matching file was found.",
+      selectedFileId: null
+    });
+
+    expect(decision).toMatchObject({
+      type: "final_answer",
+      status: "not_found"
+    });
+    if (decision.type !== "final_answer") throw new Error("Expected final answer decision");
+    expect(decision.selectedFileId).toBeUndefined();
   });
 });
 

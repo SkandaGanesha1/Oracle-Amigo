@@ -34,6 +34,18 @@ describe("DeviceIdentity", () => {
     const identity = generateOrLoadIdentity();
     expect(identity.did).toMatch(/^did:key:/);
   });
+
+  it("resetLocalIdentity rotates the persisted device key", async () => {
+    const { generateOrLoadIdentity, resetLocalIdentity } = await import("../src/security/DeviceIdentity.js");
+    const first = generateOrLoadIdentity("Alice");
+    const next = resetLocalIdentity("Alice");
+    const loaded = generateOrLoadIdentity("Alice");
+    expect(next.agentId).not.toBe(first.agentId);
+    expect(next.deviceId).not.toBe(first.deviceId);
+    expect(next.publicKey).not.toBe(first.publicKey);
+    expect(loaded.agentId).toBe(next.agentId);
+    expect(loaded.publicKey).toBe(next.publicKey);
+  });
 });
 
 describe("AnpHandshakeAdapter", () => {

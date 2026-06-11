@@ -1,4 +1,4 @@
-import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
+import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -34,7 +34,42 @@ export function generateOrLoadIdentity(displayName = "Local User", dbPath?: stri
 
   const agentId = randomUUID();
   const deviceId = randomUUID();
+  const identity = createIdentity(displayName, agentId, deviceId);
+  db.prepare(`
+    INSERT INTO local_profiles (user_display_name, agent_id, device_id, did, public_key, private_key_ref, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(displayName, identity.agentId, identity.deviceId, identity.did, identity.publicKey, identity.privateKeyRef, new Date().toISOString(), new Date().toISOString());
 
+  return identity;
+}
+
+export function resetLocalIdentity(displayName = "Local User", dbPath?: string): LocalIdentity {
+  const db = getDb(dbPath);
+  const existing = db.prepare("SELECT * FROM local_profiles LIMIT 1").get() as Record<string, string> | undefined;
+  const identity = createIdentity(existing?.user_display_name ?? displayName, randomUUID(), randomUUID());
+  const now = new Date().toISOString();
+  if (existing?.id) {
+    db.prepare(`
+      UPDATE local_profiles
+      SET user_display_name = ?,
+          agent_id = ?,
+          device_id = ?,
+          did = ?,
+          public_key = ?,
+          private_key_ref = ?,
+          updated_at = ?
+      WHERE id = ?
+    `).run(existing.user_display_name ?? displayName, identity.agentId, identity.deviceId, identity.did, identity.publicKey, identity.privateKeyRef, now, existing.id);
+  } else {
+    db.prepare(`
+      INSERT INTO local_profiles (user_display_name, agent_id, device_id, did, public_key, private_key_ref, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(displayName, identity.agentId, identity.deviceId, identity.did, identity.publicKey, identity.privateKeyRef, now, now);
+  }
+  return identity;
+}
+
+function createIdentity(displayName: string, agentId: string, deviceId: string): LocalIdentity {
   const { publicKey, privateKey } = generateKeyPairSync("ed25519", {
     publicKeyEncoding: { type: "spki", format: "pem" },
     privateKeyEncoding: { type: "pkcs8", format: "pem" },
@@ -52,12 +87,6 @@ export function generateOrLoadIdentity(displayName = "Local User", dbPath?: stri
   if (process.platform !== "win32") {
     try { chmodSync(privateKeyRef, 0o600); } catch { /* ignore */ }
   }
-
-  const now = new Date().toISOString();
-  db.prepare(`
-    INSERT INTO local_profiles (user_display_name, agent_id, device_id, did, public_key, private_key_ref, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(displayName, agentId, deviceId, did, pubKeyHex, privateKeyRef, now, now);
 
   return { agentId, deviceId, did, publicKey: pubKeyHex, privateKeyRef };
 }

@@ -124,6 +124,43 @@ export class ChatRepository {
     return row ? rowToConversation(row) : null;
   }
 
+  findCloudRelayConversationByPeerAgent(peerAgentInstanceId: string): ChatConversationRecord | null {
+    const row = this.db.prepare(`
+      SELECT id, org_id, local_user_id, local_agent_instance_id, peer_user_id, peer_agent_instance_id,
+             mode, title, created_at, updated_at, last_message_at, unread_count
+      FROM conversations
+      WHERE mode = 'cloud_relay' AND peer_agent_instance_id = ?
+      ORDER BY
+        CASE WHEN peer_user_id IS NOT NULL THEN 0 ELSE 1 END,
+        COALESCE(last_message_at, updated_at, created_at) DESC
+      LIMIT 1
+    `).get(peerAgentInstanceId) as Record<string, unknown> | undefined;
+    return row ? rowToConversation(row) : null;
+  }
+
+  findCloudRelayConversationByPeerUser(peerUserId: string): ChatConversationRecord | null {
+    const row = this.db.prepare(`
+      SELECT id, org_id, local_user_id, local_agent_instance_id, peer_user_id, peer_agent_instance_id,
+             mode, title, created_at, updated_at, last_message_at, unread_count
+      FROM conversations
+      WHERE mode = 'cloud_relay' AND peer_user_id = ?
+      ORDER BY COALESCE(last_message_at, updated_at, created_at) DESC
+      LIMIT 1
+    `).get(peerUserId) as Record<string, unknown> | undefined;
+    return row ? rowToConversation(row) : null;
+  }
+
+  updateConversationPeerAgent(conversationId: string, peerAgentInstanceId: string): ChatConversationRecord | null {
+    const now = new Date().toISOString();
+    this.db.prepare(`
+      UPDATE conversations
+      SET peer_agent_instance_id = ?, peer_agent_id = ?, updated_at = ?
+      WHERE id = ?
+    `).run(peerAgentInstanceId, peerAgentInstanceId, now, conversationId);
+    this.ensureParticipant(conversationId, null, peerAgentInstanceId, "peer");
+    return this.getConversation(conversationId);
+  }
+
   listConversations(): ChatConversationRecord[] {
     const rows = this.db.prepare(`
       SELECT id, org_id, local_user_id, local_agent_instance_id, peer_user_id, peer_agent_instance_id,
@@ -143,6 +180,7 @@ export class ChatRepository {
          message_type, text, payload_json, delivery_status, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
+        text=excluded.text,
         delivery_status=excluded.delivery_status,
         payload_json=excluded.payload_json,
         updated_at=excluded.updated_at

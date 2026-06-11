@@ -1,4 +1,5 @@
 import type { FC } from "react";
+import { Surface } from "@heroui/react";
 import { SessionBanner } from "../auth/SessionBanner";
 import { AdminRouter } from "./AdminRouter";
 import { Header } from "./Header";
@@ -10,7 +11,7 @@ interface Props {
 }
 
 export const AdminLayout: FC<Props> = ({ session }) => (
-  <div className="flex h-full w-full flex-col overflow-hidden rounded-2xl border border-white/10 bg-[#0a0a0c]/95 text-white shadow-2xl">
+  <Surface className="flex h-full w-full flex-col overflow-hidden rounded-2xl border border-white/10 bg-[#0a0a0c]/95 text-white shadow-2xl">
     <SessionBanner session={session} />
     <div className="flex min-h-0 flex-1 overflow-hidden">
       <Sidebar />
@@ -21,5 +22,5 @@ export const AdminLayout: FC<Props> = ({ session }) => (
         </main>
       </div>
     </div>
-  </div>
+  </Surface>
 );

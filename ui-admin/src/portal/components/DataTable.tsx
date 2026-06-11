@@ -7,7 +7,8 @@ import {
   type ColumnDef,
   type SortingState
 } from "@tanstack/react-table";
-import { ArrowDown, ArrowUp, ArrowUpDown, Search } from "lucide-react";
+import { Chip, SearchField, Surface } from "@heroui/react";
+import { ArrowDown, ArrowUp, ArrowUpDown } from "lucide-react";
 import { Fragment, useState, type FC, type ReactNode } from "react";
 
 interface DataTableProps<T> {
@@ -63,25 +64,28 @@ export function DataTable<T>({
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-1 items-center gap-2">
           {toolbarLeft}
-          <div className="relative w-full max-w-xs">
-            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3 w-3 -translate-y-1/2 text-white/40" />
-            <input
-              type="text"
-              value={globalFilter}
-              onChange={(e) => setGlobalFilter(e.target.value)}
-              placeholder={globalFilterPlaceholder}
-              className="w-full rounded-md border border-white/10 bg-black/30 py-1.5 pl-7 pr-3 text-xs text-white outline-none placeholder:text-white/35 focus:border-emerald-300/40"
-            />
-          </div>
+          <SearchField
+            aria-label="Filter table rows"
+            value={globalFilter}
+            onChange={setGlobalFilter}
+            fullWidth
+            className="max-w-xs"
+          >
+            <SearchField.Group>
+              <SearchField.SearchIcon />
+              <SearchField.Input placeholder={globalFilterPlaceholder} />
+              <SearchField.ClearButton />
+            </SearchField.Group>
+          </SearchField>
         </div>
         <div className="flex items-center gap-2">
           {toolbarRight}
-          <span className="rounded-md border border-white/10 bg-white/5 px-2 py-0.5 text-[10px] text-white/55">
+          <Chip size="sm" variant="soft" className="text-white/60">
             {rows.length} {rows.length === 1 ? "row" : "rows"}
-          </span>
+          </Chip>
         </div>
       </div>
-      <div className="min-h-0 flex-1 overflow-auto rounded-xl border border-white/10 bg-[#08080a]/80">
+      <Surface className="min-h-0 flex-1 overflow-auto rounded-xl border border-white/10 bg-[#08080a]/80">
         <table className="w-full border-collapse text-left text-xs text-white/85">
           <thead className="sticky top-0 z-10 bg-[#0d0d10]/95 backdrop-blur">
             {table.getHeaderGroups().map((group) => (
@@ -149,7 +153,7 @@ export function DataTable<T>({
             )}
           </tbody>
         </table>
-      </div>
+      </Surface>
     </div>
   );
 }

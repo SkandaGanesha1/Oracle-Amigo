@@ -15,6 +15,8 @@ export interface LocalCloudIdentity {
   userAccessToken: string | null;
   deviceAccessToken: string | null;
   refreshToken: string | null;
+  userRefreshToken: string | null;
+  deviceRefreshToken: string | null;
   status: "disconnected" | "authenticated" | "enrolled";
   createdAt: string;
   updatedAt: string;
@@ -33,6 +35,8 @@ export interface LocalCloudIdentityPatch {
   userAccessToken?: string | null;
   deviceAccessToken?: string | null;
   refreshToken?: string | null;
+  userRefreshToken?: string | null;
+  deviceRefreshToken?: string | null;
   status?: LocalCloudIdentity["status"];
 }
 
@@ -76,6 +80,8 @@ export class LocalCloudIdentityStore {
       userAccessToken: pick(patch, "userAccessToken", existing?.userAccessToken ?? null),
       deviceAccessToken: pick(patch, "deviceAccessToken", existing?.deviceAccessToken ?? null),
       refreshToken: pick(patch, "refreshToken", existing?.refreshToken ?? null),
+      userRefreshToken: pick(patch, "userRefreshToken", existing?.userRefreshToken ?? null),
+      deviceRefreshToken: pick(patch, "deviceRefreshToken", existing?.deviceRefreshToken ?? null),
       status: pick(patch, "status", existing?.status ?? "disconnected"),
       createdAt: existing?.createdAt ?? now,
       updatedAt: now
@@ -85,8 +91,9 @@ export class LocalCloudIdentityStore {
       INSERT INTO local_cloud_identity
         (profile_id, control_plane_url, org_id, user_id, user_email, display_name,
          device_id, agent_id, agent_instance_id, relay_inbox_url, user_access_token,
-         device_access_token, refresh_token, status, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         device_access_token, refresh_token, user_refresh_token, device_refresh_token,
+         status, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(profile_id) DO UPDATE SET
         control_plane_url=excluded.control_plane_url,
         org_id=excluded.org_id,
@@ -100,6 +107,8 @@ export class LocalCloudIdentityStore {
         user_access_token=excluded.user_access_token,
         device_access_token=excluded.device_access_token,
         refresh_token=excluded.refresh_token,
+        user_refresh_token=excluded.user_refresh_token,
+        device_refresh_token=excluded.device_refresh_token,
         status=excluded.status,
         updated_at=excluded.updated_at
     `).run(
@@ -116,6 +125,8 @@ export class LocalCloudIdentityStore {
       next.userAccessToken,
       next.deviceAccessToken,
       next.refreshToken,
+      next.userRefreshToken,
+      next.deviceRefreshToken,
       next.status,
       next.createdAt,
       next.updatedAt
@@ -128,6 +139,8 @@ export class LocalCloudIdentityStore {
       userAccessToken: null,
       deviceAccessToken: null,
       refreshToken: null,
+      userRefreshToken: null,
+      deviceRefreshToken: null,
       status: "disconnected"
     });
   }
@@ -148,6 +161,8 @@ function rowToIdentity(row: Record<string, unknown>): LocalCloudIdentity {
     userAccessToken: nullable(row.user_access_token),
     deviceAccessToken: nullable(row.device_access_token),
     refreshToken: nullable(row.refresh_token),
+    userRefreshToken: nullable(row.user_refresh_token) ?? nullable(row.refresh_token),
+    deviceRefreshToken: nullable(row.device_refresh_token),
     status: String(row.status) as LocalCloudIdentity["status"],
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at)

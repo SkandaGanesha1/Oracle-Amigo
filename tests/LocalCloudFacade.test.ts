@@ -108,6 +108,110 @@ describe("local cloud facade", () => {
     expect(status.statusCode).toBe(200);
     expect(status.body).not.toContain(stored!.deviceAccessToken!);
     expect(status.json().cloud.hasDeviceAccessToken).toBe(true);
+    expect(status.json().controlPlane).toMatchObject({
+      savedUrl: controlPlaneUrl,
+      configuredUrl: controlPlaneUrl,
+      matchesConfigured: true,
+      reachable: true,
+      status: "ok"
+    });
+  }, 60_000);
+
+  it("clears stale device enrollment fields when signing in as a different cloud user", async () => {
+    const store = new LocalCloudIdentityStore();
+    const previous = store.get("test-profile");
+    try {
+      store.save("test-profile", {
+        deviceId: "dev_stale",
+        agentId: "agt_stale",
+        agentInstanceId: "agi_stale",
+        relayInboxUrl: "http://127.0.0.1:9/v1/relay/a2a/inbox",
+        deviceAccessToken: "stale-device-token",
+        deviceRefreshToken: "stale-device-refresh-token",
+        status: "enrolled"
+      });
+
+      const signup = await localAgent.inject({
+        method: "POST",
+        url: "/cloud/signup",
+        payload: {
+          email: `facade-fresh-${Date.now()}@example.com`,
+          password: "securePass123!",
+          display_name: "Fresh Identity",
+          control_plane_url: controlPlaneUrl
+        }
+      });
+      expect(signup.statusCode).toBe(200);
+      const stored = store.get("test-profile");
+      expect(stored?.status).toBe("authenticated");
+      expect(stored?.deviceId).toBeNull();
+      expect(stored?.agentId).toBeNull();
+      expect(stored?.agentInstanceId).toBeNull();
+      expect(stored?.relayInboxUrl).toBeNull();
+      expect(stored?.deviceAccessToken).toBeNull();
+      expect(stored?.deviceRefreshToken).toBeNull();
+    } finally {
+      if (previous) {
+        store.save("test-profile", {
+          controlPlaneUrl: previous.controlPlaneUrl,
+          orgId: previous.orgId,
+          userId: previous.userId,
+          userEmail: previous.userEmail,
+          displayName: previous.displayName,
+          deviceId: previous.deviceId,
+          agentId: previous.agentId,
+          agentInstanceId: previous.agentInstanceId,
+          relayInboxUrl: previous.relayInboxUrl,
+          userAccessToken: previous.userAccessToken,
+          deviceAccessToken: previous.deviceAccessToken,
+          refreshToken: previous.refreshToken,
+          userRefreshToken: previous.userRefreshToken,
+          deviceRefreshToken: previous.deviceRefreshToken,
+          status: previous.status
+        });
+      }
+    }
+  }, 60_000);
+
+  it("reports stale enrollment when the saved control plane is unreachable or mismatched", async () => {
+    const store = new LocalCloudIdentityStore();
+    const previous = store.get("test-profile");
+    store.save("test-profile", {
+      controlPlaneUrl: "http://127.0.0.1:9",
+      status: "enrolled",
+      userAccessToken: "test-user-token",
+      deviceAccessToken: "test-device-token",
+      agentInstanceId: "agi_dead-control-plane"
+    });
+
+    const status = await localAgent.inject({ method: "GET", url: "/cloud/status" });
+    expect(status.statusCode).toBe(200);
+    expect(status.json().controlPlane).toMatchObject({
+      savedUrl: "http://127.0.0.1:9",
+      configuredUrl: controlPlaneUrl,
+      matchesConfigured: false,
+      reachable: false,
+      status: "unreachable"
+    });
+    if (previous) {
+      store.save("test-profile", {
+        controlPlaneUrl: previous.controlPlaneUrl,
+        orgId: previous.orgId,
+        userId: previous.userId,
+        userEmail: previous.userEmail,
+        displayName: previous.displayName,
+        deviceId: previous.deviceId,
+        agentId: previous.agentId,
+        agentInstanceId: previous.agentInstanceId,
+        relayInboxUrl: previous.relayInboxUrl,
+        userAccessToken: previous.userAccessToken,
+        deviceAccessToken: previous.deviceAccessToken,
+        refreshToken: previous.refreshToken,
+        userRefreshToken: previous.userRefreshToken,
+        deviceRefreshToken: previous.deviceRefreshToken,
+        status: previous.status
+      });
+    }
   }, 60_000);
 
   it("passes through control-plane auth errors instead of masking them", async () => {
@@ -145,6 +249,113 @@ describe("local cloud facade", () => {
       error: "CONTROL_PLANE_UNAVAILABLE",
       message: expect.stringContaining("http://127.0.0.1:9")
     });
+  }, 60_000);
+
+  it("maps cross-user device key conflicts and recovers after explicit local identity reset", async () => {
+    const ts = Date.now();
+    const firstSignup = await localAgent.inject({
+      method: "POST",
+      url: "/cloud/signup",
+      payload: {
+        email: `facade-owner-${ts}@example.com`,
+        password: "securePass123!",
+        display_name: "Original Owner",
+        control_plane_url: controlPlaneUrl
+      }
+    });
+    expect(firstSignup.statusCode).toBe(200);
+    const ownerReset = await localAgent.inject({ method: "POST", url: "/cloud/device-identity/reset" });
+    expect(ownerReset.statusCode).toBe(200);
+    const firstEnroll = await localAgent.inject({
+      method: "POST",
+      url: "/cloud/enroll",
+      payload: {
+        device_name: "Shared Laptop",
+        agent_display_name: "Original Agent"
+      }
+    });
+    expect(firstEnroll.statusCode).toBe(200);
+
+    const secondSignup = await localAgent.inject({
+      method: "POST",
+      url: "/cloud/signup",
+      payload: {
+        email: `facade-new-owner-${ts}@example.com`,
+        password: "securePass123!",
+        display_name: "New Owner",
+        control_plane_url: controlPlaneUrl
+      }
+    });
+    expect(secondSignup.statusCode).toBe(200);
+    const conflict = await localAgent.inject({
+      method: "POST",
+      url: "/cloud/enroll",
+      payload: {
+        device_name: "Shared Laptop",
+        agent_display_name: "New Owner Agent"
+      }
+    });
+    expect(conflict.statusCode).toBe(409);
+    expect(conflict.json()).toMatchObject({
+      error: "DEVICE_KEY_OWNED_BY_OTHER_USER",
+      message: "Device public key already enrolled by another user"
+    });
+    expect(conflict.body).not.toContain("BEGIN PRIVATE KEY");
+    expect(conflict.body).not.toContain("deviceAccessToken");
+
+    const reset = await localAgent.inject({ method: "POST", url: "/cloud/device-identity/reset" });
+    expect(reset.statusCode).toBe(200);
+    expect(reset.json()).toMatchObject({ ok: true });
+    expect(reset.json().localPublicKeyFingerprint).toMatch(/^[a-f0-9]{16}$/);
+
+    const recoveredEnroll = await localAgent.inject({
+      method: "POST",
+      url: "/cloud/enroll",
+      payload: {
+        device_name: "Shared Laptop",
+        agent_display_name: "New Owner Agent"
+      }
+    });
+    expect(recoveredEnroll.statusCode).toBe(200);
+    expect(new LocalCloudIdentityStore().get("test-profile")?.status).toBe("enrolled");
+  }, 60_000);
+
+  it("reports expired local device tokens as recoverable cloud status", async () => {
+    const store = new LocalCloudIdentityStore();
+    const previous = store.get("test-profile");
+    const expiredToken = `header.${Buffer.from(JSON.stringify({ exp: 1 })).toString("base64url")}.sig`;
+    store.save("test-profile", {
+      status: "enrolled",
+      deviceAccessToken: expiredToken,
+      userRefreshToken: "refresh-token",
+      agentInstanceId: "agi_expired"
+    });
+    const status = await localAgent.inject({ method: "GET", url: "/cloud/status" });
+    expect(status.statusCode).toBe(200);
+    expect(status.json()).toMatchObject({
+      tokenIssue: "expired",
+      canRecoverDeviceToken: true
+    });
+    expect(status.json().localPublicKeyFingerprint).toMatch(/^[a-f0-9]{16}$/);
+    if (previous) {
+      store.save("test-profile", {
+        controlPlaneUrl: previous.controlPlaneUrl,
+        orgId: previous.orgId,
+        userId: previous.userId,
+        userEmail: previous.userEmail,
+        displayName: previous.displayName,
+        deviceId: previous.deviceId,
+        agentId: previous.agentId,
+        agentInstanceId: previous.agentInstanceId,
+        relayInboxUrl: previous.relayInboxUrl,
+        userAccessToken: previous.userAccessToken,
+        deviceAccessToken: previous.deviceAccessToken,
+        refreshToken: previous.refreshToken,
+        userRefreshToken: previous.userRefreshToken,
+        deviceRefreshToken: previous.deviceRefreshToken,
+        status: previous.status
+      });
+    }
   }, 60_000);
 
   it("polls relay inbox and turns a remote file request into a pending approval", async () => {

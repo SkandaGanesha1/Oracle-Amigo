@@ -5,6 +5,8 @@ import {
   ackRelay, fetchInbox, getRelayTask, respondRelay, sendRelay
 } from "./A2ARelayService.js";
 import { loadConfig } from "./../config.js";
+import { getDb } from "../db/connection.js";
+import { toCloudAgentCard } from "../enrollment/CloudAgentCard.js";
 
 const SendSchema = z.object({
   to_agent_instance_id: z.string().min(1),
@@ -19,6 +21,35 @@ const RespondSchema = z.object({
 });
 
 export async function registerA2ARelayRoutes(app: FastifyInstance): Promise<void> {
+  app.get("/v1/relay/a2a/:agent_instance_id", { preHandler: requireDeviceAuth() }, async (req, reply) => {
+    if (!req.deviceContext) {
+      reply.code(401).send({ error: "UNAUTHORIZED" });
+      return;
+    }
+    const { agent_instance_id } = req.params as { agent_instance_id: string };
+    const db = getDb();
+    const row = db.prepare(`
+      SELECT * FROM agent_instances WHERE org_id = ? AND id = ?
+    `).get(req.deviceContext.orgId, agent_instance_id) as Record<string, unknown> | undefined;
+    if (!row) {
+      reply.code(404).send({ error: "NOT_FOUND", message: "Agent instance not found" });
+      return;
+    }
+    try {
+      const cfg = loadConfig();
+      const signingKey = cfg.AGENT_CARD_SIGNING_PRIVATE_KEY_PEM
+        ? { privateKeyPem: cfg.AGENT_CARD_SIGNING_PRIVATE_KEY_PEM, kid: cfg.AGENT_CARD_SIGNING_KEY_ID }
+        : undefined;
+      reply.send(toCloudAgentCard(JSON.parse(String(row.agent_card_json)), {
+        publicBaseUrl: cfg.CONTROL_PLANE_PUBLIC_URL,
+        agentInstanceId: agent_instance_id,
+        signingKey
+      }));
+    } catch {
+      reply.code(500).send({ error: "INVALID_CARD", message: "Stored agent card is not valid JSON" });
+    }
+  });
+
   app.post("/v1/relay/a2a/send", { preHandler: requireDeviceAuth() }, async (req, reply) => {
     if (!req.deviceContext) {
       reply.code(401).send({ error: "UNAUTHORIZED" });

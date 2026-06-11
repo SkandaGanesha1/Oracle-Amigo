@@ -55,7 +55,7 @@ export const ApprovalCard: FC<{
         </div>
       </div>
 
-      {selectedFileId && (
+      {selectedFileId !== null && (
         <div className="mt-3 flex flex-wrap gap-2">
           <button
             type="button"

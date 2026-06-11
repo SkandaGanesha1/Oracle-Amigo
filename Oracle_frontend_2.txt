@@ -1,0 +1,860 @@
+Oracle Amigo Frontend Redesign Plan
+1. Current State Assessment
+What exists now:
+- ui/src/components/StreamLikeChat.tsx — 1338-line monolith handling auth, conversations, messaging, approvals, and diagnostics all in one file
+- components/ui/ — 50 shared prompt-kit/shadcn-style components that are NOT used by the main chat
+- ui/src/hooks/queries.ts — TanStack Query hooks that are NOT consumed by the main chat (it uses manual useState+useEffect+setInterval polling instead)
+- Design: Slack-inspired cream/aubergine light theme with custom CSS (1252 lines in styles.css)
+- No client-side router — single-page SPA with no URL-based navigation
+- Auth — embedded inline CloudConnectForm inside the chat view (no dedicated auth screen)
+- Admin portal — separate ui-admin/ SPA with hash-based routing, well-structured
+- HeroUI v3 already installed; Flowbite NOT installed
+Problems to fix:
+ 1. Monolithic component is unmaintainable
+ 2. 50 shared components exist but are unused
+ 3. Light-purple theme feels beginner-level
+ 4. No dedicated auth/enrollment screens
+ 5. No right-inspector panel
+ 6. No routing for multi-screen flows
+ 7. No virtualization for message list
+ 8. No offline outbox UI
+ 9. No file-request detection chip
+10. Approval card is basic
+11. No transfer progress visualization
+12. No task timeline cards
+13. Admin portal is functional but could be more polished
+2. Target Architecture
+Component Ownership Model
+Source	Use in Agentic Chat	Use in Admin Portal
+prompt-kit (in components/ui/)	Chat container, message bubbles, composer, thinking bar, file upload, tool, reasoning, steps, code block, source, scroll button	No
+shadcn AI concepts (new components/agentic-ai/)	Agent card, plan, queue, checkpoint, panel, suggestion, persona, schema display, inline citation	No
+HeroUI	Primitives (Button, Avatar, Badge, Chip, Card, Surface, Tabs, Drawer, Modal, Popover, Toast, Tooltip, Skeleton, Spinner, ScrollShadow, Dropdown, Input, TextArea, Progress, Alert, Switch)	Primitives (already used)
+Flowbite React	No	Admin sidebar, navbar, tables, timeline, pagination, accordion, breadcrumb, file input, list group
+Layout Architecture (4-Zone)
+┌──────────────────────────────────────────────────────────┐
+│  Top Command Bar (status, profile, global actions)       │  h-14
+├──────────┬──────────────────────────────────┬─────────────┤
+│          │                                  │             │
+│  Left    │  Main Chat Area                  │  Right      │
+│  Sidebar │  (header + timeline + composer)  │  Inspector  │
+│  w-72    │  flex-1                          │  w-80       │
+│          │                                  │             │
+│ ● dir    │  ┌─Conversation Header────────┐  │ Tabs:      │
+│ search   │  │ Avatar · Name · Presence   │  │ Agent      │
+│ ○ convs  │  └────────────────────────────┘  │ Approvals  │
+│ ○ files  │  ┌─Message Timeline──────────┐  │ Files      │
+│          │  │ Virtualized scroll         │  │ Audit      │
+│          │  │ Date separators            │  │ Diag       │
+│          │  │ Unread divider             │  │ Settings   │
+│          │  │ Agent activity cards       │  │            │
+│          │  │ Approval cards             │  │            │
+│          │  │ Transfer cards             │  │            │
+│          │  └────────────────────────────┘  │            │
+│          │  ┌─Composer Dock─────────────┐  │            │
+│          │  │ File-request chip         │  │            │
+│          │  │ Textarea · Attach · Send  │  │            │
+│          │  │ Offline indicator         │  │            │
+│          │  └────────────────────────────┘  │            │
+│          │                                  │            │
+├──────────┴──────────────────────────────────┴─────────────┤
+│  Status Bar (heartbeat, relay, notifications)             │  h-8
+└──────────────────────────────────────────────────────────┘
+Routing Plan
+/                  → AuthScreen (redirect if not signed in)
+/signup            → SignupForm
+/login             → LoginForm  
+/enroll            → DeviceEnrollmentScreen
+/chat              → MainChatLayout (requires auth + enrollment)
+/chat/:id          → MainChatLayout with selected conversation
+/inspector/agent   → Right inspector on Agent tab
+/inspector/approvals
+/inspector/files
+/inspector/audit
+/inspector/diagnostics
+/inspector/settings
+/files             → ReceivedFilesPanel (full page)
+/audit             → AuditTimeline (full page)
+/admin/*           → (separate SPA, unchanged routing)
+Use React Router v7 (or lightweight wouter) — no need for a heavy router.
+3. Design System
+Theme (Dark-First)
+:root {
+  --oa-bg: #070A0F;
+  --oa-bg-elevated: #0D1117;
+  --oa-surface: #111827;
+  --oa-surface-2: #151C27;
+  --oa-surface-3: #1B2533;
+  --oa-text: #F8FAFC;
+  --oa-text-secondary: #CBD5E1;
+  --oa-text-muted: #94A3B8;
+  --oa-text-disabled: #64748B;
+  --oa-border: rgba(148, 163, 184, 0.14);
+  --oa-border-strong: rgba(148, 163, 184, 0.24);
+  --oa-blue: #3B82F6;
+  --oa-cyan: #22D3EE;
+  --oa-purple: #A855F7;
+  --oa-green: #22C55E;
+  --oa-amber: #F59E0B;
+  --oa-red: #EF4444;
+}
+Typography: Inter/Geist system font stack, base 14px, message text 15px
+Radius: controls 10px, cards 14px, approval cards 18px, composer 22px, panels 18px
+Motion: 120ms hover, 180ms panel transitions, 240ms drawer/modals
+4. Implementation Steps (Detailed)
+Step 1: Dependencies (30 min)
+Check and install missing packages:
+- flowbite flowbite-react — admin portal only
+- react-router-dom or wouter — routing
+- zustand — lightweight state management (optional, can use React context)
+- framer-motion — already installed
+- @tanstack/react-query — already installed
+- @tanstack/react-virtual — already installed
+- lucide-react — already installed
+- @heroui/react — already installed
+- class-variance-authority clsx tailwind-merge — already installed
+- Verify all 50 components/ui/ components work with current build
+Step 2: Design Tokens & Theme (1 hr)
+- Create ui/src/design/tokens.ts — color, spacing, radius, typography constants
+- Create ui/src/design/theme.ts — OA theme configuration
+- Create ui/src/design/typography.ts — font scale
+- Create ui/src/design/surfaces.ts — surface elevation presets
+- Create ui/src/design/statusColors.ts — semantic status color map
+- Replace ui/src/styles.css — new Tailwind v4 @theme with OA dark-first tokens
+- Update ui/tailwind.config.mjs — new HeroUI theme colors matching OA tokens
+- Remove old 1252-line CSS, replace with ~200 lines of token-based styles
+- Remove ShaderBackground.tsx — no WebGL needed in enterprise design
+Step 3: App Shell & Routing (2 hrs)
+- Create ui/src/app/AppProviders.tsx — React Query + HeroUI provider + Toast provider
+- Create ui/src/app/AppShell.tsx — 4-zone layout with responsive breakpoints
+- Create ui/src/app/routes.tsx — React Router configuration
+- Update ui/src/App.tsx — render <AppProviders><AppShell /></AppProviders>
+- Update ui/src/main.tsx — minimal entry point (no change needed)
+- Create ui/src/components/primitives/OracleButton.tsx — HeroUI Button wrapper
+- Create ui/src/components/primitives/OracleSurface.tsx — OA Surface wrapper
+- Create ui/src/components/primitives/OracleBadge.tsx — OA Badge with status colors
+- Create ui/src/components/primitives/OracleChip.tsx — OA Chip with status variants
+- Create ui/src/components/primitives/OracleAvatar.tsx — OA Avatar with gradient fallback
+- Create ui/src/components/primitives/OracleTooltip.tsx — OA Tooltip wrapper
+- Create ui/src/components/primitives/OracleToast.tsx — OA Toast integration
+Step 4: Auth & Enrollment Screens (2 hrs)
+- Create ui/src/features/auth/AuthScreen.tsx — container with signup/login toggle
+- Create ui/src/features/auth/SignupForm.tsx — email, password, display name, org slug
+- Create ui/src/features/auth/LoginForm.tsx — email, password
+- Create ui/src/features/auth/ControlPlaneUrlField.tsx — URL input with test connection
+- Create ui/src/features/enrollment/DeviceEnrollmentScreen.tsx — step wizard
+- Create ui/src/features/enrollment/DeviceFingerprintCard.tsx — device identity display
+- Create ui/src/features/enrollment/AgentRegistrationCard.tsx — agent name, capabilities
+- Create ui/src/features/enrollment/CapabilitiesReview.tsx — capability checkboxes
+- Create ui/src/features/enrollment/HeartbeatStatusCard.tsx — status after enroll
+Backend integration:
+- useSignup() — mutation hook
+- useLogin() — mutation hook  
+- useEnrollDevice() — mutation hook
+- useCloudStatus() — already exists, polling 5s
+Step 5: Top Command Bar (1 hr)
+- Create ui/src/features/chat/CommandBar.tsx — OA logo, status dots, profile, actions
+- Local agent online/offline status
+- Heartbeat status indicator
+- Relay polling status indicator  
+- Notification bridge status
+- Settings/logout dropdown
+Step 6: Left Sidebar (2 hrs)
+- Create ui/src/features/chat/MainChatLayout.tsx — orchestrates sidebar + chat + inspector
+- Create ui/src/features/chat/ConversationSidebar.tsx — search + conversation list shell
+- Create ui/src/features/chat/DirectorySearch.tsx — user/agent search with results
+- Create ui/src/features/chat/ConversationList.tsx — grouped conversation list
+- Create ui/src/features/chat/ConversationListItem.tsx — single item with badges
+Key components from components/ui/ to use:
+- Card — conversation preview card
+- Badge — unread count, pending approvals
+- Avatar — user/agent avatar
+- Input — search field (or HeroUI SearchField)
+- ScrollShadow — scrollable list
+Step 7: Conversation Header (1 hr)
+- Create ui/src/features/chat/ConversationHeader.tsx — peer info, presence, actions
+- Use prompt-kit components from components/ui/
+Step 8: Message Timeline (3 hrs)
+- Create ui/src/features/chat/ChatWindow.tsx — main chat wrapper
+- Create ui/src/features/chat/MessageTimeline.tsx — virtualized message list
+- Use TanStack Virtual for virtualization
+- Date separators between messages from different days
+- Unread divider
+- Auto-scroll with stick-to-bottom
+- Create ui/src/features/chat/MessageDeliveryState.tsx — pending/sent/delivered/failed
+- Create ui/src/features/chat/OfflineOutbox.tsx — pending queue indicator
+- Create ui/src/components/stream-like/ChannelHeader.tsx — header with agent info
+- Create ui/src/components/stream-like/DateSeparator.tsx — date dividers
+- Create ui/src/components/stream-like/UnreadDivider.tsx — "unread messages" line
+- Create ui/src/components/stream-like/TypingIndicator.tsx — agent activity indicator
+Use from components/ui/:
+- ChatContainer — scrollable container with StickToBottom
+- Message — message bubble wrapper
+- Markdown — rich text rendering
+- TextShimmer — loading text animation
+- ScrollButton — jump-to-bottom
+Step 9: Message Bubbles (3 hrs)
+- Create ui/src/components/stream-like/MessageBubble.tsx — base bubble
+- Create variants:
+- HumanIncomingMessage.tsx
+- HumanOutgoingMessage.tsx
+- AgentMessage.tsx
+- SystemMessage.tsx (use components/ui/system-message.tsx)
+- RelayEventMessage.tsx
+- ToolCallMessage.tsx
+- TaskMessage.tsx
+- ApprovalMessage.tsx
+- TransferMessage.tsx
+- ReceiptMessage.tsx
+- ErrorMessage.tsx
+Visual design:
+- Human outgoing: compact colored bubble (blue), right-aligned
+- Human incoming: neutral dark bubble, left-aligned
+- Agent message: elevated card with agent icon
+- System event: subtle timeline entry
+- Tool call: collapsible technical card
+- Approval: high-importance card with colored border (amber)
+- Transfer: progress card with stepper
+- Receipt: verified artifact card (green border)
+Step 10: Composer Dock (2 hrs)
+- Create ui/src/features/chat/ComposerDock.tsx — full composer with all features
+- Create ui/src/features/chat/FileRequestIntentChip.tsx — file-request detection chip
+- Create ui/src/components/stream-like/MessageComposer.tsx — uses prompt-kit PromptInput
+Features:
+- prompt-kit PromptInput with textarea
+- Slash commands: /request-file, /send-file, /agent-card, /status, /approvals, /files, /audit, /diagnostics
+- Enter sends, Shift+Enter newline
+- File-request detection with regex (already exists, move to dedicated component)
+- Attachment button
+- File upload via components/ui/file-upload.tsx
+- Send button with loading state
+- Offline indicator
+- Retry failed messages
+Step 11: Right Inspector (3 hrs)
+- Create ui/src/features/inspector/RightInspectorPanel.tsx — tabbed panel
+- Create ui/src/features/inspector/AgentInspectorTab.tsx
+- Agent profile card
+- Capabilities list
+- Device identity card
+- Relay endpoint card
+- Trust level badge
+- Presence timeline
+- Create ui/src/features/inspector/ApprovalsInspectorTab.tsx
+- Pending approvals list
+- Approval history list
+- Approval details drawer
+- Create ui/src/features/inspector/FilesInspectorTab.tsx
+- Received files panel (use components/ui/received-files-panel.tsx)
+- Sent files panel
+- Transfer history
+- Storage usage meter
+- Create ui/src/features/inspector/AuditInspectorTab.tsx
+- Audit timeline (use components/ui/audit-timeline.tsx)
+- Audit event cards
+- Hash chain status
+- Create ui/src/features/inspector/DiagnosticsInspectorTab.tsx
+- Local agent health card
+- Control plane health card
+- Heartbeat status card
+- Relay poller status card
+- Notification bridge status card
+- Indexed folders card
+- Queue depth card
+- Debug bundle button
+- Create ui/src/features/inspector/SettingsInspectorTab.tsx
+- Control plane settings
+- Notification settings
+- Approval policy settings
+- Indexed folders settings
+- Privacy settings
+- Logout/revoke device
+Use from HeroUI:
+- Tabs — tab navigation
+- Card, Surface — content cards
+- ScrollShadow — scrollable content
+- Badge, Chip — status indicators
+- Skeleton — loading states
+- Alert — warnings
+- Table — data display
+Step 12: Approval Workflow UI (2 hrs)
+- Create ui/src/features/approvals/ApprovalCenter.tsx — main approvals screen
+- Create ui/src/features/approvals/ApprovalCard.tsx — full approval card (enhance existing components/ui/approval-card.tsx)
+- Create ui/src/features/approvals/CandidateFileCard.tsx — enhance existing
+- Create ui/src/features/approvals/CandidateFileList.tsx — file candidate listing
+- Create ui/src/features/approvals/ApprovalExactBinding.tsx — shows exact file+hash+binding info
+- Create ui/src/features/approvals/ApprovalRiskHeader.tsx — risk level indicator
+- Create ui/src/features/approvals/ApprovalFeedbackBox.tsx — feedback textarea
+- Create ui/src/features/approvals/ApprovalTerminalState.tsx — approved/rejected/expired state
+- Create ui/src/features/approvals/ApprovalPolicyBadge.tsx — policy enforcement badge
+Key behaviors:
+- Disable approve/reject buttons after click (prevent double-submit)
+- Show optimistic "decision pending" state
+- After approve: show SHA-256 binding, transfer started state
+- After reject: show rejected state, allow feedback
+- Feedback triggers re-search, shows loading
+- Expired state shows time elapsed
+- Warning before approve: "Approving will send this exact file to this exact agent."
+Step 13: Transfer & Receipt UI (1.5 hrs)
+- Create ui/src/features/transfers/TransferProgressCard.tsx — progress with stepper
+- Create ui/src/features/transfers/TransferStageStepper.tsx — multi-stage progress
+- Create ui/src/features/transfers/FileReceiptCard.tsx — receipt with hash verified
+- Create ui/src/features/transfers/HashVerifiedBadge.tsx — SHA-256 verified badge
+- Create ui/src/features/transfers/RelayEncryptedBadge.tsx — encryption badge
+- Create ui/src/features/transfers/LocalPathHiddenBadge.tsx — privacy badge
+- Create ui/src/features/files/ReceivedFilesPanel.tsx — enhance existing
+- Create ui/src/features/files/SentFilesPanel.tsx — sent files
+- Create ui/src/features/files/FilePreviewDrawer.tsx — file preview in drawer
+- Create ui/src/features/files/FileTypeIcon.tsx — file type icons
+- Create ui/src/features/files/StorageBrowser.tsx — browse received files
+- Create ui/src/features/files/VerifyHashButton.tsx — re-verify hash button
+Step 14: Agentic AI Components (2 hrs)
+- Create ui/src/components/agentic-ai/AgentCard.tsx — agent profile with capabilities
+- Create ui/src/components/agentic-ai/AgentPersona.tsx — agent identity display
+- Create ui/src/components/agentic-ai/AgentPlan.tsx — multi-step plan (enhance existing components/ui/agent-plan.tsx)
+- Create ui/src/components/agentic-ai/AgentQueue.tsx — task queue display
+- Create ui/src/components/agentic-ai/AgentCheckpoint.tsx — workflow checkpoint
+- Create ui/src/components/agentic-ai/AgentSources.tsx — RAG evidence display
+- Create ui/src/components/agentic-ai/AgentInlineCitation.tsx — inline citation references
+- Create ui/src/components/agentic-ai/AgentCodeBlock.tsx — code display (enhance components/ui/code-block.tsx)
+- Create ui/src/components/agentic-ai/AgentTerminal.tsx — terminal output panel
+- Create ui/src/components/agentic-ai/AgentFileTree.tsx — file directory preview
+- Create ui/src/components/agentic-ai/AgentSchemaDisplay.tsx — A2A/ANP payload display
+- Create ui/src/components/agentic-ai/AgentSuggestion.tsx — quick reply suggestions
+- Create ui/src/components/agentic-ai/AgentToolbar.tsx — message action toolbar
+- Create ui/src/components/agentic-ai/AgentPanel.tsx — inspector panel container
+Use from components/ui/:
+- Reasoning — collapsible reasoning trace
+- Tool — tool call card
+- Steps — task timeline steps
+- ThinkingBar — agent working state
+- Source — evidence source
+- FeedbackBar — feedback UI
+- CodeBlock — code display
+Step 15: Stream-Like Components (2 hrs)
+- Create ui/src/components/stream-like/ChannelList.tsx — conversation list
+- Create ui/src/components/stream-like/ChannelPreview.tsx — conversation preview card
+- Create ui/src/components/stream-like/VirtualizedMessageList.tsx — TanStack Virtual
+- Create ui/src/components/stream-like/MessageActions.tsx — actions dropdown
+- Create ui/src/components/stream-like/AttachmentPreview.tsx — file attachment preview
+- Create ui/src/components/stream-like/SearchPanel.tsx — search panel
+- Create ui/src/components/stream-like/ThreadDrawer.tsx — A2A task detail drawer
+- Create ui/src/components/stream-like/OfflineBanner.tsx — connectivity banner
+Step 16: Hooks Migration (2 hrs)
+Refactor ui/src/hooks/queries.ts to be consumed by components.
+Add missing hooks:
+- useFileRequestDetection() — real-time detection as user types
+- useApproveWithBinding() — approval + file binding
+- useTransferStatus() — transfer progress polling
+- useOfflineOutbox() — offline queue management
+- useMessagesOptimistic() — send with optimistic update + rollback
+Consume hooks in components — the main chat must use the hooks, not replicate state management.
+Step 17: Admin Portal Redesign (4 hrs)
+Files to modify in ui-admin/:
+- Replace ui-admin/src/portal/layout/AdminLayout.tsx — add Flowbite Sidebar + Navbar
+- Replace ui-admin/src/portal/layout/Sidebar.tsx — Flowbite Sidebar with collapsible items
+- Replace ui-admin/src/portal/layout/Header.tsx — Flowbite Navbar with breadcrumbs
+- Update All page components to use Flowbite Card, Badge, Table, Timeline components
+- Add Flowbite Pagination to tables
+- Add Flowbite Accordion to settings/security pages
+- Add Flowbite Breadcrumb for navigation context
+- Add Flowbite Modal for revoke/disable confirmations
+- Add Flowbite Toast for success/error notifications
+- Create ui-admin/src/portal/components/AdminMetricCard.tsx — KPI card with Flowbite Card
+- Create ui-admin/src/portal/components/AdminToastCenter.tsx — centralized toast notifications
+- Update ui-admin/src/portal/pages/SecurityPage.tsx — add Flowbite AlertDialog for dangerous actions
+Flowbite components to use:
+- Sidebar — admin navigation
+- Navbar — top bar
+- Card — KPI cards
+- Badge — status badges
+- Alert — warning/error messages
+- Modal — confirmations
+- Tabs — tab panels
+- Timeline — audit timeline
+- Progress — progress bars
+- Table — data tables
+- Toast — notifications
+- Tooltip — hints
+- FileInput — file upload
+- Avatar — user avatars
+- Dropdown — action menus
+- Breadcrumb — navigation
+- Pagination — table pagination
+- ListGroup — settings lists
+- Accordion — collapsible sections
+DO NOT use Flowbite in the main agentic chat app.
+Step 18: Accessibility (1 hr)
+- Add aria-live regions for message timeline and status updates
+- Ensure keyboard navigation for: sidebar, conversation list, composer, approval card, inspector tabs
+- Add visible focus indicators (Tailwind focus-visible:ring-2)
+- Add aria-label to all icon-only buttons
+- Ensure modal/drawer focus trap
+- Add reduced-motion media query support
+- High contrast text (minimum 4.5:1 ratio)
+- Test with axe DevTools
+Step 19: Tests (2 hrs)
+Add/update tests:
+- ui/src/tests/auth-screen.test.tsx — signup/login/enroll render + submit
+- ui/src/tests/chat-composer.test.tsx — send message, file request detection
+- ui/src/tests/approval-card.test.tsx — approve, reject, feedback
+- ui/src/tests/transfer-card.test.tsx — progress display
+- ui/src/tests/inspector.test.tsx — tab rendering
+- ui/src/tests/accessibility.test.tsx — basic a11y assertions
+- Update tests/ChatFrontendWorkflow.test.ts — new component structure
+- Update tests/FrontendInteractionInventory.test.ts — new component inventory
+Admin portal tests:
+- ui-admin/src/portal/tests/pages.test.tsx — page rendering
+- Update apps/admin-portal/tests/admin-portal.test.ts — unchanged (proxy tests)
+Step 20: Build & Verify (1 hr)
+- npm run typecheck — verify TypeScript
+- npm run build — verify production build
+- npm test — run all tests
+- npm run dev:ui — verify dev server
+- Fix any failures
+5. Files to Create (~85 files)
+New files in ui/src/:
+ui/src/
+  design/ (5 files)
+    tokens.ts
+    theme.ts
+    typography.ts
+    surfaces.ts
+    statusColors.ts
+
+  app/ (3 files)
+    AppProviders.tsx
+    AppShell.tsx
+    routes.tsx
+
+  components/
+    primitives/ (6 files)
+      OracleButton.tsx, OracleSurface.tsx, OracleBadge.tsx,
+      OracleChip.tsx, OracleAvatar.tsx, OracleTooltip.tsx,
+      OracleToast.tsx
+
+    agentic-ai/ (14 files)
+      AgentCard.tsx, AgentPersona.tsx, AgentPlan.tsx,
+      AgentQueue.tsx, AgentCheckpoint.tsx, AgentSources.tsx,
+      AgentInlineCitation.tsx, AgentCodeBlock.tsx, AgentTerminal.tsx,
+      AgentFileTree.tsx, AgentSchemaDisplay.tsx, AgentSuggestion.tsx,
+      AgentToolbar.tsx, AgentPanel.tsx
+
+    stream-like/ (12 files)
+      ChannelList.tsx, ChannelPreview.tsx, ChannelHeader.tsx,
+      VirtualizedMessageList.tsx, MessageBubble.tsx, MessageActions.tsx,
+      DateSeparator.tsx, AttachmentPreview.tsx, MessageComposer.tsx,
+      TypingIndicator.tsx, SearchPanel.tsx, ThreadDrawer.tsx,
+      OfflineBanner.tsx, UnreadDivider.tsx
+
+  features/
+    auth/ (4 files)
+      AuthScreen.tsx, SignupForm.tsx, LoginForm.tsx,
+      ControlPlaneUrlField.tsx
+
+    enrollment/ (5 files)
+      DeviceEnrollmentScreen.tsx, DeviceFingerprintCard.tsx,
+      AgentRegistrationCard.tsx, CapabilitiesReview.tsx,
+      HeartbeatStatusCard.tsx
+
+    chat/ (10 files)
+      MainChatLayout.tsx, CommandBar.tsx, ConversationSidebar.tsx,
+      DirectorySearch.tsx, ConversationList.tsx, ConversationListItem.tsx,
+      ChatWindow.tsx, ConversationHeader.tsx, MessageTimeline.tsx,
+      ComposerDock.tsx, FileRequestIntentChip.tsx,
+      MessageDeliveryState.tsx, OfflineOutbox.tsx
+
+    approvals/ (8 files)
+      ApprovalCenter.tsx, ApprovalCard.tsx, CandidateFileCard.tsx,
+      CandidateFileList.tsx, ApprovalExactBinding.tsx,
+      ApprovalRiskHeader.tsx, ApprovalFeedbackBox.tsx,
+      ApprovalTerminalState.tsx, ApprovalPolicyBadge.tsx
+
+    transfers/ (6 files)
+      TransferProgressCard.tsx, TransferStageStepper.tsx,
+      FileReceiptCard.tsx, HashVerifiedBadge.tsx,
+      RelayEncryptedBadge.tsx, LocalPathHiddenBadge.tsx
+
+    files/ (6 files)
+      ReceivedFilesPanel.tsx, SentFilesPanel.tsx,
+      FilePreviewDrawer.tsx, FileTypeIcon.tsx,
+      StorageBrowser.tsx, VerifyHashButton.tsx
+
+    inspector/ (9 files)
+      RightInspectorPanel.tsx, AgentInspectorTab.tsx,
+      ApprovalsInspectorTab.tsx, FilesInspectorTab.tsx,
+      AuditInspectorTab.tsx, DiagnosticsInspectorTab.tsx,
+      TaskInspectorTab.tsx, SecurityInspectorTab.tsx,
+      SettingsInspectorTab.tsx
+
+    diagnostics/ (7 files)
+      LocalAgentHealthCard.tsx, ControlPlaneHealthCard.tsx,
+      RelayPollerStatusCard.tsx, NotificationBridgeStatusCard.tsx,
+      IndexedFoldersCard.tsx, QueueDepthCard.tsx,
+      DebugBundleButton.tsx
+
+    audit/ (3 files)
+      AuditTimeline.tsx, AuditEventCard.tsx, HashChainStatus.tsx
+
+  tests/ (5 files)
+    auth-screen.test.tsx, chat-composer.test.tsx,
+    approval-card.test.tsx, transfer-card.test.tsx,
+    accessibility.test.tsx
+Files to modify:
+- ui/src/App.tsx → new app shell with routes
+- ui/src/main.tsx → minimal (likely no change)
+- ui/src/styles.css → replace with OA dark theme
+- ui/tailwind.config.mjs → OA theme colors
+- ui/src/api/types.ts → add any missing types
+- ui/src/hooks/queries.ts → refactor to be consumed by components
+Files to remove:
+- ui/src/ShaderBackground.tsx → no longer needed
+- ui/src/components/SidebarContext.tsx → replaced by new layout
+- ui/src/components/SidebarToggle.tsx → replaced by new layout
+- ui/src/components/StreamLikeChat.tsx → replaced by new component architecture
+6. Backend Integration (All APIs Already Exist)
+No new backend APIs need to be created. All endpoints are already available:
+Domain	Existing APIs
+Auth	/cloud/signup, /cloud/login, /cloud/logout, /cloud/enroll, /cloud/me
+Chat	/chat/conversations, /chat/conversations/:id/messages, /chat/messages
+Relay	/relay/send-message, /relay/send-file-request, /relay/inbox/status
+Approvals	/approvals/pending, /approvals/:id/approve, /reject, /feedback, /rebind-file
+Files	/storage/files, /storage/files/:id/verify, /storage/files/:id/open
+Audit	/audit/events
+Diagnostics	/health, /cloud/status, /chat/diagnostics
+7. Dependency Changes
+Install:
+npm install react-router-dom    # client-side routing
+npm install flowbite flowbite-react  # admin portal only (in ui-admin/)
+Already installed (no action needed):
+- @heroui/react, @heroui/theme
+- @tanstack/react-query, @tanstack/react-table, @tanstack/react-virtual
+- lucide-react, framer-motion
+- tailwind-merge, clsx, class-variance-authority
+- react-markdown, shiki
+- use-stick-to-bottom (used by ChatContainer)
+Verify all components/ui/ components compile (they use Radix and @/components/ui/* aliases).
+
+Oracle Amigo Frontend Redesign — Final Implementation Plan
+Phase 0: Foundation (3-4 hrs)
+Setup + Design System + Routing + Shared Component Migration
+Files to create:
+docs/frontend-redesign-plan.md    ← this plan document
+docs/frontend-redesign-research.md ← research summary from all reference links
+
+ui/src/
+  design/tokens.ts
+  design/theme.ts
+  app/AppProviders.tsx
+  app/AppShell.tsx
+  app/routes.tsx
+  styles.css                        ← REPLACE with OA dark theme
+  tailwind.config.mjs               ← UPDATE with OA theme colors
+
+  components/primitives/
+    OracleButton.tsx
+    OracleSurface.tsx
+    OracleBadge.tsx
+    OracleChip.tsx
+    OracleAvatar.tsx
+    OracleTooltip.tsx
+    OracleToast.tsx
+
+  features/enrollment/
+    DeviceEnrollmentScreen.tsx
+    DeviceFingerprintCard.tsx
+    AgentRegistrationCard.tsx
+    CapabilitiesReview.tsx
+    HeartbeatStatusCard.tsx
+Actions:
+- Install react-router-dom
+- Replace ui/src/styles.css (1252 lines → ~200 lines)
+- Replace ui/tailwind.config.mjs with OA dark-first tokens
+- Wire up <AppProviders> (QueryClient, HeroUI provider, Toast provider)
+- Wire up <AppShell> with <Outlet /> for routing
+- Remove ShaderBackground.tsx, SidebarContext.tsx, SidebarToggle.tsx
+- Create RouteShell.tsx wrapper layout
+- Build Device Enrollment screen as proof of new component system
+Phase 1: Auth Screens (2-3 hrs)
+Dedicated signup/login pages with proper routing
+Files to create:
+ui/src/
+  features/auth/
+    AuthScreen.tsx
+    SignupForm.tsx
+    LoginForm.tsx
+    ControlPlaneUrlField.tsx
+Routes:
+/signup   → SignupForm
+/login    → LoginForm
+/enroll   → DeviceEnrollmentScreen (Phase 0)
+/chat/*   → MainChatLayout (future phases)
+Actions:
+- Extract CloudConnectForm from legacy StreamLikeChat.tsx into dedicated auth screens
+- Add Zod validation schemas for email/password/displayName
+- Add "Connection test" button in ControlPlaneUrlField
+- Wire up useSignup() and useLogin() mutation hooks
+- Add auth-flow state machine: idle → connecting → signed_up → logging_in → enrolled → redirect_to_chat
+- Remove inline auth from CloudConnectForm in the old chat
+Phase 2: Chat Shell (3-4 hrs)
+4-zone layout with sidebar, command bar, main area, empty right inspector
+Files to create:
+ui/src/
+  features/chat/
+    MainChatLayout.tsx
+    CommandBar.tsx
+    ConversationSidebar.tsx
+    DirectorySearch.tsx
+    ConversationList.tsx
+    ConversationListItem.tsx
+    ConversationHeader.tsx
+
+  components/stream-like/
+    ChannelList.tsx
+    ChannelPreview.tsx
+    ChannelHeader.tsx
+    OfflineBanner.tsx
+
+  features/inspector/
+    RightInspectorPanel.tsx
+Actions:
+- Build 4-zone responsive layout (desktop 3-col, tablet drawer, mobile overlay)
+- Wire up TanStack Query hooks: useConversations(), useDirectorySearch(), useCloudStatus()
+- Conversation list with presence dots, unread badges, pending approval badges
+- Command bar with OA logo, agent status dots (online/heartbeat/relay), settings dropdown
+- Right inspector with empty tabs (placeholders)
+- Classic empty state for no selection
+- Sidebar collapsible (desktop) / drawer (mobile)
+Phase 3: Message Timeline + Composer (3-4 hrs)
+Core chat experience with virtualized messages and premium composer
+Files to create:
+ui/src/
+  features/chat/
+    ChatWindow.tsx
+    MessageTimeline.tsx
+    ComposerDock.tsx
+    FileRequestIntentChip.tsx
+    MessageDeliveryState.tsx
+    OfflineOutbox.tsx
+
+  components/stream-like/
+    VirtualizedMessageList.tsx
+    MessageBubble.tsx
+    MessageComposer.tsx
+    DateSeparator.tsx
+    UnreadDivider.tsx
+    TypingIndicator.tsx
+    AttachmentPreview.tsx
+    MessageActions.tsx
+Actions:
+- Use @tanstack/react-virtual for message virtualization (supports thousands)
+- Use prompt-kit ChatContainer (StickToBottom) for auto-scroll
+- Use prompt-kit Message + custom MessageBubble variants
+- Use prompt-kit PromptInput for composer
+- File-request detection chip (regex-based, as user types)
+- Slash commands: /request-file, /send-file, /agent-card, /status
+- Optimistic send: message appears immediately as pending
+- Failed message retry
+- Date separators between days
+- Scroll-to-bottom button
+- Wire up: useConversationMessages(), useSendMessage(), useSendFileRequest()
+Phase 4: Agentic Workflow UI (3-4 hrs)
+Agent activity, reasoning, tool calls, task cards, file request flow
+Files to create:
+ui/src/
+  components/agentic-ai/
+    AgentCard.tsx
+    AgentPersona.tsx
+    AgentPlan.tsx
+    AgentQueue.tsx
+    AgentCheckpoint.tsx
+    AgentSources.tsx
+    AgentInlineCitation.tsx
+    AgentCodeBlock.tsx
+    AgentTerminal.tsx
+    AgentFileTree.tsx
+    AgentSchemaDisplay.tsx
+    AgentSuggestion.tsx
+    AgentToolbar.tsx
+    AgentPanel.tsx
+Actions:
+- Agent activity bubble: "Searching files..." with ThinkingBar/TextShimmer
+- Tool call card: collapsible JSON input/output
+- A2A task card: state timeline (submitted → working → completed/failed)
+- Schema display: A2A/ANP payload inspector
+- Agent card: profile, capabilities, presence
+- File request bubble: shows intent, query, status
+- Wire up SSE streaming for live agent run updates
+Phase 5: Approvals + Transfers (3-4 hrs)
+High-quality approval workflow and transfer visualization
+Files to create:
+ui/src/
+  features/approvals/
+    ApprovalCenter.tsx
+    ApprovalCard.tsx
+    CandidateFileCard.tsx
+    CandidateFileList.tsx
+    ApprovalExactBinding.tsx
+    ApprovalRiskHeader.tsx
+    ApprovalFeedbackBox.tsx
+    ApprovalTerminalState.tsx
+    ApprovalPolicyBadge.tsx
+
+  features/transfers/
+    TransferProgressCard.tsx
+    TransferStageStepper.tsx
+    FileReceiptCard.tsx
+    HashVerifiedBadge.tsx
+    RelayEncryptedBadge.tsx
+    LocalPathHiddenBadge.tsx
+
+  features/files/
+    ReceivedFilesPanel.tsx
+    SentFilesPanel.tsx
+    FilePreviewDrawer.tsx
+    FileTypeIcon.tsx
+    StorageBrowser.tsx
+    VerifyHashButton.tsx
+Actions:
+- Enhancement of existing components/ui/approval-card.tsx
+- Approval card: candidate files, risk header, policy badge, approve/reject
+- Disable duplicate clicks on approve/reject
+- Warning banner: "Approving will send this exact file to this exact agent"
+- Feedback textbox for search refinement
+- Expired state display
+- Transfer progress: multi-stage stepper with SHA-256 binding
+- File receipt: hash verified badge, open file button
+- Received files panel with storage browser
+- Wire up: usePendingApprovals(), useApproveFileRequest(), useRejectFileRequest(), useReceivedFiles()
+Phase 6: Right Inspector (3-4 hrs)
+Full right panel with 7 context-aware tabs
+Files to create:
+ui/src/
+  features/inspector/
+    AgentInspectorTab.tsx
+    ApprovalsInspectorTab.tsx
+    FilesInspectorTab.tsx
+    AuditInspectorTab.tsx
+    DiagnosticsInspectorTab.tsx
+    TaskInspectorTab.tsx
+    SecurityInspectorTab.tsx
+    SettingsInspectorTab.tsx
+
+  features/diagnostics/
+    LocalAgentHealthCard.tsx
+    ControlPlaneHealthCard.tsx
+    RelayPollerStatusCard.tsx
+    NotificationBridgeStatusCard.tsx
+    IndexedFoldersCard.tsx
+    QueueDepthCard.tsx
+    DebugBundleButton.tsx
+
+  features/audit/
+    AuditTimeline.tsx
+    AuditEventCard.tsx
+    HashChainStatus.tsx
+Actions:
+- HeroUI Tabs navigation
+- Agent tab: profile, capabilities, device identity, relay endpoint
+- Approvals tab: pending list + history
+- Files tab: received/sent/transfer history + storage info
+- Audit tab: timeline + hash chain verification
+- Diagnostics tab: health cards for all subsystems
+- Settings tab: control plane, notifications, approval policy, privacy
+- Wire up all diagnostic hooks
+Phase 7: Admin Portal Redesign (4-6 hrs)
+Flowbite-powered enterprise admin UI
+Files to create/modify in ui-admin/:
+ui-admin/src/portal/
+  components/
+    AdminMetricCard.tsx
+    AdminToastCenter.tsx
+
+  layout/
+    AdminLayout.tsx        ← REPLACE with Flowbite Sidebar + Navbar
+    Sidebar.tsx            ← REPLACE with Flowbite Sidebar
+    Header.tsx             ← REPLACE with Flowbite Navbar
+
+  pages/
+    OverviewPage.tsx       ← UPDATE with Flowbite Card metrics
+    UsersPage.tsx          ← UPDATE with Flowbite Table + Badge
+    DevicesPage.tsx        ← UPDATE with Flowbite Table
+    AgentInstancesPage.tsx ← UPDATE with Flowbite Table
+    PresencePage.tsx       ← UPDATE with Flowbite Card
+    TasksPage.tsx          ← UPDATE with Flowbite Table
+    TransfersPage.tsx      ← UPDATE with Flowbite Table + Badge
+    ApprovalsPage.tsx      ← UPDATE with Flowbite Table
+    AuditPage.tsx          ← UPDATE with Flowbite Timeline + Table
+    SecurityPage.tsx       ← UPDATE with Flowbite AlertDialog
+Actions:
+- Install flowbite flowbite-react in ui-admin/
+- Flowbite Sidebar for admin navigation
+- Flowbite Navbar for top header with breadcrumbs
+- Flowbite Card for KPI metrics on overview
+- Flowbite Table + Pagination for data tables
+- Flowbite Badge for status indicators
+- Flowbite Timeline for audit events
+- Flowbite Alert / AlertDialog / Modal for confirmations
+- Flowbite Toast for notifications
+- Wire up all admin TanStack Query hooks
+Phase 8: Tests + Polish (2-3 hrs)
+Accessibility, tests, final polish
+Files to create:
+ui/src/tests/
+  auth-screen.test.tsx
+  chat-composer.test.tsx
+  approval-card.test.tsx
+  transfer-card.test.tsx
+  accessibility.test.tsx
+  chat-ui.test.tsx
+  frontend-contract.test.ts
+Actions:
+- WCAG 2.2 AA: keyboard nav, aria-live, focus indicators, reduced motion
+- Unit tests for all new features
+- Update tests/ChatFrontendWorkflow.test.ts
+- Run npm run typecheck && npm test && npm run build
+- Run npm run --prefix apps/admin-portal test
+- Fix any build/test failures
+Phase 9: Verification (1 hr)
+Full acceptance criteria check
+Checklist:
+- Auth screens render and work (signup → login → enroll)
+- Dark-first theme applied consistently
+- Command bar shows agent status
+- Sidebar shows conversations with badges
+- Directory search works
+- Message timeline renders with virtualization
+- Composer sends messages (optimistic)
+- File-request detection chip appears
+- Agent activity shown (thinking/searching)
+- Approval card shows candidates
+- Approve/reject works with button disabling
+- Transfer progress card appears
+- Receipt card shows hash verified
+- Right inspector tabs work
+- Diagnostics panel shows health
+- Received files panel works
+- Admin portal renders with Flowbite components
+- No Stream Chat dependency
+- Accessibility basics implemented
+- npm run typecheck passes
+- npm test passes
+- npm run build passes
+Summary
+Phase	Description	Est. Time
+0	Foundation (design tokens, routing, AppShell)	3-4 hrs
+1	Auth screens (signup/login/enroll)	2-3 hrs
+2	Chat shell (4-zone layout, sidebar, command bar)	3-4 hrs
+3	Message timeline + composer	3-4 hrs
+4	Agentic workflow UI (reasoning, tool calls, tasks)	3-4 hrs
+5	Approvals + transfers (premium approval cards)	3-4 hrs
+6	Right inspector (7 tabs with data)	3-4 hrs
+7	Admin portal redesign (Flowbite)	4-6 hrs
+8	Tests + accessibility	2-3 hrs
+9	Verification + fix failures	1 hr
+Total	 	27-37 hrs
+Shall I proceed with Phase 0 (Foundation)? This includes:
+1. Installing react-router-dom
+2. Creating design tokens and replacing the theme
+3. Setting up routing with <AppProviders> and <AppShell>
+4. Creating primitive components (OracleButton, OracleSurface, etc.)
+5. Removing ShaderBackground.tsx, SidebarContext.tsx, SidebarToggle.tsx
+6. Creating the Device Enrollment screen as proof of concept

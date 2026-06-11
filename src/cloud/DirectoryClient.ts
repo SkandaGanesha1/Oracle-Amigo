@@ -23,6 +23,21 @@ export interface CloudAgentInstance {
   last_seen_at: string | null;
 }
 
+export interface CloudAgentInstanceDirectoryEntry extends CloudAgentInstance {
+  user_id: string;
+  email: string;
+}
+
+export interface CloudUserAgents {
+  user_id: string;
+  display_name: string;
+  email: string;
+  status: string;
+  presence: string;
+  active_agent_instances: number;
+  agents: CloudAgentInstance[];
+}
+
 export interface CloudContact {
   id: string;
   org_id: string;
@@ -41,8 +56,20 @@ export class DirectoryClient {
     return this.cp.getJson(`/v1/directory/users?${qs}`, accessToken);
   }
 
-  getUserAgents(userId: string, accessToken: string): Promise<{ user_id: string; agents: CloudAgentInstance[] }> {
+  getUserAgents(userId: string, accessToken: string): Promise<CloudUserAgents> {
     return this.cp.getJson(`/v1/directory/users/${encodeURIComponent(userId)}/agents`, accessToken);
+  }
+
+  getUserAgentsWithDevice(userId: string, deviceToken: string): Promise<CloudUserAgents> {
+    return this.cp.getJson(`/v1/directory/device/users/${encodeURIComponent(userId)}/agents`, deviceToken);
+  }
+
+  getAgentInstance(agentInstanceId: string, accessToken: string): Promise<CloudAgentInstanceDirectoryEntry> {
+    return this.cp.getJson(`/v1/directory/agent-instances/${encodeURIComponent(agentInstanceId)}`, accessToken);
+  }
+
+  getAgentInstanceWithDevice(agentInstanceId: string, deviceToken: string): Promise<CloudAgentInstanceDirectoryEntry> {
+    return this.cp.getJson(`/v1/directory/device/agent-instances/${encodeURIComponent(agentInstanceId)}`, deviceToken);
   }
 
   listContacts(accessToken: string): Promise<{ contacts: CloudContact[] }> {

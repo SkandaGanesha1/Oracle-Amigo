@@ -7,6 +7,10 @@ import type {
   AdminDevice,
   AdminInfo,
   AdminOrgSnapshot,
+  AdminPolicyAction,
+  AdminPolicyEvaluation,
+  AdminPolicyEvaluationInput,
+  AdminPolicyRule,
   AdminPresence,
   AdminTask,
   AdminTransfer,
@@ -20,6 +24,10 @@ export type {
   AdminDevice,
   AdminInfo,
   AdminOrgSnapshot,
+  AdminPolicyAction,
+  AdminPolicyEvaluation,
+  AdminPolicyEvaluationInput,
+  AdminPolicyRule,
   AdminPresence,
   AdminTask,
   AdminTransfer,
@@ -64,6 +72,11 @@ async function fetchAudit(): Promise<AdminAuditEvent[]> {
 async function fetchApprovals(): Promise<AdminApproval[]> {
   const body = await adminFetch<{ approvals: AdminApproval[] }>("/v1/admin/approvals");
   return body.approvals ?? [];
+}
+
+async function fetchPolicyRules(): Promise<AdminPolicyRule[]> {
+  const body = await adminFetch<{ rules: AdminPolicyRule[] }>("/policy/rules");
+  return body.rules ?? [];
 }
 
 async function fetchOrgSnapshot(orgId: string): Promise<AdminOrgSnapshot> {
@@ -135,6 +148,50 @@ export function useAdminApprovals(opts?: { refetchInterval?: number }): UseQuery
     queryKey: ["admin", "approvals"],
     queryFn: fetchApprovals,
     refetchInterval: opts?.refetchInterval
+  });
+}
+
+export function useAdminPolicyRules(opts?: { refetchInterval?: number }): UseQueryResult<AdminPolicyRule[]> {
+  return useQuery({
+    queryKey: ["admin", "policy-rules"],
+    queryFn: fetchPolicyRules,
+    refetchInterval: opts?.refetchInterval
+  });
+}
+
+export function useCreateAdminPolicyRule(): UseMutationResult<AdminPolicyRule, Error, Partial<AdminPolicyRule> & { name: string; action: AdminPolicyRule["action"] }> {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body) => adminFetch<AdminPolicyRule>("/policy/rules", { method: "POST", body }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["admin", "policy-rules"] });
+    }
+  });
+}
+
+export function useUpdateAdminPolicyRule(): UseMutationResult<AdminPolicyRule, Error, { id: string; patch: Partial<AdminPolicyRule> & { name: string; action: AdminPolicyRule["action"] } }> {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, patch }) => adminFetch<AdminPolicyRule>(`/policy/rules/${encodeURIComponent(id)}`, { method: "PUT", body: patch }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["admin", "policy-rules"] });
+    }
+  });
+}
+
+export function useDeleteAdminPolicyRule(): UseMutationResult<{ ok: boolean; id: string }, Error, string> {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id) => adminFetch<{ ok: boolean; id: string }>(`/policy/rules/${encodeURIComponent(id)}`, { method: "DELETE" }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["admin", "policy-rules"] });
+    }
+  });
+}
+
+export function useEvaluateAdminPolicy(): UseMutationResult<AdminPolicyEvaluation, Error, AdminPolicyEvaluationInput> {
+  return useMutation({
+    mutationFn: (body) => adminFetch<AdminPolicyEvaluation>("/policy/evaluate", { method: "POST", body })
   });
 }
 

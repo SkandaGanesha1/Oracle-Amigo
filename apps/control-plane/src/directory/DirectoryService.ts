@@ -25,6 +25,21 @@ export interface DirectoryUser {
   }>;
 }
 
+export interface DirectoryAgentInstance {
+  user_id: UserId;
+  display_name: string;
+  email: string;
+  agent_id: string;
+  agent_instance_id: string;
+  device_id: string;
+  device_name: string;
+  status: string;
+  relay_inbox_url: string;
+  agent_card_url: string;
+  agent_card_hash: string;
+  last_seen_at: string | null;
+}
+
 export function searchUsers(
   orgId: OrgId,
   query: string,
@@ -154,4 +169,40 @@ export function getUserAgents(
   result.status = result.presence;
   result.active_agent_instances = result.agents.length;
   return result;
+}
+
+export function getAgentInstance(
+  orgId: OrgId,
+  agentInstanceId: string,
+  opts: { db?: DB; publicBaseUrl?: string } = {}
+): DirectoryAgentInstance | null {
+  const db = opts.db ?? getDb();
+  const publicBaseUrl = opts.publicBaseUrl ?? "http://localhost:8080";
+  const row = db.prepare(`
+    SELECT ai.id AS instance_id, ai.agent_id, ai.device_id, ai.user_id,
+           ai.agent_card_hash, u.display_name, u.email,
+           d.device_name, p.status AS presence_status, p.last_heartbeat_at
+    FROM agent_instances ai
+    JOIN users u ON u.id = ai.user_id
+    JOIN devices d ON d.id = ai.device_id
+    LEFT JOIN presence p ON p.agent_instance_id = ai.id
+    WHERE ai.org_id = ? AND ai.id = ?
+      AND ai.status = 'active'
+      AND u.status = 'active'
+  `).get(orgId, agentInstanceId) as Record<string, unknown> | undefined;
+  if (!row) return null;
+  return {
+    user_id: String(row.user_id),
+    display_name: String(row.display_name),
+    email: String(row.email),
+    agent_id: String(row.agent_id),
+    agent_instance_id: String(row.instance_id),
+    device_id: String(row.device_id),
+    device_name: String(row.device_name),
+    status: String(row.presence_status ?? "offline"),
+    relay_inbox_url: relayInboxUrl(publicBaseUrl),
+    agent_card_url: agentCardUrl(publicBaseUrl, String(row.instance_id)),
+    agent_card_hash: String(row.agent_card_hash),
+    last_seen_at: row.last_heartbeat_at ? String(row.last_heartbeat_at) : null
+  };
 }

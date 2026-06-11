@@ -142,7 +142,7 @@ function redactContext(context: AgentReasoningContext) {
   };
 }
 
-async function signOciRequest(method: string, url: URL, body: string): Promise<Record<string, string>> {
+export async function signOciRequest(method: string, url: URL, body: string): Promise<Record<string, string>> {
   const profile = await readOciProfile();
   const tenancy = requireProfile(profile, "tenancy");
   const user = requireProfile(profile, "user");

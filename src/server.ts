@@ -5,7 +5,7 @@ import { readFile } from "node:fs/promises";
 import { extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import Fastify, { type FastifyReply } from "fastify";
-import { z, ZodError, type ZodSchema } from "zod";
+import { z, ZodError } from "zod";
 import { SandboxTool } from "./agent-tools/SandboxTool.js";
 import {
   CloneRepoAndRunTestsSchema,
@@ -13,9 +13,9 @@ import {
   RunCodeSchema,
   RunShellCommandSchema
 } from "./agent-tools/ToolSchemas.js";
-import { AgentRunService } from "./agent-runs/AgentRunService.js";
+import { AgentRunService, type AgentRunResult, type AgentRunStep } from "./agent-runs/AgentRunService.js";
 import type { AgentReasoner } from "./agent-runs/AgentDecision.js";
-import { FileSearchService } from "./file-search/FileSearchService.js";
+import { FileSearchService, type FileSearchMatch } from "./file-search/FileSearchService.js";
 import { createLogger } from "./logging/Logger.js";
 import { PersonalAgentProtocol } from "./protocol/PersonalAgentProtocol.js";
 import { indexRoot, reindexAll } from "./retrieval/FileIndexer.js";
@@ -42,18 +42,27 @@ import type {
 } from "./protocol/a2a-v1/types.js";
 import { getDefaultRegistry } from "./skills/SkillStore.js";
 import { writeSkill, deleteSkill, loadSkillFromDir } from "./skills/SkillRegistry.js";
-import { getEvents, verifyChain } from "./security/AuditHashChain.js";
-import { append as memAppend, getWindow as memGetWindow } from "./memory/ShortTermMemory.js";
-import { record as epRecord } from "./memory/EpisodicMemory.js";
+import { appendAuditEvent, getEvents, verifyChain } from "./security/AuditHashChain.js";
+import { append as memAppend, getWindow as memGetWindow, listConversations as memListConversations } from "./memory/ShortTermMemory.js";
+import { record as epRecord, retrieveSimilar as epRetrieveSimilar, listByTask as epListByTask } from "./memory/EpisodicMemory.js";
+import { retrieve as ltRetrieve, listMemories as ltListMemories } from "./memory/LongTermMemory.js";
+import { CommandPolicy } from "./policy/CommandPolicy.js";
+import { AdminPolicyEngine } from "./policy/AdminPolicyEngine.js";
+import { NetworkPolicy } from "./policy/NetworkPolicy.js";
+import { SecretPolicy } from "./policy/SecretPolicy.js";
 import { sendNotification as notifyBridge } from "./notification/NotificationBridgeClient.js";
+import { NotificationEventStore } from "./notification/NotificationEventStore.js";
+import { RedactionEngine } from "./redaction/RedactionEngine.js";
+import { UniversalSearchService } from "./search/UniversalSearchService.js";
 import { deleteAgent, getAgent, listAgents, setTrustLevel, upsertAgent, type TrustLevel } from "./registry/AgentRegistry.js";
 import { discoverAndRegister, refreshAgent } from "./registry/AgentDiscovery.js";
 import { listStoredFiles, getStoredFile } from "./storage/AgenticStorage.js";
+import { MissionThreadService } from "./workflow/MissionThreadService.js";
 import { createTask as wfCreateTask, transition as wfTransition, listTasks as wfListTasks, getTask as wfGetTask } from "./workflow/TaskWorkflow.js";
 import { getDb, resolveDbPath } from "./db/connection.js";
-import { generateOrLoadIdentity } from "./security/DeviceIdentity.js";
+import { generateOrLoadIdentity, resetLocalIdentity } from "./security/DeviceIdentity.js";
 import { CloudError, ControlPlaneClient } from "./cloud/ControlPlaneClient.js";
-import { DirectoryClient } from "./cloud/DirectoryClient.js";
+import { DirectoryClient, type CloudAgentInstance, type CloudAgentInstanceDirectoryEntry } from "./cloud/DirectoryClient.js";
 import { RelayClient } from "./cloud/RelayClient.js";
 import { LocalCloudIdentityStore, defaultControlPlaneUrl, defaultProfileId, type LocalCloudIdentity } from "./cloud/LocalCloudIdentityStore.js";
 import { DeviceEnrollmentService } from "./enrollment/DeviceEnrollmentService.js";
@@ -62,6 +71,7 @@ import { HeartbeatService } from "./runtime/HeartbeatService.js";
 import { InboxPoller } from "./runtime/InboxPoller.js";
 import { RemoteTaskDispatcher } from "./runtime/RemoteTaskDispatcher.js";
 import { ApprovalTransferOrchestrator } from "./runtime/ApprovalTransferOrchestrator.js";
+import { getDeviceTokenRecoveryStatus, structuredEnrollmentError, withRecoveredDeviceToken } from "./runtime/CloudTokenRecovery.js";
 import { ChatRepository, type ChatConversationRecord, type ChatMessageRecord } from "./chat/ChatRepository.js";
 
 const FileSearchSchema = z.object({
@@ -94,6 +104,83 @@ const ChatConversationSendSchema = z.object({
 
 const FileIndexSchema = z.object({
   roots: z.array(z.string().trim().min(1)).default([])
+});
+
+const IntentClassifySchema = z.object({
+  text: z.string().trim().min(1).max(4000)
+});
+
+const IntentRewriteSchema = z.object({
+  query: z.string().trim().min(1).max(4000)
+});
+
+const PolicyCommandEvaluateSchema = z.object({
+  command: z.string().trim().min(1).max(4000),
+  timeoutMs: z.number().int().positive().optional()
+});
+
+const UniversalSearchQuerySchema = z.object({
+  q: z.string().trim().max(500).default(""),
+  types: z.string().trim().max(200).optional(),
+  limit: z.coerce.number().int().min(1).max(50).default(20)
+});
+
+const MissionThreadCreateSchema = z.object({
+  body: z.string().trim().min(1).max(4000),
+  authorType: z.enum(["user", "agent", "system"]).default("user"),
+  authorLabel: z.string().trim().min(1).max(120).default("You"),
+  mentions: z.array(z.string().trim().min(1).max(120)).max(20).optional()
+});
+
+const RedactionMarkSchema = z.object({
+  page: z.number().int().min(1),
+  x: z.number().min(0),
+  y: z.number().min(0),
+  width: z.number().positive(),
+  height: z.number().positive(),
+  reason: z.string().trim().max(200).optional()
+});
+
+const RedactionRequestSchema = z.object({
+  fileId: z.string().trim().min(1).max(200),
+  recipientLabel: z.string().trim().min(1).max(200),
+  watermarkText: z.string().trim().max(500).optional(),
+  redactions: z.array(RedactionMarkSchema).max(100).default([])
+});
+
+const PolicyRuleSchema = z.object({
+  id: z.string().trim().min(1).max(120).optional(),
+  name: z.string().trim().min(1).max(120),
+  description: z.string().trim().max(500).optional(),
+  enabled: z.boolean().optional(),
+  role: z.string().trim().max(80).optional(),
+  sensitivity: z.string().trim().max(80).optional(),
+  fileExtension: z.string().trim().max(40).optional(),
+  mimeType: z.string().trim().max(120).optional(),
+  transferDirection: z.string().trim().max(40).optional(),
+  maxFileSizeBytes: z.number().int().positive().nullable().optional(),
+  action: z.enum(["allow", "require_approval", "deny"]),
+  reason: z.string().trim().max(500).optional(),
+  priority: z.number().int().min(0).max(10000).optional()
+});
+
+const PolicyEvaluateSchema = z.object({
+  role: z.string().trim().max(80).optional(),
+  sensitivity: z.string().trim().max(80).optional(),
+  fileExtension: z.string().trim().max(40).optional(),
+  mimeType: z.string().trim().max(120).optional(),
+  transferDirection: z.string().trim().max(40).optional(),
+  fileSizeBytes: z.number().int().nonnegative().optional()
+});
+
+const NotificationEventSchema = z.object({
+  eventType: z.string().trim().min(1).max(120),
+  title: z.string().trim().min(1).max(200),
+  body: z.string().trim().min(1).max(1000),
+  severity: z.enum(["info", "success", "warning", "error"]).optional(),
+  entityType: z.string().trim().max(80).nullable().optional(),
+  entityId: z.string().trim().max(200).nullable().optional(),
+  metadata: z.record(z.unknown()).optional()
 });
 
 const CloudAuthSchema = z.object({
@@ -141,13 +228,28 @@ export function buildServer(
   const requestStartTimes = new WeakMap<object, number>();
   const publicDir = resolve(process.cwd(), "public");
   const agentRuns = new AgentRunService(tool, fileSearch, reasoner);
+  const chatRunSubscriptions = new Map<string, () => void>();
   const protocol = new PersonalAgentProtocol();
   const intentExtractor = createIntentExtractor();
+  const queryRewriter = createQueryRewriter();
+  const commandPolicy = new CommandPolicy();
+  const networkPolicy = new NetworkPolicy();
+  const secretPolicy = new SecretPolicy();
   const cloudStore = new LocalCloudIdentityStore();
   const deviceEnrollment = new DeviceEnrollmentService(cloudStore);
   const agentRegistration = new AgentRegistrationService(cloudStore);
   const chatRepo = new ChatRepository(getDb());
   const approvalTransfers = new ApprovalTransferOrchestrator(getDb(), cloudStore, defaultProfileId(), chatRepo);
+  const universalSearch = new UniversalSearchService(getDb(), (value) => redactLocalPathText(secretPolicy.redactText(value)));
+  const missionThreads = new MissionThreadService(getDb());
+  const redactionEngine = new RedactionEngine(getDb());
+  const adminPolicy = new AdminPolicyEngine(getDb());
+  const notificationEvents = new NotificationEventStore(getDb());
+
+  const sanitizeFacadePayload = <T>(value: T): T => {
+    const redacted = redactSecretTextOnly(value, secretPolicy);
+    return redactLocalPaths(redacted);
+  };
 
   // Eagerly init identity with resolved db path so handlers don't re-read process.env
   const dbPath = resolveDbPath();
@@ -156,6 +258,15 @@ export function buildServer(
   const remoteDispatcher = new RemoteTaskDispatcher(protocol, getDb(), defaultProfileId());
   const heartbeatService = new HeartbeatService(cloudStore, defaultProfileId());
   const inboxPoller = new InboxPoller(cloudStore, remoteDispatcher, defaultProfileId());
+  const existingCloud = cloudStore.get(defaultProfileId());
+  if (
+    process.env.AGENTIC_DISABLE_RUNTIME_AUTOSTART !== "true" &&
+    existingCloud?.status === "enrolled" &&
+    existingCloud.deviceAccessToken
+  ) {
+    heartbeatService.start();
+    inboxPoller.start();
+  }
 
   server.setErrorHandler((error, _request, reply) => {
     if (error instanceof ZodError) {
@@ -172,6 +283,13 @@ export function buildServer(
     const message = error instanceof Error ? error.message : String(error);
     if (message.startsWith("Unknown sandbox session")) {
       reply.status(404).send({ error: message });
+      return;
+    }
+    if (typeof message === 'string' && (message.includes('jwt expired') || message.includes('expired') || message.includes('TOKEN_EXPIRED'))) {
+      reply.status(401).send({ 
+        error: "TOKEN_EXPIRED", 
+        message: "Your device token has expired. Please re-enroll your device in Settings or use /cloud/enroll to get a new one. This was causing offline status, queued messages, and 'Not delivered' errors." 
+      });
       return;
     }
     if (isCloudConnectivityError(error)) {
@@ -204,6 +322,8 @@ export function buildServer(
   server.addHook("onClose", async () => {
     heartbeatService.stop();
     inboxPoller.stop();
+    for (const unsubscribe of chatRunSubscriptions.values()) unsubscribe();
+    chatRunSubscriptions.clear();
   });
 
   server.get("/health", async () => ({
@@ -212,6 +332,18 @@ export function buildServer(
     localAgentUrl: localAgentUrl(),
     controlPlaneUrl: defaultControlPlaneUrl(),
     defaultOrgSlug: defaultOrgSlug()
+  }));
+
+  server.get("/manifest.webmanifest", async () => ({
+    name: "Oracle Amigo",
+    short_name: "Amigo",
+    description: "Agentic messaging, approvals, vault, policy, and mission control",
+    start_url: "/inbox",
+    scope: "/",
+    display: "standalone",
+    background_color: "#05070d",
+    theme_color: "#7c3aed",
+    icons: []
   }));
 
   server.get("/profile", async () => {
@@ -228,6 +360,127 @@ export function buildServer(
   server.post("/profile/init", async () => ({
     identity: protocol.createLocalIdentity(),
     session: protocol.createPeerSession({ agentId: protocol.createLocalIdentity().agentId, did: protocol.createLocalIdentity().did, publicKey: protocol.createLocalIdentity().publicKey, trustLevel: "local" })
+  }));
+
+  server.get("/search/universal", async (request) => {
+    const query = parseBody(UniversalSearchQuerySchema, request.query ?? {});
+    const types = query.types
+      ?.split(",")
+      .map((item) => item.trim())
+      .filter(Boolean) as Parameters<typeof universalSearch.search>[0]["types"];
+    return sanitizeFacadePayload(universalSearch.search({ query: query.q, types, limit: query.limit }));
+  });
+
+  server.get("/missions/:missionId/thread", async (request) => {
+    const { missionId } = request.params as { missionId: string };
+    return sanitizeFacadePayload({ messages: missionThreads.list(missionId) });
+  });
+
+  server.post("/missions/:missionId/thread", async (request) => {
+    const { missionId } = request.params as { missionId: string };
+    const body = parseBody(MissionThreadCreateSchema, request.body ?? {});
+    const message = missionThreads.create({
+      missionId,
+      authorType: body.authorType,
+      authorLabel: body.authorLabel,
+      body: secretPolicy.redactText(body.body),
+      mentions: body.mentions
+    });
+    appendAuditEvent({
+      actorAgentId: protocol.createLocalIdentity().agentId,
+      taskId: missionId,
+      eventType: "mission_thread_message_created",
+      detailsJson: { messageId: message.id, authorType: message.authorType }
+    });
+    return sanitizeFacadePayload({ message });
+  });
+
+  server.get("/missions/:missionId/thread/events", async (request, reply) => {
+    const { missionId } = request.params as { missionId: string };
+    reply.raw.writeHead(200, {
+      "content-type": "text/event-stream",
+      "cache-control": "no-cache",
+      connection: "keep-alive"
+    });
+    for (const message of missionThreads.list(missionId)) {
+      writeSse(reply.raw, "thread_message", sanitizeFacadePayload(message));
+    }
+    const unsubscribe = missionThreads.subscribe(missionId, (message) => {
+      writeSse(reply.raw, "thread_message", sanitizeFacadePayload(message));
+    });
+    request.raw.on("close", unsubscribe);
+  });
+
+  server.post("/redactions/preview", async (request, reply) => {
+    const body = parseBody(RedactionRequestSchema, request.body ?? {});
+    const file = getStoredFile(body.fileId);
+    if (!file) return reply.status(404).send({ error: "File not found" });
+    const preview = await redactionEngine.preview(file, {
+      recipientLabel: body.recipientLabel,
+      text: body.watermarkText
+    }, body.redactions);
+    return sanitizeFacadePayload(preview);
+  });
+
+  server.post("/redactions/apply", async (request, reply) => {
+    const body = parseBody(RedactionRequestSchema, request.body ?? {});
+    const file = getStoredFile(body.fileId);
+    if (!file) return reply.status(404).send({ error: "File not found" });
+    const policy = adminPolicy.evaluate({
+      role: "user",
+      sensitivity: "unknown",
+      fileExtension: extname(file.originalFileName),
+      mimeType: "application/pdf",
+      transferDirection: "outbound",
+      fileSizeBytes: file.sizeBytes
+    });
+    if (policy.action === "deny") {
+      return reply.status(403).send({ error: "POLICY_DENIED", policy });
+    }
+    const job = await redactionEngine.apply(file, {
+      recipientLabel: body.recipientLabel,
+      text: body.watermarkText
+    }, body.redactions);
+    appendAuditEvent({
+      actorAgentId: protocol.createLocalIdentity().agentId,
+      eventType: "redaction_applied",
+      detailsJson: {
+        sourceFileId: file.id,
+        redactionId: job.id,
+        outputSha256: job.sha256,
+        watermarkText: job.watermarkText,
+        policy
+      }
+    });
+    return sanitizeFacadePayload({ job, policy });
+  });
+
+  server.get("/redactions/:id/download", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const output = redactionEngine.getOutput(id);
+    if (!output || !existsSync(output.path)) return reply.status(404).send({ error: "Redacted file not found" });
+    return reply
+      .type("application/pdf")
+      .header("Content-Disposition", `attachment; filename="${output.fileName}"`)
+      .send(createReadStream(output.path));
+  });
+
+  server.get("/notifications", async (request) => {
+    const q = (request.query ?? {}) as { limit?: string };
+    return sanitizeFacadePayload({ events: notificationEvents.list(Math.min(Math.max(Number(q.limit ?? 50), 1), 100)) });
+  });
+
+  server.post("/notifications", async (request) => {
+    const body = parseBody(NotificationEventSchema, request.body ?? {});
+    const event = notificationEvents.record(body);
+    return sanitizeFacadePayload({ event });
+  });
+
+  server.get("/biometric/capability", async () => ({
+    available: false,
+    method: "webauthn",
+    enforcement: "stub",
+    message: "WebAuthn capability is detected in the browser UI; backend biometric enforcement is not enabled in this release."
   }));
 
   server.post("/cloud/signup", async (request) => {
@@ -255,32 +508,84 @@ export function buildServer(
     return deviceEnrollment.logout();
   });
 
-  server.post("/cloud/enroll", async (request) => {
+  server.post("/cloud/enroll", async (request, reply) => {
     const body = parseBody(CloudEnrollSchema, request.body ?? {});
-    const result = await agentRegistration.enroll({
-      deviceName: body.device_name,
-      agentDisplayName: body.agent_display_name,
-      version: body.version,
-      capabilities: body.capabilities,
-      agentCard: body.agent_card
-    });
+    let result: Awaited<ReturnType<AgentRegistrationService["enroll"]>>;
+    try {
+      result = await agentRegistration.enroll({
+        deviceName: body.device_name,
+        agentDisplayName: body.agent_display_name,
+        version: body.version,
+        capabilities: body.capabilities,
+        agentCard: body.agent_card
+      });
+    } catch (err) {
+      const structured = structuredEnrollmentError(err, cloudStore.get(defaultProfileId()));
+      if (structured) {
+        return reply.status(409).send(structured);
+      }
+      throw err;
+    }
     if (process.env.AGENTIC_DISABLE_RUNTIME_AUTOSTART !== "true") {
       heartbeatService.start();
       inboxPoller.start();
+      void heartbeatService.pulse().catch(() => undefined);
+      void inboxPoller.pollOnce().catch(() => undefined);
     }
     return result;
   });
 
+  server.post("/cloud/device-identity/reset", async (_request, reply) => {
+    const cloud = cloudStore.getOrCreate();
+    if (!cloud.userAccessToken) {
+      return reply.status(401).send({
+        error: "CLOUD_USER_TOKEN_REQUIRED",
+        message: "Log in before resetting this local device identity."
+      });
+    }
+    if (cloud.status === "enrolled" && cloud.deviceAccessToken) {
+      return reply.status(409).send({
+        error: "DEVICE_ALREADY_ENROLLED",
+        message: "This device is already enrolled. Log out first if you intend to enroll this machine as another user."
+      });
+    }
+    heartbeatService.stop();
+    inboxPoller.stop();
+    const nextIdentity = resetLocalIdentity(cloud.displayName ?? "Local User", dbPath);
+    protocol.setIdentityPath(nextIdentity, dbPath);
+    const updated = cloudStore.save(defaultProfileId(), {
+      deviceId: null,
+      agentId: null,
+      agentInstanceId: null,
+      relayInboxUrl: null,
+      deviceAccessToken: null,
+      deviceRefreshToken: null,
+      status: "authenticated"
+    });
+    return {
+      ok: true,
+      cloud: publicCloudIdentity(updated),
+      localPublicKeyFingerprint: createHash("sha256").update(nextIdentity.publicKey.trim().toLowerCase()).digest("hex").slice(0, 16)
+    };
+  });
+
   server.get("/cloud/status", async () => {
     const cloud = cloudStore.getOrCreate();
+    const configuredControlPlaneUrl = defaultControlPlaneUrl();
+    const controlPlane = await inspectControlPlaneConnection(cloud.controlPlaneUrl, configuredControlPlaneUrl);
+    const recovery = getDeviceTokenRecoveryStatus(cloud);
     return {
       cloud: publicCloudIdentity(cloud),
       heartbeat: heartbeatService.status(),
       inbox: inboxPoller.status(),
+      tokenIssue: recovery.tokenIssue,
+      canRecoverDeviceToken: recovery.canRecoverDeviceToken,
+      localPublicKeyFingerprint: recovery.localPublicKeyFingerprint,
       relayMode: process.env.AGENTIC_RELAY_MODE ?? "polling",
+      controlPlane,
       defaults: {
         localAgentUrl: localAgentUrl(),
-        controlPlaneUrl: defaultControlPlaneUrl(),
+        controlPlaneUrl: configuredControlPlaneUrl,
         orgSlug: defaultOrgSlug()
       }
     };
@@ -298,7 +603,7 @@ export function buildServer(
   server.get("/cloud/directory/users", async (request, reply) => {
     const cloud = requireCloudIdentity(cloudStore.get(), reply);
     if (!cloud) return;
-    const token = requireUserAccessToken(cloud, reply);
+    const token = await requireFreshUserAccessToken(deviceEnrollment, reply);
     if (!token) return;
     const q = ((request.query as { q?: string })?.q ?? "").trim();
     return new DirectoryClient(new ControlPlaneClient(cloud.controlPlaneUrl)).searchUsers(q, token);
@@ -307,7 +612,7 @@ export function buildServer(
   server.get("/cloud/directory/users/:user_id/agents", async (request, reply) => {
     const cloud = requireCloudIdentity(cloudStore.get(), reply);
     if (!cloud) return;
-    const token = requireUserAccessToken(cloud, reply);
+    const token = await requireFreshUserAccessToken(deviceEnrollment, reply);
     if (!token) return;
     const { user_id } = request.params as { user_id: string };
     return new DirectoryClient(new ControlPlaneClient(cloud.controlPlaneUrl)).getUserAgents(user_id, token);
@@ -316,7 +621,7 @@ export function buildServer(
   server.get("/cloud/contacts", async (_request, reply) => {
     const cloud = requireCloudIdentity(cloudStore.get(), reply);
     if (!cloud) return;
-    const token = requireUserAccessToken(cloud, reply);
+    const token = await requireFreshUserAccessToken(deviceEnrollment, reply);
     if (!token) return;
     return new DirectoryClient(new ControlPlaneClient(cloud.controlPlaneUrl)).listContacts(token);
   });
@@ -324,7 +629,7 @@ export function buildServer(
   server.post("/cloud/contacts/request", async (request, reply) => {
     const cloud = requireCloudIdentity(cloudStore.get(), reply);
     if (!cloud) return;
-    const token = requireUserAccessToken(cloud, reply);
+    const token = await requireFreshUserAccessToken(deviceEnrollment, reply);
     if (!token) return;
     const body = parseBody(ContactRequestSchema, request.body);
     return new DirectoryClient(new ControlPlaneClient(cloud.controlPlaneUrl)).requestContact(body.target_user_id, token);
@@ -333,7 +638,7 @@ export function buildServer(
   server.post("/cloud/contacts/:contact_id/accept", async (request, reply) => {
     const cloud = requireCloudIdentity(cloudStore.get(), reply);
     if (!cloud) return;
-    const token = requireUserAccessToken(cloud, reply);
+    const token = await requireFreshUserAccessToken(deviceEnrollment, reply);
     if (!token) return;
     const { contact_id } = request.params as { contact_id: string };
     return new DirectoryClient(new ControlPlaneClient(cloud.controlPlaneUrl)).acceptContact(contact_id, token);
@@ -344,16 +649,16 @@ export function buildServer(
   server.post("/relay/send-message", async (request, reply) => {
     const cloud = requireCloudIdentity(cloudStore.get(), reply);
     if (!cloud) return;
-    const token = requireDeviceAccessToken(cloud, reply);
-    if (!token) return;
     const body = parseBody(RelaySendSchema, request.body);
-    const result = await new RelayClient(new ControlPlaneClient(cloud.controlPlaneUrl)).send({
-      to_agent_instance_id: body.to_agent_instance_id,
-      a2a_task_id: body.a2a_task_id ?? randomUUID(),
-      type: "message.send",
-      payload: { kind: "message", text: body.text },
-      idempotency_key: body.idempotency_key
-    }, token);
+    const result = await withRecoveredDeviceToken(cloudStore, defaultProfileId(), async (fresh) =>
+      new RelayClient(new ControlPlaneClient(fresh.controlPlaneUrl)).send({
+        to_agent_instance_id: body.to_agent_instance_id,
+        a2a_task_id: body.a2a_task_id ?? randomUUID(),
+        type: "message.send",
+        payload: { kind: "message", text: body.text },
+        idempotency_key: body.idempotency_key
+      }, fresh.deviceAccessToken!)
+    );
     if (body.message_id) chatRepo.markMessageStatus(body.message_id, "sent");
     return result;
   });
@@ -361,17 +666,17 @@ export function buildServer(
   server.post("/relay/send-file-request", async (request, reply) => {
     const cloud = requireCloudIdentity(cloudStore.get(), reply);
     if (!cloud) return;
-    const token = requireDeviceAccessToken(cloud, reply);
-    if (!token) return;
     const body = parseBody(RelaySendSchema, request.body);
     const a2aTaskId = body.a2a_task_id ?? randomUUID();
-    const result = await new RelayClient(new ControlPlaneClient(cloud.controlPlaneUrl)).send({
-      to_agent_instance_id: body.to_agent_instance_id,
-      a2a_task_id: a2aTaskId,
-      type: "file.request",
-      payload: { kind: "file_request", text: body.text, requestText: body.text },
-      idempotency_key: body.idempotency_key
-    }, token);
+    const result = await withRecoveredDeviceToken(cloudStore, defaultProfileId(), async (fresh) =>
+      new RelayClient(new ControlPlaneClient(fresh.controlPlaneUrl)).send({
+        to_agent_instance_id: body.to_agent_instance_id,
+        a2a_task_id: a2aTaskId,
+        type: "file.request",
+        payload: { kind: "file_request", text: body.text, requestText: body.text },
+        idempotency_key: body.idempotency_key
+      }, fresh.deviceAccessToken!)
+    );
     if (body.message_id) chatRepo.markMessageStatus(body.message_id, "sent");
     if (body.conversation_id) {
       chatRepo.appendMessage({
@@ -1027,6 +1332,155 @@ export function buildServer(
     }
   });
 
+  server.get("/memory/conversations", async (request) => {
+    const q = (request.query ?? {}) as { limit?: string; offset?: string };
+    const limit = Math.max(1, Math.min(100, Number(q.limit ?? 25)));
+    const offset = Math.max(0, Number(q.offset ?? 0));
+    return sanitizeFacadePayload({
+      conversations: memListConversations({ limit, offset }),
+      limit,
+      offset
+    });
+  });
+
+  server.get("/memory/conversations/:id/window", async (request) => {
+    const { id } = request.params as { id: string };
+    const q = (request.query ?? {}) as { maxChars?: string; maxMessages?: string };
+    const maxChars = Math.max(500, Math.min(20000, Number(q.maxChars ?? 8000)));
+    const maxMessages = Math.max(1, Math.min(200, Number(q.maxMessages ?? 80)));
+    return sanitizeFacadePayload({
+      conversationId: id,
+      messages: memGetWindow(id, maxChars, { maxMessages }),
+      maxChars,
+      maxMessages
+    });
+  });
+
+  server.get("/memory/episodic", async (request) => {
+    const q = (request.query ?? {}) as { taskId?: string; query?: string; limit?: string };
+    const limit = Math.max(1, Math.min(100, Number(q.limit ?? 25)));
+    const events = q.taskId
+      ? epListByTask(q.taskId, { limit })
+      : q.query
+        ? epRetrieveSimilar(q.query, { limit })
+        : [];
+    return sanitizeFacadePayload({ events, limit });
+  });
+
+  server.get("/memory/long-term", async (request) => {
+    const q = (request.query ?? {}) as { namespace?: string; query?: string; limit?: string; offset?: string };
+    const namespace = (q.namespace ?? "default").trim() || "default";
+    const limit = Math.max(1, Math.min(100, Number(q.limit ?? 25)));
+    const offset = Math.max(0, Number(q.offset ?? 0));
+    const memories = q.query
+      ? ltRetrieve(namespace, q.query, { limit })
+      : ltListMemories(namespace, { limit, offset });
+    return sanitizeFacadePayload({ namespace, memories, limit, offset });
+  });
+
+  server.post("/intent/classify", async (request) => {
+    const { text } = parseBody(IntentClassifySchema, request.body);
+    const classification = intentExtractor.extract(secretPolicy.redactText(text));
+    return sanitizeFacadePayload({ classification });
+  });
+
+  server.post("/intent/rewrite", async (request) => {
+    const { query } = parseBody(IntentRewriteSchema, request.body);
+    const rewrite = queryRewriter.rewrite(secretPolicy.redactText(query));
+    return sanitizeFacadePayload({ rewrite });
+  });
+
+  server.get("/policy/summary", async () => {
+    const networkProfiles = (["none", "npm", "python", "github", "web-basic"] as const)
+      .map((profile) => networkPolicy.resolve(profile));
+    const hostScopedSecrets = secretPolicy.getHostScopedSecrets();
+    return sanitizeFacadePayload({
+      command: {
+        maxCommandLength: commandPolicy.maxCommandLength,
+        maxTimeoutMs: commandPolicy.maxTimeoutMs,
+        enforcedRules: [
+          "destructive filesystem",
+          "disk formatting",
+          "raw disk writes",
+          "shutdown/reboot",
+          "fork bombs",
+          "cloud metadata exfiltration",
+          "host secret paths",
+          "sensitive environment printing"
+        ]
+      },
+      network: { profiles: networkProfiles },
+      secrets: {
+        redactionEnabled: true,
+        configuredSecretCount: Object.keys(hostScopedSecrets).length,
+        scopedSecretNames: Object.keys(hostScopedSecrets)
+      }
+    });
+  });
+
+  server.get("/policy/rules", async () => {
+    return sanitizeFacadePayload({ rules: adminPolicy.list() });
+  });
+
+  server.post("/policy/rules", async (request) => {
+    const body = parseBody(PolicyRuleSchema, request.body ?? {});
+    const rule = adminPolicy.upsert(body);
+    appendAuditEvent({
+      actorAgentId: protocol.createLocalIdentity().agentId,
+      eventType: "policy_rule_created",
+      detailsJson: { ruleId: rule.id, action: rule.action }
+    });
+    return sanitizeFacadePayload({ rule });
+  });
+
+  server.put("/policy/rules/:id", async (request) => {
+    const { id } = request.params as { id: string };
+    const body = parseBody(PolicyRuleSchema, { ...(request.body as object), id });
+    const rule = adminPolicy.upsert(body);
+    appendAuditEvent({
+      actorAgentId: protocol.createLocalIdentity().agentId,
+      eventType: "policy_rule_updated",
+      detailsJson: { ruleId: rule.id, action: rule.action }
+    });
+    return sanitizeFacadePayload({ rule });
+  });
+
+  server.delete("/policy/rules/:id", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const ok = adminPolicy.delete(id);
+    if (!ok) return reply.status(404).send({ error: "Policy rule not found" });
+    appendAuditEvent({
+      actorAgentId: protocol.createLocalIdentity().agentId,
+      eventType: "policy_rule_deleted",
+      detailsJson: { ruleId: id }
+    });
+    return { ok: true };
+  });
+
+  server.post("/policy/evaluate", async (request) => {
+    const body = parseBody(PolicyEvaluateSchema, request.body ?? {});
+    return sanitizeFacadePayload({ evaluation: adminPolicy.evaluate(body) });
+  });
+
+  server.get("/policy/export.csv", async (_request, reply) => {
+    return reply
+      .type("text/csv; charset=utf-8")
+      .header("Content-Disposition", "attachment; filename=\"oracle-amigo-policy-rules.csv\"")
+      .send(adminPolicy.exportCsv());
+  });
+
+  server.post("/policy/command/evaluate", async (request) => {
+    const { command, timeoutMs } = parseBody(PolicyCommandEvaluateSchema, request.body);
+    const redactedCommand = secretPolicy.redactText(command);
+    const decision = commandPolicy.evaluate(redactedCommand);
+    return sanitizeFacadePayload({
+      ...decision,
+      cappedTimeoutMs: commandPolicy.capTimeout(timeoutMs),
+      redactedCommand,
+      containsSecret: secretPolicy.containsRedaction(command)
+    });
+  });
+
   // Legacy /a2a/v1 endpoint for backward compatibility (now delegates to v1.0 handler for message/send only)
   server.post("/a2a/v1", async (request, reply) => {
     const body = request.body as Record<string, unknown>;
@@ -1058,6 +1512,136 @@ export function buildServer(
     return { tasks: tasks.map((t) => ({ id: t.id, status: t.status, state: t.protocolState, createdAt: t.createdAt })) };
   });
 
+  // Mission control endpoints
+  server.post("/missions/:taskId/pause", async (request, reply) => {
+    const schema = z.object({ taskId: z.string().trim().min(1) });
+    const { taskId } = parseBody(schema, request.params);
+    const db = getDb();
+    
+    const task = db.prepare("SELECT * FROM a2a_tasks WHERE id = ?").get(taskId) as Record<string, unknown> | undefined;
+    if (!task) {
+      return reply.status(404).send({ error: "Mission not found" });
+    }
+    
+    const currentStatus = task.status as string;
+    if (currentStatus === "completed" || currentStatus === "rejected" || currentStatus === "failed" || currentStatus === "canceled") {
+      return reply.status(400).send({ error: `Cannot pause mission with status: ${currentStatus}` });
+    }
+    
+    // For pause, we'll update status to indicate it's paused
+    // In a real implementation, this would need proper workflow state management
+    db.prepare("UPDATE a2a_tasks SET status='paused', updated_at=? WHERE id=?").run(new Date().toISOString(), taskId);
+    
+    appendAuditEvent({
+      actorAgentId: "user",
+      taskId,
+      eventType: "MISSION_PAUSED",
+      detailsJson: { previousStatus: currentStatus }
+    });
+    
+    return { ok: true, status: "paused" };
+  });
+
+  server.post("/missions/:taskId/resume", async (request, reply) => {
+    const schema = z.object({ taskId: z.string().trim().min(1) });
+    const { taskId } = parseBody(schema, request.params);
+    const db = getDb();
+    
+    const task = db.prepare("SELECT * FROM a2a_tasks WHERE id = ?").get(taskId) as Record<string, unknown> | undefined;
+    if (!task) {
+      return reply.status(404).send({ error: "Mission not found" });
+    }
+    
+    const currentStatus = task.status as string;
+    if (currentStatus !== "paused") {
+      return reply.status(400).send({ error: `Cannot resume mission with status: ${currentStatus}` });
+    }
+    
+    // For resume, we'll update status back to working
+    const protocolState = task.protocol_state as string;
+    const appropriateStatus = protocolState === "APPROVAL_REQUIRED" ? "input-required" : "working";
+    
+    db.prepare("UPDATE a2a_tasks SET status=?, updated_at=? WHERE id=?").run(appropriateStatus, new Date().toISOString(), taskId);
+    
+    appendAuditEvent({
+      actorAgentId: "user",
+      taskId,
+      eventType: "MISSION_RESUMED",
+      detailsJson: { newStatus: appropriateStatus }
+    });
+    
+    return { ok: true, status: appropriateStatus };
+  });
+
+  server.post("/missions/:taskId/cancel", async (request, reply) => {
+    const schema = z.object({ taskId: z.string().trim().min(1) });
+    const { taskId } = parseBody(schema, request.params);
+    const db = getDb();
+    
+    const task = db.prepare("SELECT * FROM a2a_tasks WHERE id = ?").get(taskId) as Record<string, unknown> | undefined;
+    if (!task) {
+      return reply.status(404).send({ error: "Mission not found" });
+    }
+    
+    const currentStatus = task.status as string;
+    if (currentStatus === "completed" || currentStatus === "rejected" || currentStatus === "failed" || currentStatus === "canceled") {
+      return reply.status(400).send({ error: `Cannot cancel mission with status: ${currentStatus}` });
+    }
+    
+    // For cancel, we'll update status to canceled
+    db.prepare("UPDATE a2a_tasks SET status='canceled', updated_at=?, completed_at=? WHERE id=?").run(new Date().toISOString(), new Date().toISOString(), taskId);
+    
+    appendAuditEvent({
+      actorAgentId: "user",
+      taskId,
+      eventType: "MISSION_CANCELED",
+      detailsJson: { previousStatus: currentStatus }
+    });
+    
+    return { ok: true, status: "canceled" };
+  });
+
+  server.post("/missions/:taskId/retry", async (request, reply) => {
+    const schema = z.object({ taskId: z.string().trim().min(1) });
+    const { taskId } = parseBody(schema, request.params);
+    const db = getDb();
+    
+    const task = db.prepare("SELECT * FROM a2a_tasks WHERE id = ?").get(taskId) as Record<string, unknown> | undefined;
+    if (!task) {
+      return reply.status(404).send({ error: "Mission not found" });
+    }
+    
+    const currentStatus = task.status as string;
+    if (currentStatus !== "failed") {
+      return reply.status(400).send({ error: `Can only retry failed missions, current status: ${currentStatus}` });
+    }
+    
+    // For retry, we'll create a new task with the same metadata
+    const metadata = task.metadata_json as string;
+    const contextId = task.context_id as string;
+    const type = task.type as string;
+    
+    try {
+      const newTask = wfCreateTask({
+        contextId,
+        type,
+        metadata: JSON.parse(metadata),
+        actorAgentId: "user"
+      });
+      
+      appendAuditEvent({
+        actorAgentId: "user",
+        taskId: newTask.id,
+        eventType: "MISSION_RETRIED",
+        detailsJson: { originalTaskId: taskId }
+      });
+      
+      return { ok: true, taskId: newTask.id, status: newTask.status };
+    } catch (error) {
+      return reply.status(500).send({ error: "Failed to create retry task" });
+    }
+  });
+
   // SSE stream for task workflow events
   server.get("/a2a/tasks/:taskId/events", async (request, reply) => {
     const { taskId } = request.params as { taskId: string };
@@ -1078,41 +1662,82 @@ export function buildServer(
 
   async function localFileRequestFlow(text: string, conversationId: string, sourceMessageId?: string): Promise<{
     taskId: string;
-    approvalId: string;
-    candidates: Array<{ id: number; fileName: string; displayPath: string; extension: string; sizeBytes: number; modifiedAt: string; score: number; reason: string }>;
+    runId: string;
+    type: "approval_required" | "not_found" | "need_help";
+    approvalId?: string;
+    candidates: Array<{ id: string; fileName: string; displayPath: string; extension: string; sizeBytes: number; modifiedAt: string; score: number; reason: string; previewUrl: string }>;
   }> {
     const intent = intentExtractor.extract(text);
     const task = wfCreateTask({ contextId: conversationId, type: "file.request.search", metadata: { query: text, intent }, actorAgentId: "local-user" });
     wfTransition(task.id, "INTENT_CLASSIFIED", { intent: intent.intent });
     wfTransition(task.id, "SEARCH_QUERY_BUILT", { query: text });
-    const queryRewriter = createQueryRewriter();
-    const rewritten = queryRewriter.rewrite(text);
-    const searchQuery = rewritten.semanticQuery || text;
-    const extensions = (rewritten.extensions.length > 0 ? rewritten.extensions : intent.extensions).length > 0
-      ? { extensions: (rewritten.extensions.length > 0 ? rewritten.extensions : intent.extensions) }
-      : undefined;
-    wfTransition(task.id, "LOCAL_SEARCH_RUNNING", { query: searchQuery });
-    const candidates = hybridSearch(searchQuery, { ...extensions, limit: 10 });
-    wfTransition(task.id, "CANDIDATES_RANKED", { count: candidates.length });
-    const topCandidate = candidates[0];
+    wfTransition(task.id, "LOCAL_SEARCH_RUNNING", { query: text });
+
+    const run = agentRuns.createRun({ query: text, createSandboxSession: false });
+    attachRunToConversation(run.runId, conversationId);
+    persistAgentRunSnapshot(conversationId, run, localIdentity.agentId);
+    const completedRun = await waitForAgentRunCompletion(run.runId);
+    persistAgentRunSnapshot(conversationId, completedRun, localIdentity.agentId);
+
+    const candidates = (completedRun.fileSearch?.matches ?? []).slice(0, 10);
+    wfTransition(task.id, "CANDIDATES_RANKED", { count: candidates.length, runId: run.runId });
+    const topCandidate = completedRun.fileSearch?.selectedMatch ?? candidates[0] ?? null;
+    if (!topCandidate) {
+      wfTransition(task.id, "FAILED", {
+        runId: run.runId,
+        reason: completedRun.finalAnswer?.message ?? "No matching file was found.",
+        roots: completedRun.searchedRoots
+      });
+      if (sourceMessageId) {
+        markFileRequestMessageComplete(sourceMessageId, text, "failed", "not_found", run.runId);
+      }
+      chatRepo.appendMessage({
+        id: `run_${run.runId}_file_request_done`,
+        conversationId,
+        taskId: task.id,
+        senderAgentInstanceId: protocol.createLocalIdentity().agentId,
+        messageType: "agent_status",
+        text: chatSafeFinalAnswerMessage(completedRun),
+        payload: {
+          phase: "completed",
+          run_id: run.runId,
+          run_status: completedRun.status,
+          final_status: completedRun.finalAnswer?.status ?? "not_found",
+          searched_roots: completedRun.searchedRoots,
+          command_count: completedRun.fileSearch?.commands.length ?? 0
+        },
+        deliveryStatus: "delivered"
+      });
+      return { taskId: task.id, runId: run.runId, type: "not_found", candidates: [] };
+    }
+
+    const inspected = await fileSearch.inspectFile(topCandidate.id);
     const approval = await protocol.createApproval(task.id, {
       approvalType: "file.transfer.offer",
       requesterAgentId: "local-user",
       ownerAgentId: protocol.createLocalIdentity().agentId,
-      selectedFileId: topCandidate ? String(topCandidate.id) : null,
-      boundFilePath: topCandidate?.filePath ?? null,
-      boundSha256: null,
-      boundSizeBytes: topCandidate?.sizeBytes ?? null,
+      selectedFileId: topCandidate.id,
+      boundFilePath: inspected?.absolutePath ?? null,
+      boundSha256: inspected?.sha256 ?? null,
+      boundSizeBytes: inspected?.sizeBytes ?? topCandidate.sizeBytes,
     });
-    wfTransition(task.id, "APPROVAL_REQUIRED", { approvalId: approval.id, candidateCount: candidates.length });
-    if (sourceMessageId) chatRepo.markMessageStatus(sourceMessageId, "delivered");
+    wfTransition(task.id, "APPROVAL_REQUIRED", { approvalId: approval.id, candidateCount: candidates.length, runId: run.runId });
+    if (sourceMessageId) {
+      markFileRequestMessageComplete(sourceMessageId, text, "delivered", "approval_pending", run.runId);
+    }
     chatRepo.appendMessage({
       conversationId,
       taskId: task.id,
       senderAgentInstanceId: protocol.createLocalIdentity().agentId,
       messageType: "agent_status",
       text: candidates.length > 0 ? `Your agent found ${candidates.length} candidates` : "Your agent did not find matching files",
-      payload: { phase: candidates.length > 0 ? "input_required" : "completed" },
+      payload: {
+        phase: "input_required",
+        run_id: run.runId,
+        run_status: completedRun.status,
+        selected_file_id: topCandidate.id,
+        searched_roots: completedRun.searchedRoots
+      },
       deliveryStatus: "delivered"
     });
     chatRepo.appendMessage({
@@ -1130,15 +1755,16 @@ export function buildServer(
         expires_at: approval.expiresAt,
         selected_candidate_id: approval.selectedFileId,
         candidates: candidates.map((candidate) => ({
-          candidate_id: String(candidate.id),
+          candidate_id: candidate.id,
           file_name: candidate.fileName,
-          display_path: candidate.displayPath,
+          display_path: displayPathForFileSearchMatch(candidate),
           extension: candidate.extension,
           mime_type: "application/octet-stream",
           size_bytes: candidate.sizeBytes,
           modified_at: candidate.modifiedAt,
           match_score: candidate.score,
           match_reason: candidate.reason,
+          preview_url: candidate.previewUrl,
           safety_labels: ["Approval required", "Local path hidden from recipient"]
         }))
       },
@@ -1149,7 +1775,7 @@ export function buildServer(
       notifyBridge({
         approvalId: approval.id,
         taskId: task.id,
-        candidateId: String(topCandidate.id),
+        candidateId: topCandidate.id,
         requesterName: protocol.createLocalIdentity().agentId,
         requestedItem: text,
         topCandidateFileName: topCandidate.fileName,
@@ -1161,12 +1787,146 @@ export function buildServer(
     epRecord(task.id, "SEARCH_COMPLETED", `User searched for "${text}"`, { query: text, intent, candidateCount: candidates.length });
     return {
       taskId: task.id,
+      runId: run.runId,
+      type: "approval_required",
       approvalId: approval.id,
-      candidates: candidates.map((c) => ({
-        id: c.id, fileName: c.fileName, displayPath: c.displayPath, extension: c.extension,
-        sizeBytes: c.sizeBytes, modifiedAt: c.modifiedAt, score: c.score, reason: c.reason,
+      candidates: candidates.map((candidate) => ({
+        id: candidate.id,
+        fileName: candidate.fileName,
+        displayPath: displayPathForFileSearchMatch(candidate),
+        extension: candidate.extension,
+        sizeBytes: candidate.sizeBytes,
+        modifiedAt: candidate.modifiedAt,
+        score: candidate.score,
+        reason: candidate.reason,
+        previewUrl: candidate.previewUrl
       }))
     };
+  }
+
+  function attachRunToConversation(runId: string, conversationId: string): void {
+    if (chatRunSubscriptions.has(runId)) return;
+    const unsubscribe = agentRuns.subscribe(runId, (run) => {
+      persistAgentRunSnapshot(conversationId, run, localIdentity.agentId);
+      if (run.status !== "running") {
+        const stop = chatRunSubscriptions.get(runId);
+        if (stop) stop();
+        chatRunSubscriptions.delete(runId);
+      }
+    });
+    chatRunSubscriptions.set(runId, unsubscribe);
+  }
+
+  function waitForAgentRunCompletion(runId: string): Promise<AgentRunResult> {
+    const current = agentRuns.getRun(runId);
+    if (!current) return Promise.reject(new Error(`Agent run not found: ${runId}`));
+    if (current.status !== "running") return Promise.resolve(current);
+
+    return new Promise((resolveRun, reject) => {
+      const timer = setTimeout(() => {
+        unsubscribe();
+        reject(new Error(`Agent run ${runId} did not finish before the chat request timeout.`));
+      }, Number(process.env.CHAT_AGENT_RUN_WAIT_MS ?? 125000));
+      const unsubscribe = agentRuns.subscribe(runId, (run) => {
+        if (run.status === "running") return;
+        clearTimeout(timer);
+        unsubscribe();
+        resolveRun(run);
+      });
+    });
+  }
+
+  function persistAgentRunSnapshot(conversationId: string, run: AgentRunResult, agentInstanceId: string): void {
+    for (const step of run.steps) {
+      chatRepo.appendMessage({
+        id: `run_${run.runId}_${step.id}`,
+        conversationId,
+        taskId: run.runId,
+        senderAgentInstanceId: agentInstanceId,
+        messageType: "agent_status",
+        text: sanitizeChatText(summarizeAgentRunStep(step), run),
+        payload: {
+          phase: phaseForAgentRunStep(step),
+          run_id: run.runId,
+          run_status: run.status,
+          step_id: step.id,
+          step_label: step.label,
+          execution_target: step.executionTarget,
+          step_status: step.status,
+          command: step.command,
+          stdout: sanitizeChatText(step.stdout, run),
+          stderr: step.stderr ? sanitizeChatText(step.stderr, run) : undefined,
+          duration_ms: step.durationMs
+        },
+        deliveryStatus: step.status === "failed" ? "failed" : run.status === "running" ? "sent" : "delivered"
+      });
+    }
+
+    if (run.finalAnswer) {
+      chatRepo.appendMessage({
+        id: `run_${run.runId}_final`,
+        conversationId,
+        taskId: run.runId,
+        senderAgentInstanceId: agentInstanceId,
+        messageType: "agent_status",
+        text: chatSafeFinalAnswerMessage(run),
+        payload: {
+          phase: run.status === "failed" ? "failed" : "completed",
+          run_id: run.runId,
+          run_status: run.status,
+          final_status: run.finalAnswer.status,
+          selected_file_id: run.finalAnswer.selectedFileId
+        },
+        deliveryStatus: run.status === "failed" ? "failed" : "delivered"
+      });
+    }
+  }
+
+  function chatSafeFinalAnswerMessage(run: AgentRunResult): string {
+    const selected = run.fileSearch?.selectedMatch;
+    if (selected) return `Found ${selected.fileName}.`;
+    const message = run.finalAnswer?.message ?? "No matching file was found in the configured local file roots.";
+    return sanitizeChatText(message, run);
+  }
+
+  function sanitizeChatText(text: string, run?: AgentRunResult): string {
+    let safe = text;
+    for (const root of run?.searchedRoots ?? []) {
+      if (root) safe = safe.split(root).join("configured local roots");
+    }
+    for (const match of run?.fileSearch?.matches ?? []) {
+      if (match.directory) safe = safe.split(match.directory).join("Local file");
+      safe = safe.split(`${match.directory}\\${match.fileName}`).join(match.fileName);
+      safe = safe.split(`${match.directory}/${match.fileName}`).join(match.fileName);
+    }
+    return safe.replace(/[A-Za-z]:\\[^\r\n"]*?([^\\\r\n"]+\.[A-Za-z0-9]{1,8})/g, "$1");
+  }
+
+  function markFileRequestMessageComplete(
+    messageId: string,
+    text: string,
+    deliveryStatus: "delivered" | "failed",
+    status: "approval_pending" | "not_found" | "need_help",
+    runId: string
+  ): void {
+    const existing = chatRepo.getMessage(messageId);
+    if (!existing) return;
+    chatRepo.appendMessage({
+      id: messageId,
+      conversationId: existing.conversation_id,
+      taskId: existing.task_id,
+      senderUserId: existing.sender_user_id,
+      senderAgentInstanceId: existing.sender_agent_instance_id,
+      receiverAgentInstanceId: existing.receiver_agent_instance_id,
+      messageType: "file_request",
+      text,
+      payload: {
+        ...existing.payload_json,
+        status,
+        run_id: runId
+      },
+      deliveryStatus
+    });
   }
 
   server.post("/chat/messages", async (request) => {
@@ -1271,37 +2031,68 @@ export function buildServer(
       conversationId: conversation.id,
       senderAgentInstanceId: cloud?.agentInstanceId ?? localIdentity.agentId,
       messageType: "system_event",
-      text: body.peer_agent_instance_id ? "Relay chat ready. File requests become A2A tasks." : "Local chat ready.",
+      text: body.peer_agent_instance_id ? "Relay chat ready. File requests become A2A tasks." : "Local chat ready - connected to the local backend.",
       payload: { severity: "success" },
       deliveryStatus: "delivered"
     });
-    return { conversation: conversationToUi(conversation, chatRepo.getMessages(conversation.id)) };
+    const peer = await resolveRelayPeerInfo(conversation, cloud, deviceEnrollment);
+    return { conversation: conversationToUi(conversation, chatRepo.getMessages(conversation.id), peer, cloud?.agentInstanceId ?? localIdentity.agentId) };
   });
 
   server.get("/chat/conversations", async () => {
     const cloud = cloudStore.get();
     chatRepo.getOrCreateLocalConversation(cloud?.agentInstanceId ?? localIdentity.agentId);
+    const conversations = chatRepo.listConversations();
+    const peerInfo = await resolveRelayPeerInfoMap(conversations, cloud, deviceEnrollment);
     return {
-      conversations: chatRepo.listConversations().map((conversation) =>
-        conversationToUi(conversation, chatRepo.getMessages(conversation.id))
+      conversations: conversations.map((conversation) =>
+        conversationToUi(
+          conversation,
+          chatRepo.getMessages(conversation.id),
+          peerInfo.get(conversation.id) ?? null,
+          cloud?.agentInstanceId ?? localIdentity.agentId
+        )
       )
     };
   });
 
   server.get("/chat/conversations/:id/messages", async (request) => {
     const { id } = request.params as { id: string };
-    const messages = chatRepo.getMessages(id).map(messageToTimeline);
+    const cloud = cloudStore.get();
+    const conversation = chatRepo.getConversation(id);
+    const localAgentInstanceId = conversation?.local_agent_instance_id ?? cloud?.agentInstanceId ?? localIdentity.agentId;
+    const messages = chatRepo.getMessages(id).map((message) => messageToTimeline(message, localAgentInstanceId));
     return { conversationId: id, messages };
+  });
+
+  server.get("/chat/diagnostics", async () => {
+    const runs = agentRuns.listRuns();
+    return {
+      backend: "ok",
+      agentRuns: {
+        active: runs.filter((run) => run.status === "running").length,
+        total: runs.length
+      },
+      oci: {
+        configured: Boolean(process.env.OCI_GENAI_MODEL_ID && process.env.OCI_GENAI_SERVICE_ENDPOINT && process.env.OCI_GENAI_COMPARTMENT_ID)
+      },
+      fileSearch: {
+        roots: fileSearch.getRoots(),
+        rootCount: fileSearch.getRoots().length
+      }
+    };
   });
 
   server.post("/chat/conversations/:id/messages", async (request, reply) => {
     const { id } = request.params as { id: string };
     const body = parseBody(ChatConversationSendSchema, request.body);
     const cloud = cloudStore.get();
-    const conversation = chatRepo.getConversation(id);
+    let conversation = chatRepo.getConversation(id);
     if (!conversation) return reply.status(404).send({ error: "Conversation not found" });
+    conversation = await refreshRelayConversationPeer(conversation, cloud, deviceEnrollment, chatRepo);
     const messageId = body.client_message_id ?? `msg_${randomUUID()}`;
-    const isFileRequest = body.send_as === "file_request";
+    const detectedIntent = intentExtractor.extract(body.text);
+    const isFileRequest = body.send_as === "file_request" || detectedIntent.intent === "file_request";
     const a2aTaskId = isFileRequest ? `task_${randomUUID()}` : null;
     chatRepo.appendMessage({
       id: messageId,
@@ -1323,28 +2114,31 @@ export function buildServer(
     });
 
     if (conversation.mode === "cloud_relay" && conversation.peer_agent_instance_id) {
-      const token = cloud?.deviceAccessToken;
-      if (!cloud || !token) {
+      if (!cloud?.deviceAccessToken) {
         chatRepo.markMessageStatus(messageId, "failed", "Device is not enrolled.");
         chatRepo.queueOutbox(messageId, id, { text: body.text, send_as: body.send_as }, "Device is not enrolled.");
         return reply.status(409).send({ error: "Device is not enrolled.", conversation_id: id, message_id: messageId });
       }
       try {
-        const relay = await new RelayClient(new ControlPlaneClient(cloud.controlPlaneUrl)).send({
-          to_agent_instance_id: conversation.peer_agent_instance_id,
-          a2a_task_id: a2aTaskId ?? randomUUID(),
-          type: isFileRequest ? "file.request" : "message.send",
-          payload: isFileRequest
-            ? { kind: "file_request", text: body.text, requestText: body.text }
-            : { kind: "message", text: body.text },
-          idempotency_key: body.idempotency_key ?? `ui-${messageId}`
-        }, token);
+        let senderAgentInstanceId = cloud.agentInstanceId;
+        const relay = await withRecoveredDeviceToken(cloudStore, defaultProfileId(), async (fresh) => {
+          senderAgentInstanceId = fresh.agentInstanceId;
+          return new RelayClient(new ControlPlaneClient(fresh.controlPlaneUrl)).send({
+            to_agent_instance_id: conversation.peer_agent_instance_id!,
+            a2a_task_id: a2aTaskId ?? randomUUID(),
+            type: isFileRequest ? "file.request" : "message.send",
+            payload: isFileRequest
+              ? { kind: "file_request", text: body.text, requestText: body.text }
+              : { kind: "message", text: body.text },
+            idempotency_key: body.idempotency_key ?? `ui-${messageId}`
+          }, fresh.deviceAccessToken!);
+        });
         chatRepo.markMessageStatus(messageId, "sent");
         if (isFileRequest) {
           chatRepo.appendMessage({
             conversationId: id,
             taskId: a2aTaskId,
-            senderAgentInstanceId: cloud.agentInstanceId,
+            senderAgentInstanceId,
             receiverAgentInstanceId: conversation.peer_agent_instance_id,
             messageType: "agent_status",
             text: "Waiting for remote approval",
@@ -1362,24 +2156,56 @@ export function buildServer(
           delivery_status: "sent"
         };
       } catch (err) {
-        const error = err instanceof Error ? err.message : String(err);
-        chatRepo.markMessageStatus(messageId, "failed", error);
-        chatRepo.queueOutbox(messageId, id, { text: body.text, send_as: body.send_as }, error);
-        return reply.status(503).send({ error, conversation_id: id, message_id: messageId });
+        const relayError = normalizeRelaySendError(err);
+        chatRepo.markMessageStatus(messageId, "failed", relayError.message);
+        chatRepo.queueOutbox(messageId, id, { text: body.text, send_as: body.send_as }, relayError.message);
+        return reply.status(relayError.statusCode).send({
+          error: relayError.code,
+          message: relayError.message,
+          conversation_id: id,
+          message_id: messageId,
+          relay_unavailable: true
+        });
       }
     }
 
     if (!isFileRequest) {
-      chatRepo.markMessageStatus(messageId, "delivered");
+      if (isFastLocalChat(body.text)) {
+        const answer = localChatAnswer(body.text);
+        chatRepo.markMessageStatus(messageId, "delivered");
+        chatRepo.appendMessage({
+          conversationId: id,
+          senderAgentInstanceId: localIdentity.agentId,
+          messageType: "agent_status",
+          text: answer,
+          payload: { phase: "completed", mode: "direct_chat" },
+          deliveryStatus: "delivered"
+        });
+        return { ok: true, conversation_id: id, message_id: messageId, type: "message", delivery_status: "delivered" };
+      }
+
+      chatRepo.markMessageStatus(messageId, "sent");
+      const run = agentRuns.createRun({ query: body.text, createSandboxSession: false });
       chatRepo.appendMessage({
+        id: `run_${run.runId}_working`,
         conversationId: id,
+        taskId: run.runId,
         senderAgentInstanceId: localIdentity.agentId,
         messageType: "agent_status",
-        text: `I received your message: "${body.text}". This is a personal agent chat.`,
-        payload: { phase: "completed" },
-        deliveryStatus: "delivered"
+        text: "Agent is working on your request.",
+        payload: { phase: "thinking", run_id: run.runId, status: run.status },
+        deliveryStatus: "sent"
       });
-      return { ok: true, conversation_id: id, message_id: messageId, type: "message", delivery_status: "delivered" };
+      attachRunToConversation(run.runId, id);
+      persistAgentRunSnapshot(id, run, localIdentity.agentId);
+      return {
+        ok: true,
+        conversation_id: id,
+        message_id: messageId,
+        run_id: run.runId,
+        type: "message",
+        delivery_status: "sent"
+      };
     }
 
     const local = await localFileRequestFlow(body.text, id, messageId);
@@ -1388,8 +2214,10 @@ export function buildServer(
       conversation_id: id,
       message_id: messageId,
       task_id: local.taskId,
-      type: "approval_required",
-      delivery_status: "delivered"
+      run_id: local.runId,
+      approval_id: local.approvalId,
+      type: local.type,
+      delivery_status: local.type === "approval_required" ? "delivered" : "failed"
     };
   });
 
@@ -1413,6 +2241,149 @@ export function buildServer(
       results.push({ root, indexed: count });
     }
     return { ok: true, message: "Incremental reindex completed.", roots: results };
+  });
+
+  // Vault folder management endpoints
+  server.get("/files/roots", async () => {
+    const db = getDb();
+    const roots = db.prepare(`
+      SELECT id, root_path, display_name, enabled, last_indexed_at, file_count, created_at, updated_at
+      FROM file_index_roots
+      ORDER BY created_at DESC
+    `).all() as Array<Record<string, unknown>>;
+    return { roots: roots.map((r) => ({
+      id: Number(r.id),
+      rootPath: r.root_path as string,
+      displayName: r.display_name as string,
+      enabled: Boolean(r.enabled),
+      lastIndexedAt: r.last_indexed_at as string | null,
+      fileCount: Number(r.file_count),
+      createdAt: r.created_at as string,
+      updatedAt: r.updated_at as string
+    }))};
+  });
+
+  server.post("/files/roots", async (request, reply) => {
+    const schema = z.object({
+      rootPath: z.string().trim().min(1),
+      displayName: z.string().trim().min(1).optional()
+    });
+    const body = parseBody(schema, request.body ?? {});
+    const db = getDb();
+    const now = new Date().toISOString();
+    const displayName = body.displayName || body.rootPath.split(/[\\/]/).pop() || body.rootPath;
+    
+    try {
+      const result = db.prepare(`
+        INSERT INTO file_index_roots (root_path, display_name, enabled, file_count, created_at, updated_at)
+        VALUES (?, ?, 1, 0, ?, ?)
+      `).run(body.rootPath, displayName, now, now);
+      
+      const root = db.prepare("SELECT * FROM file_index_roots WHERE id = ?").get(result.lastInsertRowid) as Record<string, unknown>;
+      return {
+        ok: true,
+        root: {
+          id: Number(root.id),
+          rootPath: root.root_path as string,
+          displayName: root.display_name as string,
+          enabled: Boolean(root.enabled),
+          lastIndexedAt: root.last_indexed_at as string | null,
+          fileCount: Number(root.file_count),
+          createdAt: root.created_at as string,
+          updatedAt: root.updated_at as string
+        }
+      };
+    } catch (error: unknown) {
+      if (error instanceof Error && error.message.includes("UNIQUE constraint")) {
+        return reply.status(409).send({ error: "Root path already exists" });
+      }
+      throw error;
+    }
+  });
+
+  server.delete("/files/roots/:id", async (request, reply) => {
+    const schema = z.object({ id: z.string().transform(Number) });
+    const { id } = parseBody(schema, request.params);
+    const db = getDb();
+    
+    // Delete all files for this root first
+    const root = db.prepare("SELECT root_path FROM file_index_roots WHERE id = ?").get(id) as { root_path: string } | undefined;
+    if (!root) {
+      return reply.status(404).send({ error: "Root not found" });
+    }
+    
+    // Delete files from file_index (cascade will handle FTS and embeddings)
+    db.prepare("DELETE FROM file_index WHERE root_id = ?").run(root.root_path);
+    
+    // Delete the root
+    db.prepare("DELETE FROM file_index_roots WHERE id = ?").run(id);
+    db.prepare("DELETE FROM file_index_excludes WHERE root_path = ?").run(root.root_path);
+    
+    return { ok: true };
+  });
+
+  server.get("/files/excludes", async (request) => {
+    const schema = z.object({ rootPath: z.string().optional() });
+    const { rootPath } = parseBody(schema, request.query ?? {});
+    const db = getDb();
+    
+    let query = "SELECT * FROM file_index_excludes";
+    const params: string[] = [];
+    if (rootPath) {
+      query += " WHERE root_path = ?";
+      params.push(rootPath);
+    }
+    query += " ORDER BY created_at DESC";
+    
+    const excludes = db.prepare(query).all(...params) as Array<Record<string, unknown>>;
+    return { excludes: excludes.map((e) => ({
+      id: Number(e.id),
+      rootPath: e.root_path as string,
+      excludePath: e.exclude_path as string,
+      excludeType: e.exclude_type as string,
+      createdAt: e.created_at as string
+    }))};
+  });
+
+  server.post("/files/excludes", async (request) => {
+    const schema = z.object({
+      rootPath: z.string().trim().min(1),
+      excludePath: z.string().trim().min(1),
+      excludeType: z.enum(["folder", "pattern"]).default("folder")
+    });
+    const body = parseBody(schema, request.body ?? {});
+    const db = getDb();
+    const now = new Date().toISOString();
+    
+    const result = db.prepare(`
+      INSERT INTO file_index_excludes (root_path, exclude_path, exclude_type, created_at)
+      VALUES (?, ?, ?, ?)
+    `).run(body.rootPath, body.excludePath, body.excludeType, now);
+    
+    const exclude = db.prepare("SELECT * FROM file_index_excludes WHERE id = ?").get(result.lastInsertRowid) as Record<string, unknown>;
+    return {
+      ok: true,
+      exclude: {
+        id: Number(exclude.id),
+        rootPath: exclude.root_path as string,
+        excludePath: exclude.exclude_path as string,
+        excludeType: exclude.exclude_type as string,
+        createdAt: exclude.created_at as string
+      }
+    };
+  });
+
+  server.delete("/files/excludes/:id", async (request, reply) => {
+    const schema = z.object({ id: z.string().transform(Number) });
+    const { id } = parseBody(schema, request.params);
+    const db = getDb();
+    
+    const result = db.prepare("DELETE FROM file_index_excludes WHERE id = ?").run(id);
+    if (result.changes === 0) {
+      return reply.status(404).send({ error: "Exclude rule not found" });
+    }
+    
+    return { ok: true };
   });
 
   server.post("/files/search", async (request) => {
@@ -1439,7 +2410,6 @@ export function buildServer(
     const total = (db.prepare("SELECT COUNT(*) as n FROM file_index").get() as { n: number }).n;
     const items = rows.map((r) => ({
       id: Number(r.id),
-      filePath: r.file_path as string,
       displayPath: r.display_path as string,
       fileName: r.file_name as string,
       extension: r.extension as string,
@@ -1463,10 +2433,49 @@ export function buildServer(
   server.post("/approvals/:id/approve", async (request, reply) => {
     const { id } = request.params as { id: string };
     const body = (request.body ?? {}) as { idempotency_key?: string };
+    const current = protocol.getApproval(id);
+    if (!current) return reply.status(404).send({ error: "Approval not found" });
+    const policy = adminPolicy.evaluate({
+      role: "user",
+      sensitivity: "unknown",
+      fileExtension: current.boundFilePath ? extname(current.boundFilePath) : "none",
+      mimeType: "application/octet-stream",
+      transferDirection: "outbound",
+      fileSizeBytes: current.boundSizeBytes ?? 0
+    });
+    if (policy.action === "deny") {
+      notificationEvents.record({
+        eventType: "policy_denied",
+        title: "Transfer blocked by policy",
+        body: policy.reason,
+        severity: "error",
+        entityType: "approval",
+        entityId: id,
+        metadata: { matchedRuleId: policy.matchedRuleId }
+      });
+      appendAuditEvent({
+        actorAgentId: protocol.createLocalIdentity().agentId,
+        taskId: current.taskId,
+        approvalId: current.id,
+        eventType: "policy_denied_transfer",
+        detailsJson: { policy }
+      });
+      return reply.status(403).send({ error: "POLICY_DENIED", policy, approval: current });
+    }
     const decision = protocol.applyApprovalDecisionWithResult(id, "approve", { idempotencyKey: body.idempotency_key });
     if (!decision.approval) return reply.status(404).send({ error: "Approval not found" });
     if (decision.outcome === "denied") return reply.status(409).send({ error: decision.error, approval: decision.approval });
     const cloudTransfer = await approvalTransfers.scheduleForApproval(decision.approval);
+    notificationEvents.record({
+      eventType: "approval_approved",
+      title: "Approval granted",
+      body: "A file request was approved and transfer preparation has started.",
+      severity: "success",
+      entityType: "approval",
+      entityId: decision.approval.id,
+      delivered: true,
+      metadata: { taskId: decision.approval.taskId, policy }
+    });
     if (decision.outcome === "applied") {
       appendApprovalDecisionTimeline(chatRepo, decision.approval.taskId, "approved", {
         approvalId: decision.approval.id,
@@ -1524,6 +2533,16 @@ export function buildServer(
     const decision = protocol.applyApprovalDecisionWithResult(id, "reject", { idempotencyKey: body.idempotency_key });
     if (!decision.approval) return reply.status(404).send({ error: "Approval not found" });
     if (decision.outcome === "denied") return reply.status(409).send({ error: decision.error, approval: decision.approval });
+    notificationEvents.record({
+      eventType: "approval_rejected",
+      title: "Approval rejected",
+      body: "A file request was rejected.",
+      severity: "warning",
+      entityType: "approval",
+      entityId: decision.approval.id,
+      delivered: true,
+      metadata: { taskId: decision.approval.taskId }
+    });
     if (decision.outcome === "applied") {
       appendApprovalDecisionTimeline(chatRepo, decision.approval.taskId, "rejected", { approvalId: decision.approval.id });
     }
@@ -1541,6 +2560,16 @@ export function buildServer(
     if (!approval) return reply.status(404).send({ error: "Approval not found" });
     if (decision.outcome === "denied") return reply.status(409).send({ error: decision.error, approval });
     if (decision.outcome === "replay") return { approval, newApproval: null, candidates: [] };
+    notificationEvents.record({
+      eventType: "approval_feedback",
+      title: "Approval feedback sent",
+      body: "File search feedback was submitted for refinement.",
+      severity: "info",
+      entityType: "approval",
+      entityId: approval.id,
+      delivered: true,
+      metadata: { taskId: approval.taskId }
+    });
     appendApprovalDecisionTimeline(chatRepo, approval.taskId, "feedback", { approvalId: approval.id, feedback: body.feedback });
 
     // Re-run search with feedback: refine the query and exclude the previously rejected file IDs.
@@ -2073,6 +3102,19 @@ export function buildServer(
     return tool.closeSandboxSession({ sessionId });
   });
 
+  server.setNotFoundHandler(async (_request, reply) => {
+    const url = _request.url;
+    const raw = _request.raw.url ?? url;
+    if (raw.includes("..") || raw.includes("%2e") || url.startsWith("/assets/") || url.includes("/src/") || url.match(/\.(ts|tsx|js|map|json|md)$/)) {
+      return reply.status(404).send({ error: "Not found" });
+    }
+    const asset = await tryReadPublicFile(publicDir, "index.html");
+    if (!asset.ok) {
+      return reply.status(asset.statusCode).send({ error: asset.message });
+    }
+    return reply.type("text/html; charset=utf-8").send(asset.content);
+  });
+
   return server;
 }
 
@@ -2113,8 +3155,58 @@ function contentType(path: string): string {
   }
 }
 
-function parseBody<T>(schema: ZodSchema<T>, body: unknown): T {
+function parseBody<T>(schema: z.ZodType<T, z.ZodTypeDef, unknown>, body: unknown): T {
   return schema.parse(body);
+}
+
+function redactLocalPaths<T>(input: T): T {
+  if (typeof input === "string") {
+    return redactLocalPathText(input) as T;
+  }
+
+  if (Array.isArray(input)) {
+    return input.map((item) => redactLocalPaths(item)) as T;
+  }
+
+  if (input && typeof input === "object") {
+    return Object.fromEntries(
+      Object.entries(input as Record<string, unknown>).map(([key, value]) => {
+        if (/^(filePath|storedPath|boundFilePath|path)$/i.test(key)) {
+          return [key, "Local path hidden"];
+        }
+        return [key, redactLocalPaths(value)];
+      })
+    ) as T;
+  }
+
+  return input;
+}
+
+function redactSecretTextOnly<T>(input: T, secretPolicy: SecretPolicy): T {
+  if (typeof input === "string") {
+    return secretPolicy.redactText(input) as T;
+  }
+
+  if (Array.isArray(input)) {
+    return input.map((item) => redactSecretTextOnly(item, secretPolicy)) as T;
+  }
+
+  if (input && typeof input === "object") {
+    return Object.fromEntries(
+      Object.entries(input as Record<string, unknown>).map(([key, value]) => [
+        key,
+        redactSecretTextOnly(value, secretPolicy)
+      ])
+    ) as T;
+  }
+
+  return input;
+}
+
+function redactLocalPathText(input: string): string {
+  return input
+    .replace(/[A-Za-z]:\\(?:Users|Documents and Settings)\\[^\s"'`]+/g, "Local path hidden")
+    .replace(/(?:\/Users|\/home)\/[^\s"'`]+/g, "Local path hidden");
 }
 
 function isCloudConnectivityError(error: unknown): boolean {
@@ -2147,18 +3239,63 @@ function defaultOrgSlug(): string {
   return process.env.DEFAULT_ORG_SLUG?.trim() || DEFAULT_DEV_ORG_SLUG;
 }
 
-function publicCloudIdentity(identity: LocalCloudIdentity): Omit<LocalCloudIdentity, "userAccessToken" | "deviceAccessToken" | "refreshToken"> & {
+function publicCloudIdentity(identity: LocalCloudIdentity): Omit<LocalCloudIdentity, "userAccessToken" | "deviceAccessToken" | "refreshToken" | "userRefreshToken" | "deviceRefreshToken"> & {
   hasUserAccessToken: boolean;
   hasDeviceAccessToken: boolean;
   hasRefreshToken: boolean;
 } {
-  const { userAccessToken, deviceAccessToken, refreshToken, ...safe } = identity;
+  const { userAccessToken, deviceAccessToken, refreshToken, userRefreshToken, deviceRefreshToken, ...safe } = identity;
   return {
     ...safe,
     hasUserAccessToken: Boolean(userAccessToken),
     hasDeviceAccessToken: Boolean(deviceAccessToken),
-    hasRefreshToken: Boolean(refreshToken)
+    hasRefreshToken: Boolean(refreshToken || userRefreshToken || deviceRefreshToken)
   };
+}
+
+async function inspectControlPlaneConnection(savedUrl: string, configuredUrl: string): Promise<{
+  savedUrl: string;
+  configuredUrl: string;
+  matchesConfigured: boolean;
+  reachable: boolean;
+  status: "ok" | "mismatch" | "unreachable";
+  message: string | null;
+}> {
+  const normalizedSaved = normalizeUrlForComparison(savedUrl);
+  const normalizedConfigured = normalizeUrlForComparison(configuredUrl);
+  const matchesConfigured = normalizedSaved === normalizedConfigured;
+  try {
+    await new ControlPlaneClient(savedUrl).request("/health", { timeoutMs: 2500 });
+    return {
+      savedUrl,
+      configuredUrl,
+      matchesConfigured,
+      reachable: true,
+      status: matchesConfigured ? "ok" : "mismatch",
+      message: matchesConfigured
+        ? null
+        : `This agent is enrolled against ${savedUrl}, but the configured control plane is ${configuredUrl}.`
+    };
+  } catch (err) {
+    return {
+      savedUrl,
+      configuredUrl,
+      matchesConfigured,
+      reachable: false,
+      status: "unreachable",
+      message: err instanceof Error ? err.message : String(err)
+    };
+  }
+}
+
+function normalizeUrlForComparison(value: string): string {
+  try {
+    const url = new URL(value);
+    url.pathname = url.pathname.replace(/\/+$/, "");
+    return url.toString().replace(/\/$/, "");
+  } catch {
+    return value.trim().replace(/\/+$/, "");
+  }
 }
 
 function requireCloudIdentity(identity: LocalCloudIdentity | null, reply: FastifyReply): LocalCloudIdentity | null {
@@ -2177,6 +3314,216 @@ function requireUserAccessToken(identity: LocalCloudIdentity, reply: FastifyRepl
   return identity.userAccessToken;
 }
 
+async function requireFreshUserAccessToken(
+  enrollmentService: DeviceEnrollmentService,
+  reply: FastifyReply
+): Promise<string | null> {
+  const identity = new LocalCloudIdentityStore().get();
+  if (!identity) {
+    reply.status(401).send({ error: "CLOUD_NOT_CONFIGURED", message: "Cloud login is required" });
+    return null;
+  }
+  if (identity.refreshToken) {
+    try {
+      const refreshed = await enrollmentService.refreshUserAccessToken();
+      if (refreshed) return refreshed;
+    } catch (err) {
+      reply.status(401).send({
+        error: "CLOUD_USER_TOKEN_EXPIRED",
+        message: err instanceof Error ? err.message : "Cloud login expired"
+      });
+      return null;
+    }
+  }
+  if (identity.userAccessToken) return identity.userAccessToken;
+  reply.status(401).send({ error: "CLOUD_USER_TOKEN_REQUIRED", message: "Cloud login is required" });
+  return null;
+}
+
+async function refreshRelayConversationPeer(
+  conversation: ChatConversationRecord,
+  cloud: LocalCloudIdentity | null,
+  enrollmentService: DeviceEnrollmentService,
+  chatRepo: ChatRepository
+): Promise<ChatConversationRecord> {
+  if (conversation.mode !== "cloud_relay" || !conversation.peer_user_id || !cloud?.controlPlaneUrl) {
+    return conversation;
+  }
+  let token = cloud.userAccessToken;
+  if (cloud.refreshToken) {
+    token = await enrollmentService.refreshUserAccessToken().catch(() => null);
+  }
+  if (!token && !cloud.deviceAccessToken) return conversation;
+
+  const directoryClient = new DirectoryClient(new ControlPlaneClient(cloud.controlPlaneUrl));
+  let directory: { agents?: CloudAgentInstance[] } | null = null;
+  if (token) {
+    try {
+      directory = await directoryClient.getUserAgents(conversation.peer_user_id, token);
+    } catch {
+      directory = null;
+    }
+  }
+  if (!directory && cloud.deviceAccessToken) {
+    try {
+      directory = await directoryClient.getUserAgentsWithDevice(conversation.peer_user_id, cloud.deviceAccessToken);
+    } catch {
+      directory = null;
+    }
+  }
+  if (!directory) {
+    return conversation;
+  }
+
+  const best = chooseRelayPeerAgent(directory.agents ?? []);
+  if (best?.agent_instance_id && best.agent_instance_id !== conversation.peer_agent_instance_id) {
+    return chatRepo.updateConversationPeerAgent(conversation.id, best.agent_instance_id) ?? conversation;
+  }
+  return conversation;
+}
+
+function chooseRelayPeerAgent(agents: CloudAgentInstance[]): CloudAgentInstance | null {
+  const ranked = [...agents].sort((a, b) => {
+    const statusRank = statusScore(b.status) - statusScore(a.status);
+    if (statusRank !== 0) return statusRank;
+    return Date.parse(b.last_seen_at ?? "0") - Date.parse(a.last_seen_at ?? "0");
+  });
+  return ranked[0] ?? null;
+}
+
+function statusScore(status: string): number {
+  if (status === "online") return 3;
+  if (status === "stale") return 2;
+  if (status === "offline") return 1;
+  return 0;
+}
+
+interface RelayPeerInfo {
+  agentInstanceId: string | null;
+  userId: string | null;
+  displayName: string | null;
+  email: string | null;
+  presence: string;
+}
+
+interface DirectoryAuthContext {
+  client: DirectoryClient;
+  userToken: string | null;
+  deviceToken: string | null;
+}
+
+async function resolveRelayPeerInfoMap(
+  conversations: ChatConversationRecord[],
+  cloud: LocalCloudIdentity | null,
+  enrollmentService: DeviceEnrollmentService
+): Promise<Map<string, RelayPeerInfo>> {
+  const result = new Map<string, RelayPeerInfo>();
+  for (const conversation of conversations) {
+    const info = await resolveRelayPeerInfo(conversation, cloud, enrollmentService);
+    if (info) result.set(conversation.id, info);
+  }
+  return result;
+}
+
+async function resolveRelayPeerInfo(
+  conversation: ChatConversationRecord,
+  cloud: LocalCloudIdentity | null,
+  enrollmentService: DeviceEnrollmentService
+): Promise<RelayPeerInfo | null> {
+  if (conversation.mode !== "cloud_relay" || !cloud?.controlPlaneUrl) return null;
+  const auth = await createDirectoryAuthContext(cloud, enrollmentService);
+  if (!auth) return null;
+
+  if (conversation.peer_user_id) {
+    const directory = await getPeerUserDirectory(auth, conversation.peer_user_id);
+    if (directory) {
+      const best = chooseRelayPeerAgent(directory.agents ?? []);
+      return {
+        agentInstanceId: best?.agent_instance_id ?? conversation.peer_agent_instance_id,
+        userId: directory.user_id ?? conversation.peer_user_id,
+        displayName: directory.display_name ?? best?.display_name ?? conversation.title,
+        email: directory.email ?? null,
+        presence: best?.status ?? directory.presence ?? directory.status ?? "unknown"
+      };
+    }
+  }
+
+  if (conversation.peer_agent_instance_id) {
+    const agent = await getPeerAgentInstance(auth, conversation.peer_agent_instance_id);
+    if (agent) {
+      return {
+        agentInstanceId: agent.agent_instance_id,
+        userId: agent.user_id,
+        displayName: agent.display_name || agent.device_name || conversation.title,
+        email: agent.email,
+        presence: agent.status || "unknown"
+      };
+    }
+  }
+
+  return null;
+}
+
+async function createDirectoryAuthContext(
+  cloud: LocalCloudIdentity,
+  enrollmentService: DeviceEnrollmentService
+): Promise<DirectoryAuthContext | null> {
+  if (!cloud.controlPlaneUrl) return null;
+  let userToken = cloud.userAccessToken;
+  if (cloud.refreshToken) {
+    userToken = await enrollmentService.refreshUserAccessToken().catch(() => userToken ?? null);
+  }
+  if (!userToken && !cloud.deviceAccessToken) return null;
+  return {
+    client: new DirectoryClient(new ControlPlaneClient(cloud.controlPlaneUrl)),
+    userToken: userToken ?? null,
+    deviceToken: cloud.deviceAccessToken ?? null
+  };
+}
+
+async function getPeerUserDirectory(auth: DirectoryAuthContext, userId: string): Promise<{
+  user_id: string;
+  display_name?: string;
+  email?: string;
+  status?: string;
+  presence?: string;
+  agents?: CloudAgentInstance[];
+} | null> {
+  if (auth.userToken) {
+    try {
+      return await auth.client.getUserAgents(userId, auth.userToken);
+    } catch {
+      // Device auth fallback keeps presence working after user token expiry.
+    }
+  }
+  if (auth.deviceToken) {
+    try {
+      return await auth.client.getUserAgentsWithDevice(userId, auth.deviceToken);
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+async function getPeerAgentInstance(auth: DirectoryAuthContext, agentInstanceId: string): Promise<CloudAgentInstanceDirectoryEntry | null> {
+  if (auth.userToken) {
+    try {
+      return await auth.client.getAgentInstance(agentInstanceId, auth.userToken);
+    } catch {
+      // Device auth fallback keeps presence working after user token expiry.
+    }
+  }
+  if (auth.deviceToken) {
+    try {
+      return await auth.client.getAgentInstanceWithDevice(agentInstanceId, auth.deviceToken);
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
 function requireDeviceAccessToken(identity: LocalCloudIdentity, reply: FastifyReply): string | null {
   if (!identity.deviceAccessToken) {
     reply.status(401).send({ error: "CLOUD_DEVICE_TOKEN_REQUIRED", message: "Cloud enrollment is required" });
@@ -2185,25 +3532,106 @@ function requireDeviceAccessToken(identity: LocalCloudIdentity, reply: FastifyRe
   return identity.deviceAccessToken;
 }
 
-function conversationToUi(conversation: ChatConversationRecord, messages: ChatMessageRecord[]) {
+function normalizeRelaySendError(error: unknown): { statusCode: number; code: string; message: string } {
+  if (error instanceof CloudError) {
+    return {
+      statusCode: error.statusCode === 401 || error.statusCode === 403 ? error.statusCode : 503,
+      code: error.code,
+      message: error.message
+    };
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  return {
+    statusCode: 503,
+    code: "RELAY_UNAVAILABLE",
+    message
+  };
+}
+
+function isFastLocalChat(text: string): boolean {
+  const value = text.trim().toLowerCase();
+  if (!value) return false;
+  if (/^(hi|hello|hey|yo|sup|thanks|thank you|ok|okay|yes|no)[!.?\s]*$/.test(value)) return true;
+  if (/^(hi|hello|hey)\b[\w\s,.!?-]{0,40}$/.test(value)) return true;
+  if (value.length <= 80 && /\b(how are you|what can you do|who are you|help)\b/.test(value)) return true;
+  return false;
+}
+
+function localChatAnswer(text: string): string {
+  const value = text.trim().toLowerCase();
+  if (/\b(thanks|thank you)\b/.test(value)) {
+    return "You are welcome. I am ready to help with local file search, approvals, transfers, or agent tasks.";
+  }
+  if (/\b(what can you do|help)\b/.test(value)) {
+    return "I can search your indexed local files, create approval-gated file requests, run safe agent tasks, and show backend progress as it happens.";
+  }
+  if (/\b(who are you)\b/.test(value)) {
+    return "I'm the local agent on this device. I can help find indexed files and prepare file requests, but I'll ask before accessing or sharing anything sensitive.";
+  }
+  return "Hi. I'm your local agent, ready to help find files and handle requests.";
+}
+
+function summarizeAgentRunStep(step: AgentRunStep): string {
+  if (step.status === "running") return step.label;
+  if (step.status === "failed") return step.stderr ? `${step.label}: ${truncateChatText(step.stderr)}` : `${step.label} failed.`;
+  if (step.status === "skipped") return step.stderr ? `${step.label}: ${truncateChatText(step.stderr)}` : `${step.label} was skipped.`;
+  const output = step.stdout?.trim();
+  if (!output) return step.label;
+  return `${step.label}: ${truncateChatText(output)}`;
+}
+
+function phaseForAgentRunStep(step: AgentRunStep): string {
+  if (step.status === "failed") return "failed";
+  if (step.status === "skipped") return "completed";
+  if (step.status !== "running") return "completed";
+  if (step.executionTarget === "oci-llm") return "thinking";
+  if (step.executionTarget === "host-file-search") return "searching";
+  if (step.executionTarget === "gondolin-vm-command") return "terminal";
+  return "executing";
+}
+
+function truncateChatText(value: string, max = 360): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  return normalized.length > max ? `${normalized.slice(0, max - 1)}...` : normalized;
+}
+
+function displayPathForFileSearchMatch(candidate: FileSearchMatch): string {
+  return `Local file / ${candidate.fileName}`;
+}
+
+function conversationToUi(
+  conversation: ChatConversationRecord,
+  messages: ChatMessageRecord[],
+  peer: RelayPeerInfo | null = null,
+  localAgentInstanceId: string | null = conversation.local_agent_instance_id
+) {
   const last = messages.at(-1);
+  const title = peer?.displayName || conversation.title;
+  const peerAgentInstanceId = peer?.agentInstanceId ?? conversation.peer_agent_instance_id;
   return {
     id: conversation.id,
-    title: conversation.title,
-    subtitle: conversation.peer_agent_instance_id ? `Relay peer ${shortId(conversation.peer_agent_instance_id)}` : "Single-device local mode",
-    agentInstanceId: conversation.peer_agent_instance_id,
-    presence: conversation.peer_agent_instance_id ? "unknown" : "online",
+    title,
+    subtitle: peerAgentInstanceId
+      ? `${peer?.email ? `${peer.email} · ` : ""}Relay peer ${shortId(peerAgentInstanceId)}`
+      : "Single-device local mode",
+    agentInstanceId: peerAgentInstanceId,
+    presence: peerAgentInstanceId ? (peer?.presence ?? "unknown") : "online",
     unread: conversation.unread_count,
     lastMessage: last ? summarizeChatMessage(last) : "No messages yet",
     pendingApprovals: messages.filter((message) => message.message_type === "approval").length,
     transferCount: messages.filter((message) => message.message_type === "transfer" || message.message_type === "receipt").length,
-    messages: messages.map(messageToTimeline)
+    messages: messages.map((message) => messageToTimeline(message, localAgentInstanceId))
   };
 }
 
-function messageToTimeline(message: ChatMessageRecord): Record<string, unknown> {
+function messageToTimeline(message: ChatMessageRecord, localAgentInstanceId: string | null = null): Record<string, unknown> {
   const payload = message.payload_json;
   if (message.message_type === "human") {
+    const isIncoming = Boolean(
+      localAgentInstanceId &&
+      message.sender_agent_instance_id &&
+      message.sender_agent_instance_id !== localAgentInstanceId
+    );
     return {
       kind: "human",
       id: message.id,
@@ -2211,6 +3639,8 @@ function messageToTimeline(message: ChatMessageRecord): Record<string, unknown> 
       sender_user_id: message.sender_user_id,
       sender_agent_instance_id: message.sender_agent_instance_id,
       receiver_agent_instance_id: message.receiver_agent_instance_id,
+      direction: isIncoming ? "incoming" : "outgoing",
+      sender_label: isIncoming ? String(payload.sender_label ?? payload.sender ?? "Peer") : "You",
       text: message.text ?? "",
       created_at: message.created_at,
       delivery_status: message.delivery_status
@@ -2226,7 +3656,8 @@ function messageToTimeline(message: ChatMessageRecord): Record<string, unknown> 
       natural_language_request: String(payload.natural_language_request ?? message.text ?? ""),
       query: String(payload.query ?? message.text ?? ""),
       status: String(payload.status ?? message.delivery_status),
-      created_at: message.created_at
+      created_at: message.created_at,
+      details: payload
     };
   }
   if (message.message_type === "approval") {

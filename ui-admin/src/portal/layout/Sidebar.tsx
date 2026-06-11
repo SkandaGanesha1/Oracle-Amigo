@@ -1,4 +1,4 @@
-import { Activity, Boxes, Cpu, FileLock2, History, LayoutDashboard, Network, ScrollText, ShieldAlert, Stamp, Users2 } from "lucide-react";
+import { Activity, Boxes, Component, Cpu, FileLock2, History, LayoutDashboard, Network, ScrollText, ShieldAlert, ShieldCheck, Stamp, Users2 } from "lucide-react";
 import { useEffect, useState, type FC } from "react";
 
 interface NavLink {
@@ -18,7 +18,9 @@ const items: NavLink[] = [
   { to: "/transfers", label: "Transfers", icon: FileLock2 },
   { to: "/approvals", label: "Approvals", icon: Stamp },
   { to: "/audit", label: "Audit", icon: History },
-  { to: "/security", label: "Security", icon: ShieldAlert }
+  { to: "/policy", label: "Policy Rules", icon: ShieldCheck },
+  { to: "/security", label: "Security", icon: ShieldAlert },
+  { to: "/components", label: "Component Lab", icon: Component }
 ];
 
 function isActive(itemTo: string, hash: string, end?: boolean): boolean {

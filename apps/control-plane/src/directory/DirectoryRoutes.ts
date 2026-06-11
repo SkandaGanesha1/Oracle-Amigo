@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { requireUserAuth } from "./../auth/AuthMiddleware.js";
-import { getUserAgents, searchUsers } from "./DirectoryService.js";
+import { requireDeviceAuth, requireUserAuth } from "./../auth/AuthMiddleware.js";
+import { getAgentInstance, getUserAgents, searchUsers } from "./DirectoryService.js";
 import { loadConfig } from "../config.js";
 
 export async function registerDirectoryRoutes(app: FastifyInstance): Promise<void> {
@@ -23,6 +23,48 @@ export async function registerDirectoryRoutes(app: FastifyInstance): Promise<voi
     }
     const { user_id } = req.params as { user_id: string };
     const result = getUserAgents(req.authContext.orgId, user_id, { publicBaseUrl: loadConfig().CONTROL_PLANE_PUBLIC_URL });
+    if (!result) {
+      reply.code(404).send({ error: "NOT_FOUND" });
+      return;
+    }
+    reply.send(result);
+  });
+
+  app.get("/v1/directory/device/users/:user_id/agents", { preHandler: requireDeviceAuth() }, async (req, reply) => {
+    if (!req.deviceContext) {
+      reply.code(401).send({ error: "UNAUTHORIZED" });
+      return;
+    }
+    const { user_id } = req.params as { user_id: string };
+    const result = getUserAgents(req.deviceContext.orgId, user_id, { publicBaseUrl: loadConfig().CONTROL_PLANE_PUBLIC_URL });
+    if (!result) {
+      reply.code(404).send({ error: "NOT_FOUND" });
+      return;
+    }
+    reply.send(result);
+  });
+
+  app.get("/v1/directory/agent-instances/:agent_instance_id", { preHandler: requireUserAuth() }, async (req, reply) => {
+    if (!req.authContext) {
+      reply.code(401).send({ error: "UNAUTHORIZED" });
+      return;
+    }
+    const { agent_instance_id } = z.object({ agent_instance_id: z.string().min(1) }).parse(req.params);
+    const result = getAgentInstance(req.authContext.orgId, agent_instance_id, { publicBaseUrl: loadConfig().CONTROL_PLANE_PUBLIC_URL });
+    if (!result) {
+      reply.code(404).send({ error: "NOT_FOUND" });
+      return;
+    }
+    reply.send(result);
+  });
+
+  app.get("/v1/directory/device/agent-instances/:agent_instance_id", { preHandler: requireDeviceAuth() }, async (req, reply) => {
+    if (!req.deviceContext) {
+      reply.code(401).send({ error: "UNAUTHORIZED" });
+      return;
+    }
+    const { agent_instance_id } = z.object({ agent_instance_id: z.string().min(1) }).parse(req.params);
+    const result = getAgentInstance(req.deviceContext.orgId, agent_instance_id, { publicBaseUrl: loadConfig().CONTROL_PLANE_PUBLIC_URL });
     if (!result) {
       reply.code(404).send({ error: "NOT_FOUND" });
       return;

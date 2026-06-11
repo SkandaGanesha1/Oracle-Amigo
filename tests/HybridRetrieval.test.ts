@@ -75,6 +75,14 @@ describe("HybridRetrieval", () => {
     expect(result.intent).toBe("normal_chat");
   });
 
+  it("IntentExtractor keeps normal capability prompts out of file search", async () => {
+    const { RuleBasedIntentExtractor } = await import("../src/intent/IntentExtractor.js");
+    const ex = new RuleBasedIntentExtractor();
+    expect(ex.extract("show me what you can do").intent).toBe("normal_chat");
+    expect(ex.extract("get started with the local agent").intent).toBe("normal_chat");
+    expect(ex.extract("find the NonPO invoice india.pdf file").intent).toBe("file_request");
+  });
+
   it("FeedbackRefiner excludes rejectedIds and rewrites query", async () => {
     const { refine } = await import("../src/retrieval/FeedbackRefiner.js");
     const result = refine("API design doc", "not this one, find the latest client API PPT instead", [42, 99]);

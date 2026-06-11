@@ -215,9 +215,9 @@ describe("control-plane", () => {
     expect(user.active_agent_instances).toBe(1);
     const agent = user.agents[0];
     expect(agent.relay_inbox_url).toBe("http://127.0.0.1:9999/v1/relay/a2a/inbox");
-    expect(agent.agent_card_url).toBe(`http://127.0.0.1:9999/v1/agents/${agentInstanceId}/card`);
+    expect(agent.agent_card_url).toBe(`http://127.0.0.1:9999/v1/relay/a2a/${agentInstanceId}`);
     expect(agent.agent_card_hash).toBeTruthy();
-    expect(JSON.stringify(agent)).not.toMatch(/localhost|127\.0\.0\.1:3399/);
+    expect(JSON.stringify(agent)).not.toMatch(/localhost|127\.0\.0\.1:3399|(?:^|[^A-Za-z])[A-Za-z]:[\\/]|file:\/\//);
   });
 
   it("GET /v1/directory/users/:id/agents returns card URLs for the user", async () => {
@@ -229,7 +229,32 @@ describe("control-plane", () => {
     expect(res.statusCode).toBe(200);
     const body = res.json();
     expect(body.agents[0].relay_inbox_url).toBe("http://127.0.0.1:9999/v1/relay/a2a/inbox");
-    expect(body.agents[0].agent_card_url).toBe(`http://127.0.0.1:9999/v1/agents/${agentInstanceId}/card`);
+    expect(body.agents[0].agent_card_url).toBe(`http://127.0.0.1:9999/v1/relay/a2a/${agentInstanceId}`);
+  });
+
+  it("GET /v1/directory/agent-instances/:id returns safe presence metadata", async () => {
+    const userAuth = await app.inject({
+      method: "GET",
+      url: `/v1/directory/agent-instances/${encodeURIComponent(agentInstanceId)}`,
+      headers: { authorization: `Bearer ${accessToken}` }
+    });
+    expect(userAuth.statusCode).toBe(200);
+    expect(userAuth.json()).toMatchObject({
+      user_id: userId,
+      email: userEmail,
+      agent_instance_id: agentInstanceId,
+      device_id: deviceId,
+      status: "online"
+    });
+
+    const deviceAuth = await app.inject({
+      method: "GET",
+      url: `/v1/directory/device/agent-instances/${encodeURIComponent(agentInstanceId)}`,
+      headers: { authorization: `Bearer ${deviceToken}` }
+    });
+    expect(deviceAuth.statusCode).toBe(200);
+    expect(deviceAuth.json().agent_card_url).toBe(`http://127.0.0.1:9999/v1/relay/a2a/${agentInstanceId}`);
+    expect(JSON.stringify(deviceAuth.json())).not.toMatch(/device_access_token|refresh_token|public_key|private|(?:^|[^A-Za-z])[A-Za-z]:[\\/]|file:\/\//);
   });
 
   it("GET /v1/agents/:id/card returns a signed cloud-reachable card", async () => {
@@ -240,14 +265,27 @@ describe("control-plane", () => {
     });
     expect(res.statusCode).toBe(200);
     const card = res.json() as A2Av1AgentCard;
-    expect(card.url).toBe("http://127.0.0.1:9999");
-    expect(card.supportedInterfaces.some((i) => i.protocolBinding === "HTTP+JSON" && i.url === "http://127.0.0.1:9999/v1")).toBe(true);
-    expect(JSON.stringify(card)).not.toMatch(/localhost|127\.0\.0\.1:3399|file:\/\//);
+    expect(card.url).toBe(`http://127.0.0.1:9999/v1/relay/a2a/${agentInstanceId}`);
+    expect(card.supportedInterfaces.some((i) => i.protocolBinding === "HTTP+JSON" && i.url === `http://127.0.0.1:9999/v1/relay/a2a/${agentInstanceId}/v1`)).toBe(true);
+    expect(JSON.stringify(card)).not.toMatch(/localhost|127\.0\.0\.1:3399|(?:^|[^A-Za-z])[A-Za-z]:[\\/]|file:\/\//);
     expect(card.skills.some((s) => s.id === "file.request")).toBe(true);
     expect(card.signatures?.[0].header.typ).toBe("JOSE");
     const verified = verifySignedCard(card, cardPublicKeyPem);
-    expect(verified.url).toBe("http://127.0.0.1:9999");
+    expect(verified.url).toBe(`http://127.0.0.1:9999/v1/relay/a2a/${agentInstanceId}`);
     expect(() => verifySignedCard({ ...card, name: "Tampered" }, cardPublicKeyPem)).toThrow(/JWS signature verification failed/);
+  });
+
+  it("GET /v1/relay/a2a/:id returns the same relay-reachable cloud card", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: `/v1/relay/a2a/${agentInstanceId}`,
+      headers: { authorization: `Bearer ${deviceToken}` }
+    });
+    expect(res.statusCode).toBe(200);
+    const card = res.json() as A2Av1AgentCard;
+    expect(card.url).toBe(`http://127.0.0.1:9999/v1/relay/a2a/${agentInstanceId}`);
+    expect(JSON.stringify(card)).not.toMatch(/localhost|127\.0\.0\.1:3399|(?:^|[^A-Za-z])[A-Za-z]:[\\/]|file:\/\//);
+    expect(verifySignedCard(card, cardPublicKeyPem).url).toBe(card.url);
   });
 
   it("GET /v1/agents/:id/card rejects normal user tokens", async () => {

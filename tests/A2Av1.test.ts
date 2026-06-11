@@ -224,6 +224,7 @@ describe("A2A v1.0.0 — AgentCardV1 builder and JWS", () => {
     expect(() => canonicalizeCard({ a: undefined })).toThrow(/undefined/);
     expect(() => canonicalizeCard({ a: Number.NaN })).toThrow(/non-finite/);
     expect(() => canonicalizeCard({ a: Number.POSITIVE_INFINITY })).toThrow(/non-finite/);
+    expect(() => canonicalizeCard({ a: -0 })).toThrow(/negative zero/);
     expect(() => canonicalizeCard({ a: () => "x" })).toThrow(/function/);
   });
 

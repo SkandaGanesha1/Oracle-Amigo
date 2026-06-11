@@ -382,7 +382,28 @@ describe("Handshake end-to-end with hardening", () => {
       createdAt: "1999-01-01T00:00:00.000Z",
       expiresAt: "1999-01-01T00:01:00.000Z",
       fromDid: "did:key:zunsigned-alias",
-    }, a.publicKey)).toBe(true);
+    } as typeof offer & Record<string, string>, a.publicKey)).toBe(true);
+  });
+
+  it("created handshake payloads emit only snake_case canonical fields", () => {
+    const a = makeIdentity();
+    const b = makeIdentity();
+    const ctx = createHandshakeContext();
+    const offer = createHandshakeOffer(a.ident, "peer-b", ctx) as Record<string, unknown>;
+    const response = createHandshakeResponse(offer as ReturnType<typeof createHandshakeOffer>, b.ident, ctx) as Record<string, unknown>;
+    for (const payload of [offer, response]) {
+      expect(payload.offer_id).toBeTruthy();
+      expect(payload.from_did).toBeTruthy();
+      expect(payload.created_at).toBeTruthy();
+      expect(payload.expires_at).toBeTruthy();
+      expect(payload.offerId).toBeUndefined();
+      expect(payload.fromDid).toBeUndefined();
+      expect(payload.createdAt).toBeUndefined();
+      expect(payload.expiresAt).toBeUndefined();
+      expect(payload.peer).toBeUndefined();
+    }
+    expect(response.response_id).toBeTruthy();
+    expect(response.responseId).toBeUndefined();
   });
 
   it("rejects a replayed offer (same nonce submitted twice)", async () => {

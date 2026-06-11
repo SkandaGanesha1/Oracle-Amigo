@@ -1,6 +1,6 @@
 import { useEffect, useState, type FC } from "react";
 
-type Transfer = {
+type TransferStatusData = {
   id: string;
   task_id: string;
   from_agent_id: string;
@@ -14,14 +14,14 @@ type Transfer = {
 };
 
 export const TransferStatus: FC<{ taskId?: string }> = ({ taskId }) => {
-  const [transfers, setTransfers] = useState<Transfer[]>([]);
+  const [transfers, setTransfers] = useState<TransferStatusData[]>([]);
 
   useEffect(() => {
     const fetchTransfers = async () => {
       try {
         const res = await fetch("/transfers");
         if (res.ok) {
-          const body = (await res.json()) as { transfers: Transfer[] };
+          const body = (await res.json()) as { transfers: TransferStatusData[] };
           setTransfers(
             taskId
               ? body.transfers.filter((t) => t.task_id === taskId)
@@ -48,7 +48,7 @@ export const TransferStatus: FC<{ taskId?: string }> = ({ taskId }) => {
               <span className="text-white/30">{formatSize(t.size_bytes)}</span>
               <span
                 className={`rounded px-1.5 py-0.5 text-[10px] ${
-                  t.status === "completed"
+                  t.status === "completed" || t.status === "stored" || t.status === "available"
                     ? "bg-emerald-500/20 text-emerald-300"
                     : "bg-amber-500/20 text-amber-300"
                 }`}

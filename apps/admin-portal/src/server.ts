@@ -46,6 +46,12 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
     rewritePrefix: "/v1"
   });
 
+  await app.register(fastifyHttpProxy, {
+    upstream: cfg.LOCAL_AGENT_URL,
+    prefix: "/policy",
+    rewritePrefix: "/policy"
+  });
+
   // 2. Serve the admin SPA. The static root is the Vite build output.
   // Default: when running from `dist/server.js`, the SPA is at `<pkg>/public/`.
   // When called from tests, allow an override (absolute or relative to cwd).
@@ -62,7 +68,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
     });
     // Explicit fallback for client routes. Registered AFTER the proxy so /v1/* never falls through.
     app.setNotFoundHandler((req, reply) => {
-      if (req.url.startsWith("/v1/")) {
+      if (req.url.startsWith("/v1/") || req.url.startsWith("/policy/")) {
         reply.code(404).send({ error: "NOT_FOUND", message: "Upstream endpoint not found" });
         return;
       }

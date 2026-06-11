@@ -26,11 +26,13 @@ function findChatBundle(): { js: string; css: string; html: string } | null {
   const assetsDir = join(CHAT_PUBLIC_DIR, "assets");
   if (!existsSync(assetsDir)) return null;
   const files = readdirSync(assetsDir);
-  const js = files.find((f) => f.endsWith(".js"));
-  const css = files.find((f) => f.endsWith(".css"));
-  if (!js || !css) return null;
+  const jsFiles = files.filter((f) => f.endsWith(".js"));
+  const css = files.find((f) => f.startsWith("index-") && f.endsWith(".css")) ?? files.find((f) => f.endsWith(".css"));
+  if (jsFiles.length === 0 || !css) return null;
+  // Pick the largest JS file (the main bundle) rather than the first alphabetically
+  jsFiles.sort((a, b) => statSync(join(assetsDir, b)).size - statSync(join(assetsDir, a)).size);
   return {
-    js: join(assetsDir, js),
+    js: join(assetsDir, jsFiles[0]),
     css: join(assetsDir, css),
     html: join(CHAT_PUBLIC_DIR, "index.html")
   };
@@ -84,8 +86,8 @@ describe("chat build is admin-free", () => {
     expect(js, "chat bundle leaked admin auth route paths").not.toContain("/v1/admin/auth/login");
     expect(js, "chat bundle leaked admin auth route paths").not.toContain("/v1/admin/auth/setup");
     // The chat bundle retains the product chat surfaces
-    expect(js, "chat bundle no longer renders Agentic Chat").toContain("Agentic Chat");
-    expect(js, "chat bundle no longer renders Approval Center").toContain("Approval Center");
+    expect(js, "chat bundle no longer renders Agentic Chat identity").toContain("Oracle Amigo Local Agent");
+    expect(js, "chat bundle no longer renders Approval Workflow").toContain("Approval Workflow");
     expect(js, "chat bundle no longer includes relay file request client").toContain("/relay/send-file-request");
   });
 
@@ -155,6 +157,8 @@ describe("admin portal build artifacts", () => {
     expect(js).toContain("Oracle Amigo Admin");
     expect(js).toContain("Bootstrap first admin");
     expect(js).toContain("Control Plane Monitor");
+    expect(js).toContain("Design System / Component Lab");
+    expect(js).toContain("Component Lab");
     // Cookie-based, no legacy token header
     expect(js).not.toContain("X-Admin-Token");
     // Data API paths are still there (read-only console)

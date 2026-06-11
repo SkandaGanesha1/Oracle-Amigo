@@ -2,13 +2,37 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { FastifyInstance } from "fastify";
+import * as OTPAuth from "otpauth";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApp } from "../src/main.js";
 import { resetConfigForTest } from "../src/config.js";
 import { closeAll, getDb } from "../src/db/connection.js";
+import { Crypto } from "../src/admin/index.js";
 
 let app: FastifyInstance;
 let dataDir: string;
+
+function currentTotpFor(secret: string): string {
+  return new OTPAuth.TOTP({
+    issuer: "Oracle Amigo",
+    algorithm: "SHA1",
+    digits: 6,
+    period: 30,
+    secret: OTPAuth.Secret.fromBase32(secret)
+  }).generate();
+}
+
+function getSetCookie(res: { headers: Record<string, unknown> }, name: string): string {
+  const setCookie = res.headers["set-cookie"];
+  const cookies = Array.isArray(setCookie) ? setCookie : setCookie ? [setCookie] : [];
+  const found = cookies.map(String).find((cookie) => cookie.startsWith(`${name}=`));
+  expect(found).toBeTruthy();
+  return found!;
+}
+
+function readCookieValue(setCookie: string): string {
+  return setCookie.split(";", 1)[0].split("=", 2)[1] ?? "";
+}
 
 beforeAll(async () => {
   dataDir = mkdtempSync(join(tmpdir(), "admin-hardening-test-"));
@@ -40,6 +64,83 @@ afterAll(async () => {
 });
 
 describe("admin hardening", () => {
+  it("stores admin TOTP encrypted, hashes and rotates recovery codes, sets HttpOnly cookies, and revokes sessions", async () => {
+    const start = await app.inject({ method: "POST", url: "/v1/admin/auth/setup/start", payload: {} });
+    expect(start.statusCode).toBe(200);
+    const setupStart = start.json();
+    const setup = await app.inject({
+      method: "POST",
+      url: "/v1/admin/auth/setup",
+      payload: {
+        email: `hardening-admin-${Date.now()}@example.com`,
+        display_name: "Hardening Admin",
+        password: "correctHorseBatteryStaple-9!",
+        totp_code: currentTotpFor(setupStart.secret_base32),
+        setup_challenge: setupStart.challenge
+      }
+    });
+    expect(setup.statusCode).toBe(201);
+    const cookie = getSetCookie(setup, "admin_session");
+    expect(cookie).toContain("HttpOnly");
+    expect(cookie).toContain("SameSite=Strict");
+    expect(cookie).toContain("Path=/");
+    expect(cookie).not.toContain("Domain=");
+    const sessionToken = readCookieValue(cookie);
+
+    const body = setup.json();
+    const adminUserId = body.user.id as string;
+    const totpRow = getDb()
+      .prepare("SELECT secret_encrypted FROM admin_totp_secrets WHERE admin_user_id = ?")
+      .get(adminUserId) as { secret_encrypted: string };
+    expect(totpRow.secret_encrypted).toBeTruthy();
+    expect(totpRow.secret_encrypted).not.toBe(setupStart.secret_base32);
+    expect(Crypto.decryptSecret(totpRow.secret_encrypted)).toBe(setupStart.secret_base32);
+
+    const recoveryCodes = body.recovery_codes as string[];
+    expect(recoveryCodes).toHaveLength(10);
+    const recoveryRows = getDb()
+      .prepare("SELECT code_hash, used_at FROM admin_recovery_codes WHERE admin_user_id = ? ORDER BY created_at ASC")
+      .all(adminUserId) as Array<{ code_hash: string; used_at: string | null }>;
+    expect(recoveryRows).toHaveLength(10);
+    expect(recoveryRows.every((row) => /^[a-f0-9]{64}$/.test(row.code_hash))).toBe(true);
+    expect(JSON.stringify(recoveryRows)).not.toContain(recoveryCodes[0].replace(/[\s-]/g, "").toUpperCase());
+
+    const login = await app.inject({
+      method: "POST",
+      url: "/v1/admin/auth/login",
+      payload: { email: body.user.email, password: "correctHorseBatteryStaple-9!" }
+    });
+    expect(login.statusCode).toBe(200);
+    const recovery = await app.inject({
+      method: "POST",
+      url: "/v1/admin/auth/mfa/recovery",
+      payload: { challenge: login.json().challenge, recovery_code: recoveryCodes[0] }
+    });
+    expect(recovery.statusCode).toBe(200);
+    expect(recovery.json().recovery_codes).toHaveLength(10);
+    const unusedAfterRotation = getDb()
+      .prepare("SELECT COUNT(*) AS n FROM admin_recovery_codes WHERE admin_user_id = ? AND used_at IS NULL")
+      .get(adminUserId) as { n: number };
+    expect(unusedAfterRotation.n).toBe(10);
+    const usedAfterRotation = getDb()
+      .prepare("SELECT COUNT(*) AS n FROM admin_recovery_codes WHERE admin_user_id = ? AND used_at IS NOT NULL")
+      .get(adminUserId) as { n: number };
+    expect(usedAfterRotation.n).toBeGreaterThanOrEqual(10);
+
+    const logout = await app.inject({
+      method: "POST",
+      url: "/v1/admin/auth/logout",
+      headers: { cookie: `admin_session=${sessionToken}` }
+    });
+    expect(logout.statusCode).toBe(204);
+    const me = await app.inject({
+      method: "GET",
+      url: "/v1/admin/auth/me",
+      headers: { cookie: `admin_session=${sessionToken}` }
+    });
+    expect(me.statusCode).toBe(401);
+  });
+
   it("rejects normal user tokens on admin APIs", async () => {
     const enrolled = await signupAndEnroll("normal-user");
     const res = await app.inject({

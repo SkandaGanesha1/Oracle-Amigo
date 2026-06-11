@@ -141,6 +141,25 @@ CREATE TABLE IF NOT EXISTS workflow_events (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS file_index_roots (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  root_path TEXT NOT NULL UNIQUE,
+  display_name TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  last_indexed_at TEXT,
+  file_count INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS file_index_excludes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  root_path TEXT NOT NULL,
+  exclude_path TEXT NOT NULL,
+  exclude_type TEXT NOT NULL DEFAULT 'folder', -- 'folder' or 'pattern'
+  created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS file_index (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   root_id TEXT NOT NULL,
@@ -286,6 +305,8 @@ CREATE TABLE IF NOT EXISTS local_cloud_identity (
   user_access_token TEXT,
   device_access_token TEXT,
   refresh_token TEXT,
+  user_refresh_token TEXT,
+  device_refresh_token TEXT,
   status TEXT NOT NULL DEFAULT 'disconnected',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -304,4 +325,67 @@ CREATE TABLE IF NOT EXISTS local_relay_dispatches (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   UNIQUE(profile_id, relay_task_id)
+);
+
+CREATE TABLE IF NOT EXISTS mission_threads (
+  id TEXT PRIMARY KEY,
+  mission_id TEXT NOT NULL,
+  author_type TEXT NOT NULL,
+  author_label TEXT NOT NULL,
+  body TEXT NOT NULL,
+  mentions_json TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_mission_threads_mission_created
+  ON mission_threads(mission_id, created_at);
+
+CREATE TABLE IF NOT EXISTS policy_rules (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  enabled INTEGER NOT NULL DEFAULT 1,
+  role TEXT NOT NULL DEFAULT 'any',
+  sensitivity TEXT NOT NULL DEFAULT 'any',
+  file_extension TEXT NOT NULL DEFAULT 'any',
+  mime_type TEXT NOT NULL DEFAULT 'any',
+  transfer_direction TEXT NOT NULL DEFAULT 'any',
+  max_file_size_bytes INTEGER,
+  action TEXT NOT NULL,
+  reason TEXT NOT NULL DEFAULT '',
+  priority INTEGER NOT NULL DEFAULT 100,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS redaction_audit (
+  id TEXT PRIMARY KEY,
+  source_file_id TEXT NOT NULL,
+  output_path TEXT NOT NULL,
+  output_sha256 TEXT NOT NULL,
+  redactions_json TEXT NOT NULL DEFAULT '[]',
+  watermark_text TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS watermark_history (
+  id TEXT PRIMARY KEY,
+  redaction_id TEXT NOT NULL,
+  recipient_label TEXT NOT NULL,
+  watermark_text TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS notification_events (
+  id TEXT PRIMARY KEY,
+  event_type TEXT NOT NULL,
+  title TEXT NOT NULL,
+  body TEXT NOT NULL,
+  severity TEXT NOT NULL DEFAULT 'info',
+  entity_type TEXT,
+  entity_id TEXT,
+  delivered INTEGER NOT NULL DEFAULT 0,
+  bridge_available INTEGER NOT NULL DEFAULT 0,
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL
 );

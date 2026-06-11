@@ -20,6 +20,11 @@ export interface CloudAuthBundle {
   user: { org_id: string; user_id: string; email: string; display_name: string };
 }
 
+export interface CloudRefreshBundle {
+  access_token: string;
+  expires_in: number;
+}
+
 export class AuthClient {
   constructor(private cp: ControlPlaneClient) {}
 
@@ -31,8 +36,8 @@ export class AuthClient {
     return this.cp.postJson<CloudAuthBundle>("/v1/auth/login", req);
   }
 
-  refresh(refreshToken: string): Promise<CloudAuthBundle> {
-    return this.cp.postJson<CloudAuthBundle>("/v1/auth/refresh", { refresh_token: refreshToken });
+  refresh(refreshToken: string): Promise<CloudRefreshBundle> {
+    return this.cp.postJson<CloudRefreshBundle>("/v1/auth/refresh", { refresh_token: refreshToken });
   }
 
   logout(refreshToken: string): Promise<{ ok: boolean }> {

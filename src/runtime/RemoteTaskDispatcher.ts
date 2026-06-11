@@ -13,6 +13,7 @@ import { storeReceivedRelayFile } from "../storage/AgenticStorage.js";
 import { createTask, transition } from "../workflow/TaskWorkflow.js";
 import type { RelayInboxMessage } from "../cloud/RelayClient.js";
 import { ChatRepository } from "../chat/ChatRepository.js";
+import { withRecoveredDeviceToken } from "./CloudTokenRecovery.js";
 
 export interface DispatchResult {
   relayTaskId: string;
@@ -44,23 +45,23 @@ export class RemoteTaskDispatcher {
       };
     }
 
-    if (message.type === "file.transfer.available") {
+    const relayMessageType = String(message.type ?? "").trim().toLowerCase();
+    const payloadKind = String(message.payload?.kind ?? "").trim().toLowerCase();
+
+    if (relayMessageType === "file.transfer.available") {
       return this.handleTransferAvailable(message);
     }
-    if (message.type === "file.transfer.receipt") {
+    if (relayMessageType === "file.transfer.receipt") {
       return this.handleTransferReceipt(message);
+    }
+    if (relayMessageType === "message.send" || payloadKind === "message") {
+      return this.handleMessageSend(message);
     }
 
     const now = new Date().toISOString();
     try {
       const text = extractRequestText(message.payload);
-      const conversation = this.chatRepo.createConversation({
-        id: `relay_${message.from_agent_instance_id}`,
-        localAgentInstanceId: message.to_agent_instance_id,
-        peerAgentInstanceId: message.from_agent_instance_id,
-        mode: "cloud_relay",
-        title: `Remote agent ${shortId(message.from_agent_instance_id)}`
-      });
+      const conversation = this.findOrCreateRelayConversation(message);
       const task = createTask({
         contextId: message.a2a_task_id ?? message.relay_task_id,
         type: "file.request.search",
@@ -169,21 +170,49 @@ export class RemoteTaskDispatcher {
     }
   }
 
+  private handleMessageSend(message: RelayInboxMessage): DispatchResult {
+    const now = new Date().toISOString();
+    const text = extractRequestText(message.payload);
+    const conversation = this.findOrCreateRelayConversation(message);
+    this.chatRepo.appendMessage({
+      conversationId: conversation.id,
+      taskId: message.a2a_task_id ?? message.relay_task_id,
+      senderAgentInstanceId: message.from_agent_instance_id,
+      receiverAgentInstanceId: message.to_agent_instance_id,
+      messageType: "human",
+      text,
+      payload: {
+        relay_task_id: message.relay_task_id,
+        a2a_task_id: message.a2a_task_id,
+        message_kind: "message.send",
+        sender_label: `Remote agent ${shortId(message.from_agent_instance_id)}`
+      },
+      deliveryStatus: "delivered"
+    });
+    this.record(message, "created", message.a2a_task_id ?? message.relay_task_id, null, now);
+    return {
+      relayTaskId: message.relay_task_id,
+      localTaskId: message.a2a_task_id ?? message.relay_task_id,
+      approvalId: null,
+      status: "created"
+    };
+  }
+
   private async handleTransferAvailable(message: RelayInboxMessage): Promise<DispatchResult> {
     const now = new Date().toISOString();
     const taskId = stringPayload(message, "task_id") || message.a2a_task_id || message.relay_task_id;
     try {
-      const identity = new LocalCloudIdentityStore(this.db).get(this.profileId);
+      const store = new LocalCloudIdentityStore(this.db);
+      const identity = store.get(this.profileId);
       if (!identity?.deviceAccessToken || !identity.agentInstanceId) {
         throw new Error("Cloud enrollment is required before transfer download");
       }
       const transferId = requirePayload(message, "transfer_id");
       const expectedSha = requirePayload(message, "sha256").toLowerCase();
       const fileName = requirePayload(message, "file_name");
-      const cp = new ControlPlaneClient(identity.controlPlaneUrl);
-      const files = new FileRelayClient(cp);
-      const relay = new RelayClient(cp);
-      const downloaded = await files.download(transferId, identity.deviceAccessToken);
+      const downloaded = await withRecoveredDeviceToken(store, this.profileId, async (fresh) =>
+        new FileRelayClient(new ControlPlaneClient(fresh.controlPlaneUrl)).download(transferId, fresh.deviceAccessToken!)
+      );
       const stored = storeReceivedRelayFile({
         transferId,
         senderAgentId: message.from_agent_instance_id,
@@ -192,34 +221,32 @@ export class RemoteTaskDispatcher {
         sha256: expectedSha
       });
       const displayPath = `Agentic App Storage/${stored.originalFileName}`;
-      await files.receipt(transferId, {
-        stored_path: displayPath,
-        verified_sha256: stored.sha256
-      }, identity.deviceAccessToken);
-      await relay.send({
-        to_agent_instance_id: message.from_agent_instance_id,
-        a2a_task_id: taskId,
-        type: "file.transfer.receipt",
-        payload: {
-          transfer_id: transferId,
-          task_id: taskId,
-          file_name: stored.originalFileName,
-          size_bytes: stored.sizeBytes,
-          sha256: stored.sha256,
-          stored_path_display: displayPath,
-          received_at: stored.receivedAt,
-          hash_verified: true
-        },
-        idempotency_key: `transfer-receipt:${transferId}`
-      }, identity.deviceAccessToken);
+      await withRecoveredDeviceToken(store, this.profileId, async (fresh) =>
+        new FileRelayClient(new ControlPlaneClient(fresh.controlPlaneUrl)).receipt(transferId, {
+          stored_path: displayPath,
+          verified_sha256: stored.sha256
+        }, fresh.deviceAccessToken!)
+      );
+      await withRecoveredDeviceToken(store, this.profileId, async (fresh) =>
+        new RelayClient(new ControlPlaneClient(fresh.controlPlaneUrl)).send({
+          to_agent_instance_id: message.from_agent_instance_id,
+          a2a_task_id: taskId,
+          type: "file.transfer.receipt",
+          payload: {
+            transfer_id: transferId,
+            task_id: taskId,
+            file_name: stored.originalFileName,
+            size_bytes: stored.sizeBytes,
+            sha256: stored.sha256,
+            stored_path_display: displayPath,
+            received_at: stored.receivedAt,
+            hash_verified: true
+          },
+          idempotency_key: `transfer-receipt:${transferId}`
+        }, fresh.deviceAccessToken!)
+      );
 
-      const conversation = this.chatRepo.createConversation({
-        id: `relay_${message.from_agent_instance_id}`,
-        localAgentInstanceId: message.to_agent_instance_id,
-        peerAgentInstanceId: message.from_agent_instance_id,
-        mode: "cloud_relay",
-        title: `Remote agent ${shortId(message.from_agent_instance_id)}`
-      });
+      const conversation = this.findOrCreateRelayConversation(message);
       this.chatRepo.appendMessage({
         conversationId: conversation.id,
         taskId,
@@ -256,13 +283,7 @@ export class RemoteTaskDispatcher {
 
   private handleTransferReceipt(message: RelayInboxMessage): DispatchResult {
     const taskId = stringPayload(message, "task_id") || message.a2a_task_id || message.relay_task_id;
-    const conversation = this.chatRepo.createConversation({
-      id: `relay_${message.from_agent_instance_id}`,
-      localAgentInstanceId: message.to_agent_instance_id,
-      peerAgentInstanceId: message.from_agent_instance_id,
-      mode: "cloud_relay",
-      title: `Remote agent ${shortId(message.from_agent_instance_id)}`
-    });
+    const conversation = this.findOrCreateRelayConversation(message);
     this.chatRepo.appendMessage({
       conversationId: conversation.id,
       taskId,
@@ -275,6 +296,17 @@ export class RemoteTaskDispatcher {
     });
     this.record(message, "created", taskId, null, new Date().toISOString());
     return { relayTaskId: message.relay_task_id, localTaskId: taskId, approvalId: null, status: "created" };
+  }
+
+  private findOrCreateRelayConversation(message: RelayInboxMessage) {
+    return this.chatRepo.findCloudRelayConversationByPeerAgent(message.from_agent_instance_id) ??
+      this.chatRepo.createConversation({
+        id: `relay_${message.from_agent_instance_id}`,
+        localAgentInstanceId: message.to_agent_instance_id,
+        peerAgentInstanceId: message.from_agent_instance_id,
+        mode: "cloud_relay",
+        title: `Remote agent ${shortId(message.from_agent_instance_id)}`
+      });
   }
 
   private record(message: RelayInboxMessage, status: string, localTaskId: string | null, error: string | null, now: string): void {

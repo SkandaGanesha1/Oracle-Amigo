@@ -117,3 +117,39 @@ export interface AdminOrgSnapshot {
   file_transfers: AdminTransfer[];
   audit_events: AdminAuditEvent[];
 }
+
+export type AdminPolicyAction = "allow" | "require_approval" | "deny";
+
+export interface AdminPolicyRule {
+  id: string;
+  name: string;
+  description: string;
+  enabled: boolean;
+  role: string;
+  sensitivity: string;
+  fileExtension: string;
+  mimeType: string;
+  transferDirection: string;
+  maxFileSizeBytes: number | null;
+  action: AdminPolicyAction;
+  reason: string;
+  priority: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AdminPolicyEvaluationInput {
+  role?: string;
+  sensitivity?: string;
+  fileExtension?: string;
+  mimeType?: string;
+  transferDirection?: string;
+  fileSizeBytes?: number;
+}
+
+export interface AdminPolicyEvaluation {
+  action: AdminPolicyAction;
+  reason: string;
+  matchedRuleId: string | null;
+  matchedRuleName: string | null;
+}

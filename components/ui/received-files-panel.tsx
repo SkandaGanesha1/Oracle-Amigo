@@ -1,31 +1,17 @@
-import { useEffect, useState, type FC } from "react";
+import { useReceivedFiles } from "../../ui/src/hooks/queries";
+import { Download, HardDrive } from "lucide-react";
 
-type StoredFile = {
-  id: string;
-  storedPath: string;
-  originalFileName: string;
-  sha256: string;
-  sizeBytes: number;
-  receivedAt: string;
-};
+export function ReceivedFilesPanel() {
+  const { data, isLoading } = useReceivedFiles();
+  const files = data?.files ?? [];
 
-export const ReceivedFilesPanel: FC = () => {
-  const [files, setFiles] = useState<StoredFile[]>([]);
-
-  useEffect(() => {
-    const fetchFiles = async () => {
-      try {
-        const res = await fetch("/storage/files");
-        if (res.ok) {
-          const body = (await res.json()) as { files: StoredFile[] };
-          setFiles(body.files);
-        }
-      } catch { /* ignore */ }
-    };
-    fetchFiles();
-    const interval = setInterval(fetchFiles, 5000);
-    return () => clearInterval(interval);
-  }, []);
+  if (isLoading) {
+    return (
+      <div className="rounded border border-white/10 bg-black/20 p-3 text-xs text-white/40">
+        Loading stored files...
+      </div>
+    );
+  }
 
   if (files.length === 0) {
     return (
@@ -48,6 +34,7 @@ export const ReceivedFilesPanel: FC = () => {
                 className="shrink-0 rounded bg-white/10 px-2 py-0.5 text-[10px] text-white/50 transition hover:bg-white/15"
                 download
               >
+                <Download className="mr-1 inline h-3 w-3" />
                 Download
               </a>
             </div>
@@ -61,7 +48,7 @@ export const ReceivedFilesPanel: FC = () => {
       </div>
     </div>
   );
-};
+}
 
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;

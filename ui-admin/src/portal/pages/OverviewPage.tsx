@@ -26,10 +26,7 @@ export const OverviewPage: FC = () => {
   const isLoading =
     k.users.isLoading || k.devices.isLoading || k.instances.isLoading || k.presence.isLoading || k.tasks.isLoading || k.transfers.isLoading || k.audit.isLoading;
 
-  const onlineDevices = (k.presence.data ?? []).filter((row) => {
-    const age = Date.now() - new Date(row.last_heartbeat_at).getTime();
-    return age < 60_000;
-  }).length;
+  const onlineDevices = (k.presence.data ?? []).filter((row) => String(row.status ?? "").toLowerCase() === "online").length;
 
   const openTasks = (k.tasks.data ?? []).filter((row) => {
     const s = String(row.status ?? "").toLowerCase();
@@ -101,8 +98,9 @@ export const OverviewPage: FC = () => {
           ) : (
             <ul className="flex flex-col gap-1.5">
               {topPresence.map((row) => {
+                const status = String(row.status ?? "").toLowerCase();
                 const ageSec = Math.max(0, Math.floor((Date.now() - new Date(row.last_heartbeat_at).getTime()) / 1000));
-                const tone = ageSec < 60 ? "green" : ageSec < 300 ? "amber" : "red";
+                const tone = status === "online" ? "green" : status === "stale" || ageSec < 300 ? "amber" : "red";
                 return (
                   <li key={row.id} className="flex items-center justify-between gap-3 rounded-md border border-white/5 bg-white/[0.02] px-3 py-2">
                     <div className="min-w-0 flex-1">

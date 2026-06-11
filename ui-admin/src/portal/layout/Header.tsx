@@ -1,4 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Button, Chip, Toolbar } from "@heroui/react";
 import { RefreshCw, Server, Activity } from "lucide-react";
 import { useEffect, useState, type FC } from "react";
 import { fetchAdminInfo, type AdminInfo } from "../api/queries";
@@ -29,40 +30,43 @@ export const Header: FC = () => {
     <header className="flex h-12 shrink-0 items-center justify-between border-b border-white/10 bg-[#070708]/60 px-4 backdrop-blur">
       <div className="flex items-center gap-3">
         <h1 className="text-sm font-semibold text-white">Control Plane Monitor</h1>
-        <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[10px] uppercase tracking-wider text-white/55">
-          {info.data ? info.data.env : "…"}
-        </span>
-        <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[10px] uppercase tracking-wider text-white/55">
-          v{info.data ? info.data.version : "—"}
-        </span>
+        <Chip size="sm" variant="soft" className="uppercase tracking-wider text-white/60">
+          {info.data ? info.data.env : "..."}
+        </Chip>
+        <Chip size="sm" variant="soft" className="uppercase tracking-wider text-white/60">
+          v{info.data ? info.data.version : "-"}
+        </Chip>
       </div>
-      <div className="flex items-center gap-2">
+      <Toolbar aria-label="Admin status and actions" className="flex items-center gap-2">
         {info.data && (
-          <span
-            className="inline-flex items-center gap-1.5 rounded-md border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-white/70"
+          <Chip
+            size="sm"
+            variant="soft"
+            color="success"
+            className="text-white/75"
             title={`Server started ${new Date(now - info.data.uptimeSeconds * 1000).toISOString()}`}
           >
             <Activity className="h-3 w-3 text-emerald-300" />
             uptime {formatDuration(info.data.uptimeSeconds, now)}
-          </span>
+          </Chip>
         )}
-        <button
-          type="button"
-          onClick={handleRefreshAll}
-          className="inline-flex items-center gap-1.5 rounded-md border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-white/70 transition hover:bg-white/10 hover:text-white"
-          title="Refresh all queries"
+        <Button
+          size="sm"
+          variant="outline"
+          onPress={handleRefreshAll}
+          aria-label="Refresh all queries"
         >
           <RefreshCw className={`h-3 w-3 ${info.isFetching ? "animate-spin" : ""}`} />
           Refresh
-        </button>
+        </Button>
         <ThemeToggle />
         {info.dataUpdatedAt > 0 && (
-          <span className="hidden items-center gap-1.5 rounded-md border border-white/5 px-2 py-1 text-[10px] text-white/40 md:inline-flex">
+          <Chip size="sm" variant="soft" className="hidden text-white/45 md:inline-flex">
             <Server className="h-3 w-3" />
             <TimeAgo iso={new Date(info.dataUpdatedAt).toISOString()} />
-          </span>
+          </Chip>
         )}
-      </div>
+      </Toolbar>
     </header>
   );
 };
