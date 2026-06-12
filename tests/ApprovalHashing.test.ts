@@ -49,7 +49,7 @@ describe("createApproval hashes the bound file at creation time", () => {
     expect(approval.boundFilePath).toBe(filePath);
   });
 
-  it("leaves hash null when boundFilePath is missing", async () => {
+  it("rejects transfer approvals when boundFilePath is missing", async () => {
     const { PersonalAgentProtocol } = await import("../src/protocol/PersonalAgentProtocol.js");
     const protocol = new PersonalAgentProtocol();
     protocol.setIdentityPath({
@@ -61,11 +61,30 @@ describe("createApproval hashes the bound file at creation time", () => {
     });
 
     const task = protocol.createTask({ type: "file.transfer.offer", actorAgentId: "test-agent" });
+    await expect(protocol.createApproval(task.id, {
+      boundFilePath: null,
+    })).rejects.toThrow("APPROVAL_HAS_NO_BOUND_FILE");
+  });
+
+  it("allows refinement approvals without a bound file", async () => {
+    const { PersonalAgentProtocol } = await import("../src/protocol/PersonalAgentProtocol.js");
+    const protocol = new PersonalAgentProtocol();
+    protocol.setIdentityPath({
+      agentId: "test-agent",
+      deviceId: "test-device",
+      did: "did:wba:test:abc",
+      publicKey: "11".repeat(32),
+      privateKeyRef: "00".repeat(32),
+    });
+
+    const task = protocol.createTask({ type: "file.search.refinement", actorAgentId: "test-agent" });
     const approval = await protocol.createApproval(task.id, {
+      approvalType: "file.search.refinement",
       boundFilePath: null,
     });
 
     expect(approval.boundSha256).toBeNull();
     expect(approval.boundSizeBytes).toBeNull();
+    expect(approval.approvalType).toBe("file.search.refinement");
   });
 });

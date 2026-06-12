@@ -17,10 +17,12 @@ export interface CloudAgentInstance {
   display_name: string;
   device_name?: string;
   status: string;
+  capabilities?: string[];
   relay_inbox_url: string;
   agent_card_url: string;
   agent_card_hash: string;
   last_seen_at: string | null;
+  last_heartbeat_at?: string | null;
 }
 
 export interface CloudAgentInstanceDirectoryEntry extends CloudAgentInstance {

@@ -18,9 +18,9 @@ export const fileIndexApi = {
     localAgentClient.post<{ ok: boolean; message: string; roots: Array<{ root: string; indexed: number }> }>("/files/reindex", { roots }),
   search: (query: string) =>
     localAgentClient.post<FileSearchResult[]>("/files/search", { query }),
-  indexed: (limit = 100, offset = 0) =>
+  indexed: (limit = 100, offset = 0, query?: string, extension?: string) =>
     localAgentClient.get<{ items: IndexedFile[]; total: number; limit: number; offset: number }>(
-      `/files/indexed${params({ limit, offset })}`
+      `/files/indexed${params({ limit, offset, query, extension })}`
     ),
   transfers: () => localAgentClient.get<{ transfers: TransferRecord[] }>("/transfers"),
   // Vault folder management

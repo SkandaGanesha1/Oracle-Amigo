@@ -46,10 +46,14 @@ export class InboxPoller {
     for (const item of inbox.items) {
       const result = await this.dispatcher.dispatch(item);
       dispatched.push(result);
-      await withRecoveredDeviceToken(this.store, this.profileId, async (identity) => {
-        const relay = new RelayClient(new ControlPlaneClient(identity.controlPlaneUrl));
-        return relay.ack(item.relay_task_id, identity.deviceAccessToken!);
-      });
+      if (result.status === "created" || result.status === "duplicate") {
+        await withRecoveredDeviceToken(this.store, this.profileId, async (identity) => {
+          const relay = new RelayClient(new ControlPlaneClient(identity.controlPlaneUrl));
+          return relay.ack(item.relay_task_id, identity.deviceAccessToken!);
+        });
+      } else {
+        this.lastError = `Dispatch failed for relay task ${item.relay_task_id}`;
+      }
     }
     this.lastDispatchedCount = dispatched.length;
     this.dispatchCounter += dispatched.length;

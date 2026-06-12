@@ -4,7 +4,24 @@ import { getDb } from "../db/connection.js";
 
 export type ChatMode = "local" | "cloud_relay" | "loopback";
 export type ChatMessageType = "human" | "agent_status" | "system_event" | "file_request" | "approval" | "transfer" | "receipt";
-export type DeliveryStatus = "local_pending" | "sent" | "delivered" | "failed";
+export type DeliveryStatus =
+  | "local_pending"
+  | "queued_at_relay"
+  | "delivered_to_remote_agent"
+  | "stored_by_remote_agent"
+  | "read_by_remote_user"
+  | "sent"
+  | "delivered"
+  | "failed";
+
+export interface RelayDeliveryReceipt {
+  relay_task_id: string;
+  status: DeliveryStatus;
+  delivered_at?: string;
+  error?: string;
+  from_agent_instance_id: string;
+  to_agent_instance_id: string;
+}
 
 export interface ChatConversationRecord {
   id: string;
@@ -150,15 +167,35 @@ export class ChatRepository {
     return row ? rowToConversation(row) : null;
   }
 
-  updateConversationPeerAgent(conversationId: string, peerAgentInstanceId: string): ChatConversationRecord | null {
+  updateConversationPeer(conversationId: string, input: {
+    peerUserId?: string | null;
+    peerAgentInstanceId?: string | null;
+    title?: string | null;
+  }): ChatConversationRecord | null {
+    const existing = this.getConversation(conversationId);
+    if (!existing) return null;
     const now = new Date().toISOString();
+    const peerUserId = input.peerUserId !== undefined ? input.peerUserId : existing.peer_user_id;
+    const peerAgentInstanceId = input.peerAgentInstanceId !== undefined
+      ? input.peerAgentInstanceId
+      : existing.peer_agent_instance_id;
+    const title = input.title !== undefined && input.title !== null && input.title.trim()
+      ? input.title.trim()
+      : existing.title;
+
     this.db.prepare(`
       UPDATE conversations
-      SET peer_agent_instance_id = ?, peer_agent_id = ?, updated_at = ?
+      SET peer_user_id = ?, peer_agent_instance_id = ?, peer_agent_id = ?, title = ?, updated_at = ?
       WHERE id = ?
-    `).run(peerAgentInstanceId, peerAgentInstanceId, now, conversationId);
-    this.ensureParticipant(conversationId, null, peerAgentInstanceId, "peer");
+    `).run(peerUserId, peerAgentInstanceId, peerAgentInstanceId, title, now, conversationId);
+    if (peerUserId || peerAgentInstanceId) {
+      this.ensureParticipant(conversationId, peerUserId ?? null, peerAgentInstanceId ?? null, "peer");
+    }
     return this.getConversation(conversationId);
+  }
+
+  updateConversationPeerAgent(conversationId: string, peerAgentInstanceId: string): ChatConversationRecord | null {
+    return this.updateConversationPeer(conversationId, { peerAgentInstanceId });
   }
 
   listConversations(): ChatConversationRecord[] {
@@ -219,6 +256,51 @@ export class ChatRepository {
     this.db.prepare("UPDATE chat_messages SET delivery_status = ?, updated_at = ? WHERE id = ?").run(status, now, id);
     const row = this.getMessage(id);
     if (row) this.recordDeliveryAttempt(id, status, error);
+  }
+
+  updateMessageDeliveryStatus(
+    id: string,
+    status: DeliveryStatus,
+    receipt?: RelayDeliveryReceipt | null,
+    payloadPatch: Record<string, unknown> = {}
+  ): ChatMessageRecord | null {
+    const existing = this.getMessage(id);
+    if (!existing) return null;
+    const now = new Date().toISOString();
+    const payload = {
+      ...existing.payload_json,
+      ...payloadPatch,
+      ...(receipt ? { delivery_receipt: receipt } : {}),
+      delivery_status_updated_at: now
+    };
+    this.db.prepare(`
+      UPDATE chat_messages
+      SET delivery_status = ?, payload_json = ?, updated_at = ?
+      WHERE id = ?
+    `).run(status, JSON.stringify(payload), now, id);
+    this.recordDeliveryAttempt(id, status, receipt?.error);
+    return this.getMessage(id);
+  }
+
+  updateDeliveryStatusForRelayTask(
+    relayTaskId: string,
+    status: DeliveryStatus,
+    receipt?: RelayDeliveryReceipt | null
+  ): ChatMessageRecord[] {
+    const rows = this.db.prepare(`
+      SELECT id, payload_json FROM chat_messages
+      WHERE payload_json LIKE ?
+      ORDER BY created_at DESC
+      LIMIT 1000
+    `).all(`%"relay_task_id":"${relayTaskId}"%`) as Array<Record<string, unknown>>;
+    const updated: ChatMessageRecord[] = [];
+    for (const row of rows) {
+      const payload = parseJson(row.payload_json);
+      if (payload.relay_task_id !== relayTaskId) continue;
+      const message = this.updateMessageDeliveryStatus(String(row.id), status, receipt);
+      if (message) updated.push(message);
+    }
+    return updated;
   }
 
   queueOutbox(messageId: string, conversationId: string, payload: Record<string, unknown>, error?: string): void {

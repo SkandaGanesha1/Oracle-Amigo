@@ -90,9 +90,31 @@ Approval callbacks are now DB-backed in the local agent. Duplicate approve/rejec
 
 ```bash
 npm run test:e2e:relay
+npm run test:e2e:relay-message
+npm run test:e2e:relay-file-search
 ```
 
 This starts a control plane and two separate local-agent processes, enrolls Alice and Bob, sends a relay file request, creates Bob's approval card, approves it, completes a control-plane file transfer, verifies SHA-256, and checks admin task/transfer/audit visibility.
+
+`test:e2e:relay-message` focuses on normal chat relay hardening: stale peer-agent routes are repaired to the current online user agent, receiver-side `message.send` items are written into the chat timeline before ack, failed dispatches are left unacked for retry, and sender messages advance through relay delivery states.
+
+`test:e2e:relay-file-search` covers the remote file-request search path: exact filename parsing, filename-first indexed lookup, live allowed-root fallback when the SQLite index is empty, refinement/manual binding, and bound approval creation without exposing raw local paths.
+
+## Remote File Request Search
+
+Remote relay file requests use the same safe local roots as the local agent search. The receiver parses exact filenames from text such as `Send me Job Offer-Associate Consultant.pdf file`, checks filename-first indexed matches, falls back through hybrid retrieval, then uses live `FileSearchService` search over configured roots if the index is empty. Search diagnostics are available at `GET /files/search/debug?query=...` and return parser output, candidate reasons, searched roots, and safe display fields only.
+
+If no file is found, the receiver creates a `file.search.refinement` approval state rather than a transferable approval. The owner can search again with feedback or choose an indexed file manually; `/approvals/:id/rebind-file` hashes and binds the selected file before converting it into `file.transfer.offer`. `/approvals/:id/approve` rejects unbound transfer/refinement approvals with `APPROVAL_HAS_NO_BOUND_FILE`.
+
+Sender-side chat status is relayed back as lightweight `file.request.status` messages: request delivered, receiver searching, no candidate/refinement needed, waiting for approval, transfer starting, and file received/hash verified.
+
+## Chat Presence And Delivery
+
+Cloud chat routes people by stable `peer_user_id` first and treats `peer_agent_instance_id` as a refreshable active device target. `PeerRoutingService` repairs stale conversations before relay send by resolving the peer user's current online agent with the required capability.
+
+Relay acceptance is not treated as final delivery. Cloud sends now store `queued_at_relay`, then `/relay/task/:relay_task_id/status` maps control-plane task state into `delivered_to_remote_agent`, `stored_by_remote_agent`, or `failed`. `sent` and `delivered` remain readable legacy/local statuses.
+
+The chat UI normalizes peer presence into `Online`, `Stale`, `Offline`, `Presence unavailable`, and `Old agent route - switch to current agent`, so unknown directory data is not shown as a false offline state.
 
 ## A2A v1 Status
 

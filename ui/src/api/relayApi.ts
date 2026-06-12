@@ -1,9 +1,10 @@
 import { localAgentClient } from "./localAgentClient";
+import type { RelayTaskStatusResult } from "./types";
 
 export const relayApi = {
-  sendMessage: (body: { to_agent_instance_id: string; text: string; a2a_task_id?: string; idempotency_key?: string; conversation_id?: string; message_id?: string }) =>
+  sendMessage: (body: { to_agent_instance_id?: string; peer_user_id?: string; text: string; a2a_task_id?: string; idempotency_key?: string; conversation_id?: string; message_id?: string }) =>
     localAgentClient.post<{ relay_task_id: string; status: string }>("/relay/send-message", body),
-  sendFileRequest: (body: { to_agent_instance_id: string; text: string; a2a_task_id?: string; idempotency_key?: string; conversation_id?: string; message_id?: string }) =>
+  sendFileRequest: (body: { to_agent_instance_id?: string; peer_user_id?: string; text: string; a2a_task_id?: string; idempotency_key?: string; conversation_id?: string; message_id?: string }) =>
     localAgentClient.post<{ relay_task_id: string; status: string }>("/relay/send-file-request", body),
   inboxStatus: () => localAgentClient.get<{
     running: boolean;
@@ -12,5 +13,7 @@ export const relayApi = {
     lastPollAt?: string | null;
     lastDispatchedCount?: number;
     dispatchCounter?: number;
-  }>("/relay/inbox/status")
+  }>("/relay/inbox/status"),
+  taskStatus: (relayTaskId: string) =>
+    localAgentClient.get<RelayTaskStatusResult>(`/relay/task/${encodeURIComponent(relayTaskId)}/status`)
 };

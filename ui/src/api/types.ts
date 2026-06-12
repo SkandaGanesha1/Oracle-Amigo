@@ -1,6 +1,8 @@
 export type * from "../types";
 
 import type { CloudStatus, Mission, ConsentRecord, TrustRelationship, MissionStatus, ConsentStatus } from "../types";
+import type { DeliveryStatus } from "../types";
+export type { Conversation } from "../types";
 
 export interface CreateConversationRequest {
   peer_user_id?: string | null;
@@ -24,7 +26,16 @@ export interface ChatSendResult {
   task_id?: string;
   run_id?: string;
   type: "message" | "file_request" | "approval_required" | "not_found" | "need_help";
-  delivery_status: "local_pending" | "sent" | "delivered" | "failed";
+  delivery_status: DeliveryStatus;
+}
+
+export interface RelayTaskStatusResult {
+  relay_task_id: string;
+  delivery_status: DeliveryStatus;
+  relay_status: string;
+  delivered_at: string | null;
+  completed_at: string | null;
+  receipt?: Record<string, unknown> | null;
 }
 
 export interface ChatSendErrorBody {

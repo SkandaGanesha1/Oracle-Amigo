@@ -59,6 +59,10 @@ export class ApprovalTransferOrchestrator {
         throw new Error("Approval owner does not match enrolled local agent instance");
       }
 
+      await this.sendFileRequestStatus(approval, relayTaskId, "transfer_starting", "Transfer starting").catch(() => {
+        // The transfer itself remains authoritative; status messages are best-effort UI progress.
+      });
+
       this.updateJob(approval.id, "hashing");
       const bytes = await readFile(approval.boundFilePath);
       const sha256 = createHash("sha256").update(bytes).digest("hex");
@@ -200,5 +204,29 @@ export class ApprovalTransferOrchestrator {
       },
       deliveryStatus: "delivered"
     });
+  }
+
+  private async sendFileRequestStatus(
+    approval: ApprovalRecord,
+    relayTaskId: string,
+    status: string,
+    text: string
+  ): Promise<void> {
+    await withRecoveredDeviceToken(this.store, this.profileId, async (fresh) =>
+      new RelayClient(new ControlPlaneClient(fresh.controlPlaneUrl)).send({
+        to_agent_instance_id: approval.requesterAgentId,
+        a2a_task_id: approval.taskId,
+        type: "file.request.status",
+        payload: {
+          kind: "file_request_status",
+          original_relay_task_id: relayTaskId,
+          task_id: approval.taskId,
+          approval_id: approval.id,
+          status,
+          text
+        },
+        idempotency_key: `file-request-status:${relayTaskId}:${status}:${approval.id}`
+      }, fresh.deviceAccessToken!)
+    );
   }
 }

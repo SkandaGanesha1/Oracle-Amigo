@@ -97,7 +97,7 @@ test.describe("Oracle Amigo routed chat frontend", () => {
 
     const timeline = page.getByRole("log", { name: "Message timeline" });
     await expect(timeline.getByText("Can you send me the API design document?")).toBeVisible();
-    await expect(timeline.getByText(/sent|delivered|local pending/i)).toBeVisible();
+    await expect(timeline.getByText(/queued at relay|delivered|sending/i)).toBeVisible();
   });
 
   test("mocked release flow reaches approval and receipt pages", async ({ page }) => {
@@ -244,7 +244,8 @@ async function mockChatRoutes(page, messagesProvider) {
         receiver_agent_instance_id: null,
         text: body.text,
         created_at: now,
-        delivery_status: "sent"
+        delivery_status: "queued_at_relay",
+        relay_task_id: "relay-file-1"
       });
       return route.fulfill({
         json: {
@@ -254,7 +255,7 @@ async function mockChatRoutes(page, messagesProvider) {
           relay_task_id: "relay-file-1",
           task_id: "task-release-checklist",
           type: "file_request",
-          delivery_status: "sent"
+          delivery_status: "queued_at_relay"
         }
       });
     }
@@ -359,7 +360,7 @@ async function mockReleaseFlow(page) {
           message_id: "release-message",
           task_id: "task-release-checklist",
           type: "file_request",
-          delivery_status: "sent"
+          delivery_status: "queued_at_relay"
         }
       });
     }

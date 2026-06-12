@@ -193,8 +193,11 @@ describe("frontend hardening source contracts", () => {
     const listItem = read("ui/src/features/chat/ConversationListItem.tsx");
     const bubble = read("ui/src/components/stream-like/MessageBubble.tsx");
     const hooks = read("ui/src/hooks/queries.ts");
-    expect(header).toContain("unknown: \"Presence unavailable\"");
-    expect(listItem).toContain("unknown: \"Presence unavailable\"");
+    const mapper = read("ui/src/lib/normalizePeerPresence.ts");
+    expect(header).toContain("normalizePeerPresence(conversation)");
+    expect(listItem).toContain("normalizePeerPresence(conversation)");
+    expect(mapper).toContain("Presence unavailable");
+    expect(mapper).toContain("Old agent route - switch to current agent");
     expect(bubble).toContain("direction !== \"incoming\"");
     expect(bubble).toContain("humanMessage.sender_label");
     expect(bubble).toContain("showRetry={isOutgoingHuman}");

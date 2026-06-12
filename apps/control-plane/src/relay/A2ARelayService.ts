@@ -252,6 +252,17 @@ export function getRelayTask(
       throw new Error("Not authorized to view this relay task");
     }
   }
+  const responseRow = db.prepare(`
+    SELECT payload_json
+    FROM relay_messages
+    WHERE org_id = ? AND relay_task_id = ? AND status = 'responded'
+    ORDER BY created_at DESC
+    LIMIT 1
+  `).get(orgId, relayTaskId) as Record<string, unknown> | undefined;
+  const responseEnvelope = safeParse(responseRow?.payload_json);
+  const responsePayload = responseEnvelope && typeof responseEnvelope.payload === "object" && responseEnvelope.payload !== null
+    ? responseEnvelope.payload as Record<string, unknown>
+    : null;
   return {
     id: String(row.id),
     orgId: String(row.org_id),
@@ -264,7 +275,8 @@ export function getRelayTask(
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
     deliveredAt: row.delivered_at ? String(row.delivered_at) : null,
-    completedAt: row.completed_at ? String(row.completed_at) : null
+    completedAt: row.completed_at ? String(row.completed_at) : null,
+    response: responsePayload
   };
 }
 

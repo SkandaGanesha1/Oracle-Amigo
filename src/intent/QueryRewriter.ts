@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { getLlmProvider, type LlmProvider } from "../oci/LlmProvider.js";
+import { parseFileRequest } from "./FileRequestParser.js";
 
 export type RewrittenQuery = {
   original: string;
@@ -10,6 +11,7 @@ export type RewrittenQuery = {
   extensions: string[];
   projectHints: string[];
   dateHint: string | null;
+  exactFilename: string | null;
 };
 
 export interface QueryRewriter {
@@ -41,8 +43,9 @@ const EXT_MAP: Record<string, string[]> = {
 export class RuleBasedQueryRewriter implements QueryRewriter {
   rewrite(query: string): RewrittenQuery {
     const lowered = query.toLowerCase().trim();
+    const fileRequest = parseFileRequest(query);
     if (!lowered) {
-      return { original: query, normalized: "", lexicalQuery: "", semanticQuery: "", fileTypeHints: [], extensions: [], projectHints: [], dateHint: null };
+      return { original: query, normalized: "", lexicalQuery: "", semanticQuery: "", fileTypeHints: [], extensions: [], projectHints: [], dateHint: null, exactFilename: null };
     }
 
     const words = lowered.split(/\s+/);
@@ -51,7 +54,10 @@ export class RuleBasedQueryRewriter implements QueryRewriter {
 
     const extMatches = [...lowered.matchAll(FILE_EXT_PATTERN)].map((m) => m[1].toLowerCase());
     const fileTypeHints = [...new Set(extMatches)];
-    const extensions = [...new Set(fileTypeHints.flatMap((e) => EXT_MAP[e] ?? [e]))];
+    const extensions = [...new Set([
+      ...fileTypeHints.flatMap((e) => EXT_MAP[e] ?? [e]),
+      ...fileRequest.extensions.map((extension) => extension.replace(/^\./, ""))
+    ])];
 
     const dateMatch = lowered.match(DATE_PATTERN);
     const dateHint = dateMatch ? dateMatch[0] : null;
@@ -63,7 +69,7 @@ export class RuleBasedQueryRewriter implements QueryRewriter {
     const lexicalQuery = cleanTerms.join(" ");
     const semanticQuery = [...new Set([...projectHints, ...fileTypeHints])].join(" ");
 
-    return { original: query, normalized, lexicalQuery, semanticQuery, fileTypeHints, extensions, projectHints, dateHint };
+    return { original: query, normalized, lexicalQuery, semanticQuery, fileTypeHints, extensions, projectHints, dateHint, exactFilename: fileRequest.exactFilename };
   }
 }
 
@@ -75,9 +81,10 @@ const RewrittenQuerySchema = z.object({
   extensions: z.array(z.string()),
   projectHints: z.array(z.string()),
   dateHint: z.string().nullable(),
+  exactFilename: z.string().nullable().optional(),
 });
 
-const REWRITE_SYSTEM_PROMPT = `You are a query rewriter for a local file-search agent. Normalize the user query by removing filler words, extracting file type hints (pdf, docx, pptx, xlsx, etc.), project hints, and date hints. Return ONLY strict JSON matching the schema. No markdown, no prose. Schema: {"normalized":"string (lowercase, no stop words)","lexicalQuery":"string (alphanumeric terms, FTS5-friendly)","semanticQuery":"string (meaningful terms + file types, for embedding)","fileTypeHints":["string"],"extensions":["string"],"projectHints":["string"],"dateHint":"string|null"}`;
+const REWRITE_SYSTEM_PROMPT = `You are a query rewriter for a local file-search agent. Normalize the user query by removing filler words, extracting exact filenames, file type hints (pdf, docx, pptx, xlsx, etc.), project hints, and date hints. Return ONLY strict JSON matching the schema. No markdown, no prose. Schema: {"normalized":"string (lowercase, no stop words)","lexicalQuery":"string (alphanumeric terms, FTS5-friendly)","semanticQuery":"string (meaningful terms + file types, for embedding)","fileTypeHints":["string"],"extensions":["string"],"projectHints":["string"],"dateHint":"string|null","exactFilename":"string|null"}`;
 
 export class LlmQueryRewriter implements QueryRewriter {
   constructor(private readonly fallback: QueryRewriter, private readonly llm: LlmProvider) {}

@@ -17,6 +17,7 @@ import { AgenticReasoning } from "../agentic-ai/AgenticReasoning";
 import { AgenticToolCall } from "../agentic-ai/AgenticToolCall";
 import { FeedbackBar } from "../agentic-ai/FeedbackBar";
 import { safeDisplayText } from "../../lib/safeText";
+import { useRelayTaskStatus } from "../../hooks/queries";
 import type { TimelineMessage, AgentStatusMessage, HumanChatMessage, FileCandidateApprovalMessage, TransferProgressMessage, FileReceiptMessage, FileRequestMessage as FileRequestMessageType, A2ATaskMessage } from "../../api/types";
 import type { DeliveryStatus } from "../../api/types";
 
@@ -197,6 +198,14 @@ export function MessageBubble({ message, onRetry }: MessageBubbleProps) {
   const isHuman = message.kind === "human";
   const humanMessage = isHuman ? message as HumanChatMessage : null;
   const isOutgoingHuman = isHuman && humanMessage?.direction !== "incoming";
+  const relayTaskStatus = useRelayTaskStatus(
+    humanMessage?.relay_task_id,
+    isOutgoingHuman && (humanMessage?.delivery_status === "queued_at_relay" || humanMessage?.delivery_status === "delivered_to_remote_agent")
+  );
+  const deliveryStatus = relayTaskStatus.data?.delivery_status ?? humanMessage?.delivery_status ?? "sent";
+  const failureReason = typeof humanMessage?.delivery_receipt?.error === "string"
+    ? humanMessage.delivery_receipt.error
+    : undefined;
   const tone = avatarTone[message.kind] ?? "rose";
   const label = humanMessage?.direction === "incoming"
     ? (humanMessage.sender_label ?? "Peer")
@@ -356,7 +365,8 @@ export function MessageBubble({ message, onRetry }: MessageBubbleProps) {
 
             {isOutgoingHuman && (
               <MessageDeliveryState
-                status={(message as TimelineMessage & { delivery_status: DeliveryStatus }).delivery_status ?? "sent"}
+                status={deliveryStatus as DeliveryStatus}
+                failureReason={failureReason}
                 onRetry={onRetry ? () => onRetry(message.id) : undefined}
               />
             )}

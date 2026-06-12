@@ -6,14 +6,15 @@ import { FileRelayClient } from "../cloud/FileRelayClient.js";
 import { LocalCloudIdentityStore, defaultProfileId } from "../cloud/LocalCloudIdentityStore.js";
 import { RelayClient } from "../cloud/RelayClient.js";
 import { createIntentExtractor } from "../intent/IntentExtractor.js";
-import { createQueryRewriter } from "../intent/QueryRewriter.js";
+import { FileSearchService } from "../file-search/FileSearchService.js";
 import { PersonalAgentProtocol } from "../protocol/PersonalAgentProtocol.js";
-import { search as hybridSearch } from "../retrieval/HybridRetrievalPipeline.js";
 import { storeReceivedRelayFile } from "../storage/AgenticStorage.js";
 import { createTask, transition } from "../workflow/TaskWorkflow.js";
 import type { RelayInboxMessage } from "../cloud/RelayClient.js";
-import { ChatRepository } from "../chat/ChatRepository.js";
+import { ChatRepository, type RelayDeliveryReceipt } from "../chat/ChatRepository.js";
 import { withRecoveredDeviceToken } from "./CloudTokenRecovery.js";
+import { PeerRoutingService } from "./PeerRoutingService.js";
+import { resolveFileRequestCandidates, toApprovalCandidatePayload } from "./FileRequestCandidateResolver.js";
 
 export interface DispatchResult {
   relayTaskId: string;
@@ -29,7 +30,8 @@ export class RemoteTaskDispatcher {
     private protocol: PersonalAgentProtocol,
     private db: DatabaseSync = getDb(),
     private profileId = defaultProfileId(),
-    private chatRepo = new ChatRepository(db)
+    private chatRepo = new ChatRepository(db),
+    private fileSearch = new FileSearchService()
   ) {}
 
   async dispatch(message: RelayInboxMessage): Promise<DispatchResult> {
@@ -54,6 +56,9 @@ export class RemoteTaskDispatcher {
     if (relayMessageType === "file.transfer.receipt") {
       return this.handleTransferReceipt(message);
     }
+    if (relayMessageType === "file.request.status" || payloadKind === "file_request_status") {
+      return this.handleFileRequestStatus(message);
+    }
     if (relayMessageType === "message.send" || payloadKind === "message") {
       return this.handleMessageSend(message);
     }
@@ -61,7 +66,10 @@ export class RemoteTaskDispatcher {
     const now = new Date().toISOString();
     try {
       const text = extractRequestText(message.payload);
-      const conversation = this.findOrCreateRelayConversation(message);
+      const conversation = await this.findOrCreateRelayConversation(message, "file.request");
+      await this.sendFileRequestStatus(message, "request_delivered", "Request delivered to receiver agent").catch(() => {
+        // Status events are best-effort; the local request flow remains authoritative.
+      });
       const task = createTask({
         contextId: message.a2a_task_id ?? message.relay_task_id,
         type: "file.request.search",
@@ -81,7 +89,7 @@ export class RemoteTaskDispatcher {
         messageType: "file_request",
         text,
         payload: {
-          requester: message.from_agent_instance_id,
+          requester: conversation.title || message.from_agent_instance_id,
           target: message.to_agent_instance_id,
           natural_language_request: text,
           query: text,
@@ -91,10 +99,12 @@ export class RemoteTaskDispatcher {
         deliveryStatus: "delivered"
       });
       transition(task.id, "INTENT_CLASSIFIED", { intent: this.intentExtractor.extract(text).intent, remote: true });
-      transition(task.id, "SEARCH_QUERY_BUILT", { query: text });
-      const rewritten = createQueryRewriter().rewrite(text);
-      const searchQuery = rewritten.semanticQuery || text;
-      transition(task.id, "LOCAL_SEARCH_RUNNING", { query: searchQuery });
+      await this.sendFileRequestStatus(message, "searching_receiver_files", "Receiver agent is searching local files").catch(() => {
+        // Best-effort.
+      });
+      const resolved = await resolveFileRequestCandidates(text, this.fileSearch, { limit: 10 });
+      transition(task.id, "SEARCH_QUERY_BUILT", { query: resolved.searchQuery });
+      transition(task.id, "LOCAL_SEARCH_RUNNING", { query: resolved.searchQuery, source: resolved.source });
       this.chatRepo.appendMessage({
         conversationId: conversation.id,
         taskId: task.id,
@@ -105,17 +115,31 @@ export class RemoteTaskDispatcher {
         payload: { phase: "searching", relay_task_id: message.relay_task_id },
         deliveryStatus: "delivered"
       });
-      const candidates = hybridSearch(searchQuery, { limit: 10 });
+      const candidates = resolved.candidates;
       transition(task.id, "CANDIDATES_RANKED", { count: candidates.length });
+      await this.sendFileRequestStatus(
+        message,
+        candidates.length > 0 ? "waiting_for_approval" : "no_candidate_found_waiting_for_refinement",
+        candidates.length > 0
+          ? "Receiver found candidate files and is waiting for owner approval"
+          : "Receiver found no candidate files and is waiting for refinement or manual selection",
+        {
+          candidate_count: candidates.length,
+          parsed_filename: resolved.parsed.exactFilename,
+          search_source: resolved.source
+        }
+      ).catch(() => {
+        // Best-effort.
+      });
       const top = candidates[0];
       const approval = await this.protocol.createApproval(task.id, {
-        approvalType: "file.transfer.offer",
+        approvalType: top ? "file.transfer.offer" : "file.search.refinement",
         requesterAgentId: message.from_agent_instance_id,
         ownerAgentId: message.to_agent_instance_id,
-        selectedFileId: top ? String(top.id) : null,
-        boundFilePath: top?.filePath ?? null,
-        boundSha256: null,
-        boundSizeBytes: top?.sizeBytes ?? null
+        selectedFileId: top?.id ?? null,
+        boundFilePath: top?.boundFilePath ?? null,
+        boundSha256: top?.boundSha256 ?? null,
+        boundSizeBytes: top?.boundSizeBytes ?? null
       });
       transition(task.id, "APPROVAL_REQUIRED", {
         approvalId: approval.id,
@@ -128,8 +152,15 @@ export class RemoteTaskDispatcher {
         senderAgentInstanceId: message.to_agent_instance_id,
         receiverAgentInstanceId: message.from_agent_instance_id,
         messageType: "agent_status",
-        text: `Your agent found ${candidates.length} candidates`,
-        payload: { phase: "input_required", relay_task_id: message.relay_task_id },
+        text: candidates.length > 0
+          ? `Your agent found ${candidates.length} candidates`
+          : "No candidate files found. Waiting for refinement or manual file choice.",
+        payload: {
+          phase: candidates.length > 0 ? "input_required" : "needs_refinement",
+          relay_task_id: message.relay_task_id,
+          parsed_filename: resolved.parsed.exactFilename,
+          search_source: resolved.source
+        },
         deliveryStatus: "delivered"
       });
       this.chatRepo.appendMessage({
@@ -142,23 +173,15 @@ export class RemoteTaskDispatcher {
         payload: {
           approval_id: approval.id,
           task_id: task.id,
-          requester: message.from_agent_instance_id,
+          requester: conversation.title || message.from_agent_instance_id,
           request_text: text,
           status: approval.status,
           expires_at: approval.expiresAt,
           selected_candidate_id: approval.selectedFileId,
-          candidates: candidates.map((candidate) => ({
-            candidate_id: String(candidate.id),
-            file_name: candidate.fileName,
-            display_path: candidate.displayPath,
-            extension: candidate.extension,
-            mime_type: "application/octet-stream",
-            size_bytes: candidate.sizeBytes,
-            modified_at: candidate.modifiedAt,
-            match_score: candidate.score,
-            match_reason: candidate.reason,
-            safety_labels: ["Approval required", "Local path hidden from recipient"]
-          }))
+          approval_type: approval.approvalType,
+          search_source: resolved.source,
+          parsed_filename: resolved.parsed.exactFilename,
+          candidates: candidates.map(toApprovalCandidatePayload)
         },
         deliveryStatus: "delivered"
       });
@@ -170,32 +193,58 @@ export class RemoteTaskDispatcher {
     }
   }
 
-  private handleMessageSend(message: RelayInboxMessage): DispatchResult {
+  private async handleMessageSend(message: RelayInboxMessage): Promise<DispatchResult> {
     const now = new Date().toISOString();
-    const text = extractRequestText(message.payload);
-    const conversation = this.findOrCreateRelayConversation(message);
-    this.chatRepo.appendMessage({
-      conversationId: conversation.id,
-      taskId: message.a2a_task_id ?? message.relay_task_id,
-      senderAgentInstanceId: message.from_agent_instance_id,
-      receiverAgentInstanceId: message.to_agent_instance_id,
-      messageType: "human",
-      text,
-      payload: {
+    const localTaskId = message.a2a_task_id ?? message.relay_task_id;
+    try {
+      const text = extractRequestText(message.payload);
+      const conversation = await this.findOrCreateRelayConversation(message, "message.send");
+      this.chatRepo.appendMessage({
+        conversationId: conversation.id,
+        taskId: localTaskId,
+        senderAgentInstanceId: message.from_agent_instance_id,
+        receiverAgentInstanceId: message.to_agent_instance_id,
+        messageType: "human",
+        text,
+        payload: {
+          relay_task_id: message.relay_task_id,
+          a2a_task_id: message.a2a_task_id,
+          message_kind: "message.send",
+          sender_label: conversation.title || `Remote agent ${shortId(message.from_agent_instance_id)}`
+        },
+        deliveryStatus: "stored_by_remote_agent"
+      });
+      await this.sendDeliveryReceipt(message, {
         relay_task_id: message.relay_task_id,
-        a2a_task_id: message.a2a_task_id,
-        message_kind: "message.send",
-        sender_label: `Remote agent ${shortId(message.from_agent_instance_id)}`
-      },
-      deliveryStatus: "delivered"
-    });
-    this.record(message, "created", message.a2a_task_id ?? message.relay_task_id, null, now);
-    return {
-      relayTaskId: message.relay_task_id,
-      localTaskId: message.a2a_task_id ?? message.relay_task_id,
-      approvalId: null,
-      status: "created"
-    };
+        status: "stored_by_remote_agent",
+        delivered_at: now,
+        from_agent_instance_id: message.to_agent_instance_id,
+        to_agent_instance_id: message.from_agent_instance_id
+      }).catch(() => {
+        // The local write is the source of truth; relay receipt is best-effort.
+      });
+      this.record(message, "created", localTaskId, null, now);
+      return {
+        relayTaskId: message.relay_task_id,
+        localTaskId,
+        approvalId: null,
+        status: "created"
+      };
+    } catch (err) {
+      const messageText = err instanceof Error ? err.message : String(err);
+      await this.sendDeliveryReceipt(message, {
+        relay_task_id: message.relay_task_id,
+        status: "failed",
+        delivered_at: now,
+        error: messageText,
+        from_agent_instance_id: message.to_agent_instance_id,
+        to_agent_instance_id: message.from_agent_instance_id
+      }).catch(() => {
+        // Keep the failed dispatch unacked so the relay can retry.
+      });
+      this.record(message, "failed", localTaskId, messageText, now);
+      return { relayTaskId: message.relay_task_id, localTaskId, approvalId: null, status: "failed" };
+    }
   }
 
   private async handleTransferAvailable(message: RelayInboxMessage): Promise<DispatchResult> {
@@ -246,7 +295,7 @@ export class RemoteTaskDispatcher {
         }, fresh.deviceAccessToken!)
       );
 
-      const conversation = this.findOrCreateRelayConversation(message);
+      const conversation = await this.findOrCreateRelayConversation(message, "file.transfer");
       this.chatRepo.appendMessage({
         conversationId: conversation.id,
         taskId,
@@ -281,9 +330,9 @@ export class RemoteTaskDispatcher {
     }
   }
 
-  private handleTransferReceipt(message: RelayInboxMessage): DispatchResult {
+  private async handleTransferReceipt(message: RelayInboxMessage): Promise<DispatchResult> {
     const taskId = stringPayload(message, "task_id") || message.a2a_task_id || message.relay_task_id;
-    const conversation = this.findOrCreateRelayConversation(message);
+    const conversation = await this.findOrCreateRelayConversation(message, "file.transfer");
     this.chatRepo.appendMessage({
       conversationId: conversation.id,
       taskId,
@@ -294,19 +343,96 @@ export class RemoteTaskDispatcher {
       payload: message.payload,
       deliveryStatus: "delivered"
     });
+    this.chatRepo.appendMessage({
+      conversationId: conversation.id,
+      taskId,
+      senderAgentInstanceId: message.from_agent_instance_id,
+      receiverAgentInstanceId: message.to_agent_instance_id,
+      messageType: "agent_status",
+      text: "File received and hash verified",
+      payload: {
+        ...message.payload,
+        kind: "file_request_status",
+        status: "file_received_hash_verified"
+      },
+      deliveryStatus: "delivered"
+    });
     this.record(message, "created", taskId, null, new Date().toISOString());
     return { relayTaskId: message.relay_task_id, localTaskId: taskId, approvalId: null, status: "created" };
   }
 
-  private findOrCreateRelayConversation(message: RelayInboxMessage) {
-    return this.chatRepo.findCloudRelayConversationByPeerAgent(message.from_agent_instance_id) ??
-      this.chatRepo.createConversation({
-        id: `relay_${message.from_agent_instance_id}`,
-        localAgentInstanceId: message.to_agent_instance_id,
-        peerAgentInstanceId: message.from_agent_instance_id,
-        mode: "cloud_relay",
-        title: `Remote agent ${shortId(message.from_agent_instance_id)}`
+  private async handleFileRequestStatus(message: RelayInboxMessage): Promise<DispatchResult> {
+    const now = new Date().toISOString();
+    const taskId = stringPayload(message, "task_id") || message.a2a_task_id || message.relay_task_id;
+    try {
+      const conversation = await this.findOrCreateRelayConversation(message, "file.request");
+      const status = stringPayload(message, "status") ?? "status_update";
+      const text = stringPayload(message, "text") ?? humanFileRequestStatus(status);
+      this.chatRepo.appendMessage({
+        conversationId: conversation.id,
+        taskId,
+        senderAgentInstanceId: message.from_agent_instance_id,
+        receiverAgentInstanceId: message.to_agent_instance_id,
+        messageType: "agent_status",
+        text,
+        payload: {
+          ...message.payload,
+          kind: "file_request_status",
+          status
+        },
+        deliveryStatus: "delivered"
       });
+      this.record(message, "created", taskId, null, now);
+      return { relayTaskId: message.relay_task_id, localTaskId: taskId, approvalId: null, status: "created" };
+    } catch (err) {
+      this.record(message, "failed", taskId, err instanceof Error ? err.message : String(err), now);
+      return { relayTaskId: message.relay_task_id, localTaskId: taskId, approvalId: null, status: "failed" };
+    }
+  }
+
+  private async findOrCreateRelayConversation(message: RelayInboxMessage, capability = "message.send") {
+    const store = new LocalCloudIdentityStore(this.db);
+    const cloud = store.get(this.profileId);
+    const route = await new PeerRoutingService(this.chatRepo, {
+      identityStore: store,
+      profileId: this.profileId
+    }).resolveTarget({
+      peerAgentInstanceId: message.from_agent_instance_id,
+      capability,
+      cloud
+    });
+    const peerUserId = route.userId ?? null;
+    const peerAgentInstanceId = route.agentInstanceId ?? message.from_agent_instance_id;
+    const title = route.displayName || `Remote agent ${shortId(message.from_agent_instance_id)}`;
+
+    if (peerUserId) {
+      const byUser = this.chatRepo.findCloudRelayConversationByPeerUser(peerUserId);
+      if (byUser) {
+        return this.chatRepo.updateConversationPeer(byUser.id, {
+          peerUserId,
+          peerAgentInstanceId,
+          title
+        }) ?? byUser;
+      }
+    }
+
+    const byAgent = this.chatRepo.findCloudRelayConversationByPeerAgent(message.from_agent_instance_id);
+    if (byAgent) {
+      return this.chatRepo.updateConversationPeer(byAgent.id, {
+        peerUserId: peerUserId ?? byAgent.peer_user_id,
+        peerAgentInstanceId,
+        title
+      }) ?? byAgent;
+    }
+
+    return this.chatRepo.createConversation({
+      id: peerUserId ? `relay_user_${peerUserId}` : `relay_${message.from_agent_instance_id}`,
+      localAgentInstanceId: message.to_agent_instance_id,
+      peerUserId,
+      peerAgentInstanceId,
+      mode: "cloud_relay",
+      title
+    });
   }
 
   private record(message: RelayInboxMessage, status: string, localTaskId: string | null, error: string | null, now: string): void {
@@ -325,6 +451,38 @@ export class RemoteTaskDispatcher {
       error,
       now,
       now
+    );
+  }
+
+  private async sendDeliveryReceipt(message: RelayInboxMessage, receipt: RelayDeliveryReceipt): Promise<void> {
+    const store = new LocalCloudIdentityStore(this.db);
+    await withRecoveredDeviceToken(store, this.profileId, async (fresh) =>
+      new RelayClient(new ControlPlaneClient(fresh.controlPlaneUrl)).respond(message.relay_task_id, { ...receipt }, fresh.deviceAccessToken!)
+    );
+  }
+
+  private async sendFileRequestStatus(
+    message: RelayInboxMessage,
+    status: string,
+    text: string,
+    extra: Record<string, unknown> = {}
+  ): Promise<void> {
+    const store = new LocalCloudIdentityStore(this.db);
+    await withRecoveredDeviceToken(store, this.profileId, async (fresh) =>
+      new RelayClient(new ControlPlaneClient(fresh.controlPlaneUrl)).send({
+        to_agent_instance_id: message.from_agent_instance_id,
+        a2a_task_id: message.a2a_task_id ?? message.relay_task_id,
+        type: "file.request.status",
+        payload: {
+          kind: "file_request_status",
+          original_relay_task_id: message.relay_task_id,
+          task_id: message.a2a_task_id ?? message.relay_task_id,
+          status,
+          text,
+          ...extra
+        },
+        idempotency_key: `file-request-status:${message.relay_task_id}:${status}`
+      }, fresh.deviceAccessToken!)
     );
   }
 }
@@ -355,6 +513,25 @@ function extractRequestText(payload: Record<string, unknown>): string {
     if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
   }
   return JSON.stringify(payload);
+}
+
+function humanFileRequestStatus(status: string): string {
+  switch (status) {
+    case "request_delivered":
+      return "Request delivered to receiver agent";
+    case "searching_receiver_files":
+      return "Receiver agent is searching local files";
+    case "no_candidate_found_waiting_for_refinement":
+      return "No candidate found. Waiting for refinement.";
+    case "waiting_for_approval":
+      return "Waiting for owner approval";
+    case "transfer_starting":
+      return "Transfer starting";
+    case "file_received_hash_verified":
+      return "File received and hash verified";
+    default:
+      return "File request status updated";
+  }
 }
 
 function redactLocalPaths(payload: Record<string, unknown>): Record<string, unknown> {

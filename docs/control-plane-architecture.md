@@ -108,6 +108,21 @@ All user/agent tables have `org_id` and indexes on `(org_id, …)` lookup column
 | `/admin/...` | GET | session cookie OR admin token | Read-only org-wide views |
 | `/v1/admin/auth/...` | GET/POST | varies | Operator auth: setup, login, MFA, me, logout |
 
+## Peer Routing And Relay Delivery
+
+Local agents should route user chat by stable `peer_user_id` and repair `peer_agent_instance_id` before each relay send. The local `PeerRoutingService` resolves the peer user's current online agent instance with the requested capability (`message.send`, `file.request`, or transfer-related capability) using the directory APIs, then updates the local conversation target when the stored route is stale.
+
+Relay task status is intentionally more precise than the old chat label `sent`:
+
+| Control-plane state | Local chat delivery state |
+| --- | --- |
+| accepted / pending | `queued_at_relay` |
+| inbox fetched / delivered | `delivered_to_remote_agent` |
+| receiver dispatcher wrote the local chat row and responded | `stored_by_remote_agent` |
+| receiver dispatcher failure, cancellation, or expiry | `failed` |
+
+The receiver inbox poller acknowledges relay items only after dispatcher success (`created` or `duplicate`). Failed dispatches are left unacked so the relay item can be retried instead of being silently dropped.
+
 ## File Transfer Crypto
 
 Per-transfer AES-256-GCM:

@@ -63,6 +63,14 @@ function useQueueSnapshot(): QueuedMessage[] {
   }, [snapshot]);
 }
 
+function presenceRank(presence: Conversation["presence"]): number {
+  if (presence === "online") return 4;
+  if (presence === "stale") return 3;
+  if (presence === "unknown") return 2;
+  if (presence === "offline") return 1;
+  return 0;
+}
+
 function addToQueue(msg: QueuedMessage): void {
   const queue = getQueue().filter((q) => q.clientMessageId !== msg.clientMessageId);
   queue.push(msg);
@@ -90,10 +98,11 @@ export const queryKeys = {
   auditVerify: ["audit", "verify"] as const,
   diagnostics: ["agent", "diagnostics"] as const,
   relayInbox: ["relay", "inbox-status"] as const,
+  relayTask: (relayTaskId: string) => ["relay", "task", relayTaskId] as const,
   registryAgents: (trustLevel = "all") => ["registry", "agents", trustLevel] as const,
   skills: ["skills"] as const,
   fileIndexRoots: ["files", "index-roots"] as const,
-  indexedFiles: (limit = 100, offset = 0) => ["files", "indexed", limit, offset] as const,
+  indexedFiles: (limit = 100, offset = 0, query = "", extension = "") => ["files", "indexed", limit, offset, query, extension] as const,
   fileSearch: (query: string) => ["files", "search", query] as const,
   transfers: ["transfers"] as const,
   a2aTasks: ["a2a", "tasks"] as const,
@@ -167,7 +176,7 @@ export function useConversations() {
     select: (data) => {
       const seen = new Map<string, Conversation>();
       for (const conv of data.conversations ?? []) {
-        const norm = conv.agentInstanceId ?? conv.title.trim().toLowerCase().replace(/\s+/g, " ");
+        const norm = conv.peerUserId ?? conv.agentInstanceId ?? conv.title.trim().toLowerCase().replace(/\s+/g, " ");
         const existing = seen.get(norm);
         if (!existing) {
           seen.set(norm, { ...conv, title: conv.title.trim().replace(/\s+/g, " ") });
@@ -186,6 +195,9 @@ export function useConversations() {
             .sort((a, b) => (b.messages?.length ?? 0) - (a.messages?.length ?? 0));
           seen.set(norm, {
             ...existing,
+            peerUserId: existing.peerUserId ?? conv.peerUserId ?? null,
+            agentInstanceId: presenceRank(conv.presence) > presenceRank(existing.presence) ? conv.agentInstanceId : existing.agentInstanceId,
+            presence: presenceRank(conv.presence) > presenceRank(existing.presence) ? conv.presence : existing.presence,
             messages: merged,
             lastMessage: laterLastMsg[0]?.lastMessage ?? existing.lastMessage,
             unread: Math.max(existing.unread, conv.unread),
@@ -209,6 +221,18 @@ export function useConversationMessages(conversationId: string | null) {
   });
 }
 
+export function useRelayTaskStatus(relayTaskId: string | null | undefined, enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.relayTask(relayTaskId ?? "none"),
+    queryFn: () => api.relayTaskStatus(relayTaskId ?? ""),
+    enabled: Boolean(relayTaskId) && enabled,
+    refetchInterval: (query) => {
+      const status = query.state.data?.delivery_status;
+      return status === "queued_at_relay" || status === "delivered_to_remote_agent" ? 3000 : false;
+    }
+  });
+}
+
 export function useStartConversation() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -220,6 +244,7 @@ export function useStartConversation() {
         id: `optimistic-${crypto.randomUUID()}`,
         title: input.title,
         subtitle: "Starting conversation",
+        peerUserId: input.peer_user_id ?? null,
         agentInstanceId: input.peer_agent_instance_id ?? null,
         presence: "unknown",
         unread: 0,
@@ -343,7 +368,7 @@ function useSendChatMutation(conversationId: string, sendAs: ChatSendRequest["se
             conversationId: current.conversationId,
             messages: current.messages.map((msg) =>
               msg.id === context.messageId && msg.kind === "human"
-                ? { ...msg, delivery_status: result.delivery_status }
+                ? { ...msg, delivery_status: result.delivery_status, relay_task_id: result.relay_task_id ?? null }
                 : msg
             )
           });
@@ -502,11 +527,25 @@ export function useRemoveVaultExclude() {
   });
 }
 
-export function useIndexedFiles(limit = 100, offset = 0) {
+export function useIndexedFiles(limit = 100, offset = 0, query = "", extension = "") {
   return useQuery({
-    queryKey: queryKeys.indexedFiles(limit, offset),
-    queryFn: () => api.indexedFiles(limit, offset),
+    queryKey: queryKeys.indexedFiles(limit, offset, query, extension),
+    queryFn: () => api.indexedFiles(limit, offset, query, extension),
     refetchInterval: 15000
+  });
+}
+
+export function useRebindApprovalFile() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { approvalId: string; fileId: string }) => api.rebindFile(input.approvalId, input.fileId),
+    onSuccess: () => {
+      toast.success("File selected for approval");
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.pendingApprovals });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.conversations });
+    }
   });
 }
 

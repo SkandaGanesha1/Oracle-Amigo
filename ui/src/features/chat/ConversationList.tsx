@@ -32,6 +32,8 @@ export function ConversationList({ conversations, activeConversationId, onSelect
         inactive.push(conv);
       } else if (conv.pendingApprovals > 0) {
         approvals.push(conv);
+      } else if (conv.peerUserId) {
+        people.push(conv);
       } else if (conv.agentInstanceId) {
         agents.push(conv);
       } else {

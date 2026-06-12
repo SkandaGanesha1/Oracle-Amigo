@@ -73,12 +73,19 @@ export class PersonalAgentProtocol {
       }
     }
 
+    const approvalType = input.approvalType ?? "file.transfer.offer";
+    if (approvalType === "file.transfer.offer" && (!input.boundFilePath || !boundSha256 || boundSizeBytes == null)) {
+      const error = new Error("APPROVAL_HAS_NO_BOUND_FILE");
+      error.name = "APPROVAL_HAS_NO_BOUND_FILE";
+      throw error;
+    }
+
     db.prepare(`
       INSERT INTO approval_requests
         (id, task_id, approval_type, requester_agent_id, owner_agent_id, status,
          selected_file_id, bound_file_path, bound_sha256, bound_size_bytes, expires_at, created_at)
       VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)
-    `).run(id, taskId, input.approvalType ?? "file.transfer.offer",
+    `).run(id, taskId, approvalType,
       input.requesterAgentId ?? "local-user", input.ownerAgentId ?? "local-agent",
       input.selectedFileId ?? null, input.boundFilePath ?? null,
       boundSha256, boundSizeBytes, expiresAt, now);
@@ -87,7 +94,13 @@ export class PersonalAgentProtocol {
       actorAgentId: input.ownerAgentId ?? "local-agent",
       taskId,
       eventType: "APPROVAL_CREATED",
-      detailsJson: { approvalId: id, boundSha256, boundSizeBytes, boundFilePath: input.boundFilePath ?? null }
+      detailsJson: {
+        approvalId: id,
+        approvalType,
+        boundSha256,
+        boundSizeBytes,
+        boundFilePath: input.boundFilePath ? "[redacted]" : null
+      }
     });
     return this.getApproval(id)!;
   }

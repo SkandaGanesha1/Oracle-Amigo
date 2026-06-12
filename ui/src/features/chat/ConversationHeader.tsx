@@ -2,28 +2,13 @@ import { PanelRightOpen, PanelRightClose } from "lucide-react";
 import { OracleAvatar } from "../../components/primitives/OracleAvatar";
 import { OracleBadge } from "../../components/primitives/OracleBadge";
 import type { Conversation } from "../../api/types";
-
-const presenceToBadgeColor: Record<string, "success" | "warning" | "default" | "danger"> = {
-  online: "success",
-  stale: "warning",
-  offline: "default",
-  revoked: "danger",
-  unknown: "default",
-};
+import { normalizePeerPresence, presenceBadgeColor } from "../../lib/normalizePeerPresence";
 
 interface ConversationHeaderProps {
   conversation: Conversation;
   onToggleInspector: () => void;
   inspectorOpen: boolean;
 }
-
-const presenceLabel: Record<string, string> = {
-  online: "Online",
-  offline: "Offline",
-  stale: "Away",
-  revoked: "Revoked",
-  unknown: "Presence unavailable",
-};
 
 function friendlifyName(title: string): string {
   const lower = title.toLowerCase();
@@ -34,9 +19,8 @@ function friendlifyName(title: string): string {
 }
 
 export function ConversationHeader({ conversation, onToggleInspector, inspectorOpen }: ConversationHeaderProps) {
-  const presence = conversation.presence ?? "unknown";
-  const badgeColor = presenceToBadgeColor[presence] ?? "default";
-  const label = presenceLabel[presence] ?? "";
+  const presence = normalizePeerPresence(conversation);
+  const badgeColor = presenceBadgeColor(presence);
   const displayTitle = friendlifyName(conversation.title);
 
   return (
@@ -56,9 +40,9 @@ export function ConversationHeader({ conversation, onToggleInspector, inspectorO
           <span className="truncate text-sm font-semibold text-oa-text">
             {displayTitle}
           </span>
-          {label && (
+          {presence.label && (
             <span className="text-xs text-oa-text-muted">
-              {label}
+              {presence.label}
             </span>
           )}
         </div>

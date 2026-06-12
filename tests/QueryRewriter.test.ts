@@ -14,6 +14,16 @@ describe("RuleBasedQueryRewriter", () => {
     expect(result.semanticQuery).toContain("pdf");
     expect(result.fileTypeHints).toContain("pdf");
     expect(result.extensions).toContain("pdf");
+    expect(result.exactFilename).toBeNull();
+  });
+
+  it("extracts exact filenames for filename-first file request routing", () => {
+    const result = rewriter.rewrite("Send me Job Offer-Associate Consultant.pdf file");
+
+    expect(result.exactFilename).toBe("Job Offer-Associate Consultant.pdf");
+    expect(result.extensions).toContain("pdf");
+    expect(result.lexicalQuery).toContain("job");
+    expect(result.semanticQuery).toContain("pdf");
   });
 
   it("extracts extensions from query", () => {
@@ -50,6 +60,7 @@ describe("RuleBasedQueryRewriter", () => {
     expect(result.semanticQuery).toBe("");
     expect(result.fileTypeHints).toEqual([]);
     expect(result.projectHints).toEqual([]);
+    expect(result.exactFilename).toBeNull();
   });
 
   it("preserves original text", () => {

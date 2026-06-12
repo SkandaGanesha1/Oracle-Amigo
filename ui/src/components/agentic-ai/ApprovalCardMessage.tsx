@@ -1,11 +1,11 @@
 import { useCallback, useState } from "react";
-import { Shield, Check, X, Search, FileText, Clock, ExternalLink } from "lucide-react";
-import { useApproveFileRequest, useRejectFileRequest, useSubmitApprovalFeedback } from "../../hooks/queries";
+import { Shield, X, Search, FileText, Clock, FolderOpen } from "lucide-react";
+import { useApproveFileRequest, useIndexedFiles, useRebindApprovalFile, useRejectFileRequest, useSubmitApprovalFeedback } from "../../hooks/queries";
 import { BiometricApproveButton } from "../../features/approvals/BiometricApproveButton";
 import { RedactionEditor } from "../../features/approvals/RedactionEditor";
 import type { FileCandidateApprovalMessage, CandidateFile } from "../../api/types";
 
-const AGENT_ID_RE = /^ag[ei]_[a-f0-9-]{36,}$/i;
+const AGENT_ID_RE = /^ag[ei][_-]/i;
 
 function formatRequester(id: string): string {
   if (AGENT_ID_RE.test(id.trim())) return "Remote agent";
@@ -22,13 +22,17 @@ export function ApprovalCardMessage({ message }: ApprovalCardMessageProps) {
   const { mutate: approve, isPending: isApproving } = useApproveFileRequest();
   const { mutate: reject, isPending: isRejecting } = useRejectFileRequest();
   const { mutate: submitFeedback, isPending: isFeedbackSubmitting } = useSubmitApprovalFeedback();
+  const rebindFile = useRebindApprovalFile();
 
   const [selectedId, setSelectedId] = useState<string | null>(
     card.selected_candidate_id ?? card.candidates[0]?.candidate_id ?? null
   );
   const [feedback, setFeedback] = useState("");
+  const [showFilePicker, setShowFilePicker] = useState(false);
+  const [manualQuery, setManualQuery] = useState(card.request_text);
+  const indexedFiles = useIndexedFiles(8, 0, showFilePicker ? manualQuery : "", "");
 
-  const disabled = isApproving || isRejecting || isFeedbackSubmitting || card.status !== "pending";
+  const disabled = isApproving || isRejecting || isFeedbackSubmitting || rebindFile.isPending || card.status !== "pending";
   const selectedFile = card.candidates.find((file) => file.candidate_id === selectedId) ?? card.candidates[0];
 
   const handleApprove = useCallback(() => {
@@ -45,6 +49,15 @@ export function ApprovalCardMessage({ message }: ApprovalCardMessageProps) {
       setFeedback("");
     }
   }, [submitFeedback, card.approval_id, feedback]);
+
+  const handleManualBind = useCallback((fileId: string) => {
+    rebindFile.mutate({ approvalId: card.approval_id, fileId }, {
+      onSuccess: () => {
+        setSelectedId(fileId);
+        setShowFilePicker(false);
+      }
+    });
+  }, [rebindFile, card.approval_id]);
 
   const statusColors: Record<string, string> = {
     pending: "text-oa-amber bg-oa-amber/10 border-oa-amber/20",
@@ -119,6 +132,49 @@ export function ApprovalCardMessage({ message }: ApprovalCardMessageProps) {
             <X className="h-3.5 w-3.5" />
             Reject
           </button>
+        </div>
+      )}
+
+      {card.status === "pending" && card.candidates.length === 0 && (
+        <div className="mt-3 rounded-xl border border-oa-border/70 bg-oa-bg-elevated/60 p-3">
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => setShowFilePicker((value) => !value)}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-oa-blue/30 bg-oa-blue/10 px-3 py-1.5 text-xs font-medium text-oa-blue transition hover:bg-oa-blue/20 disabled:opacity-50"
+          >
+            <FolderOpen className="h-3.5 w-3.5" />
+            Choose indexed file
+          </button>
+          {showFilePicker && (
+            <div className="mt-3 space-y-2">
+              <input
+                value={manualQuery}
+                onChange={(event) => setManualQuery(event.target.value)}
+                placeholder="Search indexed files..."
+                className="w-full rounded-lg border border-oa-border bg-oa-bg px-3 py-2 text-xs text-oa-text outline-none transition focus:border-oa-blue"
+              />
+              <div className="max-h-44 space-y-1 overflow-y-auto">
+                {(indexedFiles.data?.items ?? []).map((file) => (
+                  <button
+                    key={file.id}
+                    type="button"
+                    disabled={disabled}
+                    onClick={() => handleManualBind(String(file.id))}
+                    className="w-full rounded-lg border border-oa-border bg-oa-bg p-2 text-left text-xs hover:border-oa-blue/50 disabled:opacity-50"
+                  >
+                    <div className="truncate font-medium text-oa-text">{file.fileName}</div>
+                    <div className="truncate text-[10px] text-oa-text-muted">{file.displayPath}</div>
+                  </button>
+                ))}
+                {!indexedFiles.isLoading && (indexedFiles.data?.items ?? []).length === 0 && (
+                  <div className="rounded-lg border border-dashed border-oa-border p-2 text-[10px] text-oa-text-muted">
+                    No indexed files match this search.
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       )}
 

@@ -19,6 +19,8 @@ export type SearchOptions = {
   excludeIds?: number[];
   /** Filename tokens to penalize (set score to 0 if any token matches the file name). Used for feedback-driven re-search. */
   excludeNameTokens?: string[];
+  /** Exact filename extracted from a user request. Prioritized before semantic/lexical matches. */
+  exactFilename?: string;
   episodicBoosts?: Map<number, number>;
   limit?: number;
   /** Max cosine distance for vec KNN results (used for cursor pagination). */
@@ -84,6 +86,28 @@ export function search(query: string, options: SearchOptions = {}): RetrievalMat
     const id = Number(r.rowid);
     scores.set(id, (scores.get(id) ?? 0) + 1 / (RRF_K + rank + 1));
   });
+
+  const exactFilename = options.exactFilename?.trim();
+  if (exactFilename) {
+    const exactRows = db.prepare(
+      "SELECT id, file_name FROM file_index WHERE lower(file_name) = lower(?) LIMIT 50"
+    ).all(exactFilename) as Array<{ id: number; file_name: string }>;
+    for (const row of exactRows) {
+      scores.set(Number(row.id), (scores.get(Number(row.id)) ?? 0) + 2);
+    }
+
+    const normalizedTarget = normalizeFilenameForSearch(exactFilename);
+    if (normalizedTarget) {
+      const normalizedRows = db.prepare(
+        "SELECT id, file_name FROM file_index ORDER BY modified_at DESC LIMIT 5000"
+      ).all() as Array<{ id: number; file_name: string }>;
+      for (const row of normalizedRows) {
+        if (normalizeFilenameForSearch(row.file_name) === normalizedTarget) {
+          scores.set(Number(row.id), (scores.get(Number(row.id)) ?? 0) + 1.75);
+        }
+      }
+    }
+  }
 
   if (scores.size === 0) return [];
 
@@ -172,4 +196,15 @@ export function search(query: string, options: SearchOptions = {}): RetrievalMat
   }
 
   return selected.slice(offset, offset + limit);
+}
+
+function normalizeFilenameForSearch(value: string): string {
+  return basename(value)
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\.[a-z0-9]+$/i, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .replace(/\s+/g, " ");
 }

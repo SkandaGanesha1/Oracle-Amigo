@@ -1,6 +1,7 @@
 import { Bot, Wifi, WifiOff, Clock, Shield, Globe, HardDrive, BadgeCheck, BadgeAlert, BadgeX, Tags, Lock } from "lucide-react";
 import { OracleAvatar } from "../primitives/OracleAvatar";
 import type { AgentInstance, PresenceState } from "../../api/types";
+import { normalizePeerPresence } from "../../lib/normalizePeerPresence";
 
 interface AgentCardProps {
   agent: AgentInstance;
@@ -17,7 +18,7 @@ const presenceConfig: Record<string, { icon: typeof Wifi; color: string; label: 
   stale: { icon: Clock, color: "text-oa-amber", label: "Stale" },
   offline: { icon: WifiOff, color: "text-oa-text-muted", label: "Offline" },
   revoked: { icon: Shield, color: "text-oa-red", label: "Revoked" },
-  unknown: { icon: Clock, color: "text-oa-text-disabled", label: "Unknown" },
+  unknown: { icon: Clock, color: "text-oa-text-disabled", label: "Presence unavailable" },
 };
 
 const trustConfig: Record<string, { icon: typeof BadgeCheck | typeof BadgeAlert | typeof BadgeX | typeof Shield; color: string; label: string }> = {
@@ -28,7 +29,16 @@ const trustConfig: Record<string, { icon: typeof BadgeCheck | typeof BadgeAlert 
 };
 
 export function AgentCard({ agent, presence, trustLevel, capabilities, permissionScope, onSelect, compact = false }: AgentCardProps) {
-  const pc = presenceConfig[presence ?? "unknown"] ?? presenceConfig.unknown;
+  const normalizedPresence = normalizePeerPresence({
+    presence: presence ?? "unknown",
+    agentInstanceId: agent.agent_instance_id,
+    lastHeartbeatAt: agent.last_seen_at,
+    capabilities
+  });
+  const pc = {
+    ...(presenceConfig[normalizedPresence.status === "unavailable" ? "unknown" : normalizedPresence.status] ?? presenceConfig.unknown),
+    label: normalizedPresence.label
+  };
   const PresenceIcon = pc.icon;
   const tc = trustLevel ? (trustConfig[trustLevel] ?? trustConfig.unverified) : null;
 

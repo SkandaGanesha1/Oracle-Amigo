@@ -72,7 +72,7 @@ function buildMissionsFromConversations(data: { conversations: Conversation[] })
 }
 
 function formatRequesterName(id: string): string {
-  if (/^ag[ei]_[a-f0-9-]{36,}$/i.test(id.trim())) return "Remote agent";
+  if (/^ag[ei][_-]/i.test(id.trim())) return "Remote agent";
   if (id.length > 20 && id.includes("_")) return "Remote agent";
   return id;
 }
@@ -155,6 +155,7 @@ export const api = {
   createNotification: notificationsApi.create,
   biometricCapability: biometricApi.capability,
   relayInboxStatus: relayApi.inboxStatus,
+  relayTaskStatus: relayApi.taskStatus,
 
   missions: async (): Promise<MissionsListResult> => {
     const convs = await chatApi.conversations();
@@ -217,7 +218,7 @@ export function mapApproval(row: Record<string, unknown>): FileCandidateApproval
   return {
     approval_id: String(row.id ?? row.approvalId ?? ""),
     task_id: String(row.task_id ?? row.taskId ?? ""),
-    requester: String(row.requester_agent_id ?? row.requesterAgentId ?? "remote agent"),
+    requester: String(row.requester_display_name ?? row.requesterDisplayName ?? row.requester_agent_id ?? row.requesterAgentId ?? "remote agent"),
     request_text: String(row.request_text ?? row.requestText ?? row.approval_type ?? "File request"),
     candidates: candidates.length > 0
       ? candidates.map((candidate) => ({

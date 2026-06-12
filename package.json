@@ -24,6 +24,8 @@
     "demo:single-device": "tsx scripts/demo-single-device.ts",
     "demo:loopback-two-agents": "tsx scripts/demo-loopback.ts",
     "test:e2e:relay": "tsx scripts/e2e-two-agent-relay-test.ts",
+    "test:e2e:relay-message": "npm test -- tests/PeerRouting.test.ts tests/ChatPersistence.test.ts",
+    "test:e2e:relay-file-search": "npm test -- tests/FileRequestParser.test.ts tests/FileRequestSearch.test.ts tests/ChatPersistence.test.ts",
     "test": "vitest run --config vitest.config.ts",
     "test:e2e": "vitest run --config vitest.config.ts --reporter=verbose tests/LoopbackA2A.test.ts",
     "test:ui": "vitest run --config vitest.ui.config.ts",

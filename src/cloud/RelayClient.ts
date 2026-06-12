@@ -35,6 +35,22 @@ export interface RelayInboxResult {
   server_time?: string;
 }
 
+export interface RelayTaskStatusResult {
+  id: string;
+  orgId?: string;
+  fromAgentInstanceId: string;
+  toAgentInstanceId: string;
+  a2aTaskId: string;
+  type: string;
+  payloadJson?: string;
+  status: "pending" | "delivered" | "completed" | "cancelled" | "expired" | string;
+  createdAt?: string;
+  updatedAt?: string;
+  deliveredAt: string | null;
+  completedAt: string | null;
+  response: Record<string, unknown> | null;
+}
+
 export class RelayClient {
   constructor(private cp: ControlPlaneClient) {}
 
@@ -59,7 +75,7 @@ export class RelayClient {
     return this.cp.postJson<{ ok: boolean }>(`/v1/relay/a2a/${encodeURIComponent(relayTaskId)}/respond`, response, deviceToken);
   }
 
-  getTask(relayTaskId: string, deviceToken: string): Promise<RelayInboxMessage & { response: Record<string, unknown> | null }> {
+  getTask(relayTaskId: string, deviceToken: string): Promise<RelayTaskStatusResult> {
     return this.cp.getJson(`/v1/relay/a2a/tasks/${encodeURIComponent(relayTaskId)}`, deviceToken);
   }
 }

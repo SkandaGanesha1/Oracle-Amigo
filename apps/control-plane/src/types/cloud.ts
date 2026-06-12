@@ -113,6 +113,7 @@ export interface RelayTask {
   updatedAt: string;
   deliveredAt: string | null;
   completedAt: string | null;
+  response?: Record<string, unknown> | null;
 }
 
 export interface RelayMessage {

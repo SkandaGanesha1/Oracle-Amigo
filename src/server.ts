@@ -2,7 +2,7 @@ import "dotenv/config";
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream, existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { extname, join, resolve, sep } from "node:path";
+import { basename, extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import Fastify, { type FastifyReply } from "fastify";
 import { z, ZodError } from "zod";
@@ -21,8 +21,10 @@ import { PersonalAgentProtocol } from "./protocol/PersonalAgentProtocol.js";
 import { indexRoot, reindexAll } from "./retrieval/FileIndexer.js";
 import { search as hybridSearch } from "./retrieval/HybridRetrievalPipeline.js";
 import { createIntentExtractor } from "./intent/IntentExtractor.js";
+import { parseFileRequest } from "./intent/FileRequestParser.js";
 import { createQueryRewriter } from "./intent/QueryRewriter.js";
 import { refine as refineSearch } from "./retrieval/FeedbackRefiner.js";
+import { searchFileRequestIndex } from "./retrieval/FileRequestSearch.js";
 import { buildAgentCard, ORACLE_AMIGO_SKILLS } from "./protocol/a2a/AgentCard.js";
 import { handleA2ARequest, makeMessage, makeTask, makeTextPart, makeTaskStatusUpdate, type A2AContext } from "./protocol/a2a/A2AHandler.js";
 import type { AgentCard, Message as A2AMessage, Task as A2ATask, TaskState, TaskPushNotificationConfig, PushNotificationConfig } from "./protocol/a2a/types.js";
@@ -70,9 +72,11 @@ import { AgentRegistrationService } from "./enrollment/AgentRegistrationService.
 import { HeartbeatService } from "./runtime/HeartbeatService.js";
 import { InboxPoller } from "./runtime/InboxPoller.js";
 import { RemoteTaskDispatcher } from "./runtime/RemoteTaskDispatcher.js";
+import { PeerRoutingService } from "./runtime/PeerRoutingService.js";
 import { ApprovalTransferOrchestrator } from "./runtime/ApprovalTransferOrchestrator.js";
+import { resolveFileRequestCandidates, toApprovalCandidatePayload } from "./runtime/FileRequestCandidateResolver.js";
 import { getDeviceTokenRecoveryStatus, structuredEnrollmentError, withRecoveredDeviceToken } from "./runtime/CloudTokenRecovery.js";
-import { ChatRepository, type ChatConversationRecord, type ChatMessageRecord } from "./chat/ChatRepository.js";
+import { ChatRepository, type ChatConversationRecord, type ChatMessageRecord, type DeliveryStatus, type RelayDeliveryReceipt } from "./chat/ChatRepository.js";
 
 const FileSearchSchema = z.object({
   query: z.string().trim().min(1).max(500)
@@ -204,12 +208,15 @@ const ContactRequestSchema = z.object({
 });
 
 const RelaySendSchema = z.object({
-  to_agent_instance_id: z.string().trim().min(1),
+  to_agent_instance_id: z.string().trim().min(1).optional(),
+  peer_user_id: z.string().trim().min(1).optional(),
   text: z.string().trim().min(1).max(2000),
   a2a_task_id: z.string().trim().min(1).max(120).optional(),
   idempotency_key: z.string().trim().min(1).max(200).optional(),
   conversation_id: z.string().trim().min(1).max(200).optional(),
   message_id: z.string().trim().min(1).max(200).optional()
+}).refine((value) => value.to_agent_instance_id || value.peer_user_id, {
+  message: "Either to_agent_instance_id or peer_user_id is required"
 });
 
 const DEFAULT_DEV_ORG_SLUG = "local-dev";
@@ -255,7 +262,12 @@ export function buildServer(
   const dbPath = resolveDbPath();
   const identity = generateOrLoadIdentity("Local User", dbPath);
   protocol.setIdentityPath(identity, dbPath);
-  const remoteDispatcher = new RemoteTaskDispatcher(protocol, getDb(), defaultProfileId());
+  const peerRouting = new PeerRoutingService(chatRepo, {
+    identityStore: cloudStore,
+    enrollmentService: deviceEnrollment,
+    profileId: defaultProfileId()
+  });
+  const remoteDispatcher = new RemoteTaskDispatcher(protocol, getDb(), defaultProfileId(), chatRepo, fileSearch);
   const heartbeatService = new HeartbeatService(cloudStore, defaultProfileId());
   const inboxPoller = new InboxPoller(cloudStore, remoteDispatcher, defaultProfileId());
   const existingCloud = cloudStore.get(defaultProfileId());
@@ -646,20 +658,52 @@ export function buildServer(
 
   server.get("/relay/inbox/status", async () => inboxPoller.status());
 
+  server.get("/relay/task/:relay_task_id/status", async (request, reply) => {
+    const cloud = requireCloudIdentity(cloudStore.get(), reply);
+    if (!cloud) return;
+    const { relay_task_id } = request.params as { relay_task_id: string };
+    const status = await fetchRelayDeliveryStatus(cloudStore, defaultProfileId(), relay_task_id);
+    chatRepo.updateDeliveryStatusForRelayTask(relay_task_id, status.delivery_status, status.receipt);
+    return status;
+  });
+
   server.post("/relay/send-message", async (request, reply) => {
     const cloud = requireCloudIdentity(cloudStore.get(), reply);
     if (!cloud) return;
     const body = parseBody(RelaySendSchema, request.body);
+    const target = await peerRouting.resolveTarget({
+      peerUserId: body.peer_user_id ?? null,
+      peerAgentInstanceId: body.to_agent_instance_id ?? null,
+      capability: "message.send",
+      cloud
+    });
+    const toAgentInstanceId = target.agentInstanceId ?? body.to_agent_instance_id;
+    if (!toAgentInstanceId) return reply.status(409).send({ error: "NO_ACTIVE_PEER_AGENT", message: "No active agent instance is available for this peer." });
+    if (body.conversation_id && (target.userId || target.agentInstanceId)) {
+      chatRepo.updateConversationPeer(body.conversation_id, {
+        peerUserId: target.userId ?? undefined,
+        peerAgentInstanceId: target.agentInstanceId ?? undefined,
+        title: target.displayName ?? undefined
+      });
+    }
     const result = await withRecoveredDeviceToken(cloudStore, defaultProfileId(), async (fresh) =>
       new RelayClient(new ControlPlaneClient(fresh.controlPlaneUrl)).send({
-        to_agent_instance_id: body.to_agent_instance_id,
+        to_agent_instance_id: toAgentInstanceId,
         a2a_task_id: body.a2a_task_id ?? randomUUID(),
         type: "message.send",
         payload: { kind: "message", text: body.text },
         idempotency_key: body.idempotency_key
       }, fresh.deviceAccessToken!)
     );
-    if (body.message_id) chatRepo.markMessageStatus(body.message_id, "sent");
+    if (body.message_id) {
+      chatRepo.updateMessageDeliveryStatus(body.message_id, "queued_at_relay", null, {
+        relay_task_id: result.relay_task_id,
+        relay_status: result.status,
+        relay_accepted_at: result.accepted_at,
+        to_agent_instance_id: toAgentInstanceId,
+        peer_user_id: target.userId ?? null
+      });
+    }
     return result;
   });
 
@@ -667,27 +711,50 @@ export function buildServer(
     const cloud = requireCloudIdentity(cloudStore.get(), reply);
     if (!cloud) return;
     const body = parseBody(RelaySendSchema, request.body);
+    const target = await peerRouting.resolveTarget({
+      peerUserId: body.peer_user_id ?? null,
+      peerAgentInstanceId: body.to_agent_instance_id ?? null,
+      capability: "file.request",
+      cloud
+    });
+    const toAgentInstanceId = target.agentInstanceId ?? body.to_agent_instance_id;
+    if (!toAgentInstanceId) return reply.status(409).send({ error: "NO_ACTIVE_PEER_AGENT", message: "No active agent instance is available for this peer." });
+    if (body.conversation_id && (target.userId || target.agentInstanceId)) {
+      chatRepo.updateConversationPeer(body.conversation_id, {
+        peerUserId: target.userId ?? undefined,
+        peerAgentInstanceId: target.agentInstanceId ?? undefined,
+        title: target.displayName ?? undefined
+      });
+    }
     const a2aTaskId = body.a2a_task_id ?? randomUUID();
     const result = await withRecoveredDeviceToken(cloudStore, defaultProfileId(), async (fresh) =>
       new RelayClient(new ControlPlaneClient(fresh.controlPlaneUrl)).send({
-        to_agent_instance_id: body.to_agent_instance_id,
+        to_agent_instance_id: toAgentInstanceId,
         a2a_task_id: a2aTaskId,
         type: "file.request",
         payload: { kind: "file_request", text: body.text, requestText: body.text },
         idempotency_key: body.idempotency_key
       }, fresh.deviceAccessToken!)
     );
-    if (body.message_id) chatRepo.markMessageStatus(body.message_id, "sent");
+    if (body.message_id) {
+      chatRepo.updateMessageDeliveryStatus(body.message_id, "queued_at_relay", null, {
+        relay_task_id: result.relay_task_id,
+        relay_status: result.status,
+        relay_accepted_at: result.accepted_at,
+        to_agent_instance_id: toAgentInstanceId,
+        peer_user_id: target.userId ?? null
+      });
+    }
     if (body.conversation_id) {
       chatRepo.appendMessage({
         conversationId: body.conversation_id,
         taskId: a2aTaskId,
         senderAgentInstanceId: cloud.agentInstanceId,
-        receiverAgentInstanceId: body.to_agent_instance_id,
+        receiverAgentInstanceId: toAgentInstanceId,
         messageType: "agent_status",
         text: "Waiting for remote approval",
         payload: { relay_task_id: result.relay_task_id, phase: "input_required" },
-        deliveryStatus: "sent"
+        deliveryStatus: "queued_at_relay"
       });
     }
     return result;
@@ -1713,10 +1780,10 @@ export function buildServer(
 
     const inspected = await fileSearch.inspectFile(topCandidate.id);
     const approval = await protocol.createApproval(task.id, {
-      approvalType: "file.transfer.offer",
+      approvalType: inspected?.absolutePath ? "file.transfer.offer" : "file.search.refinement",
       requesterAgentId: "local-user",
       ownerAgentId: protocol.createLocalIdentity().agentId,
-      selectedFileId: topCandidate.id,
+      selectedFileId: inspected?.absolutePath ? topCandidate.id : null,
       boundFilePath: inspected?.absolutePath ?? null,
       boundSha256: inspected?.sha256 ?? null,
       boundSizeBytes: inspected?.sizeBytes ?? topCandidate.sizeBytes,
@@ -1964,7 +2031,7 @@ export function buildServer(
     // Create approval
     const topCandidate = candidates[0];
     const approval = await protocol.createApproval(task.id, {
-      approvalType: "file.transfer.offer",
+      approvalType: topCandidate ? "file.transfer.offer" : "file.search.refinement",
       requesterAgentId: "local-user",
       ownerAgentId: protocol.createLocalIdentity().agentId,
       selectedFileId: topCandidate ? String(topCandidate.id) : null,
@@ -2042,7 +2109,13 @@ export function buildServer(
   server.get("/chat/conversations", async () => {
     const cloud = cloudStore.get();
     chatRepo.getOrCreateLocalConversation(cloud?.agentInstanceId ?? localIdentity.agentId);
-    const conversations = chatRepo.listConversations();
+    const conversations: ChatConversationRecord[] = [];
+    for (const conversation of chatRepo.listConversations()) {
+      conversations.push(await refreshRelayConversationPeer(conversation, cloud, peerRouting, "message.send"));
+    }
+    for (const conversation of conversations) {
+      await refreshRelayDeliveryStatuses(chatRepo.getMessages(conversation.id), cloudStore, defaultProfileId());
+    }
     const peerInfo = await resolveRelayPeerInfoMap(conversations, cloud, deviceEnrollment);
     return {
       conversations: conversations.map((conversation) =>
@@ -2061,7 +2134,8 @@ export function buildServer(
     const cloud = cloudStore.get();
     const conversation = chatRepo.getConversation(id);
     const localAgentInstanceId = conversation?.local_agent_instance_id ?? cloud?.agentInstanceId ?? localIdentity.agentId;
-    const messages = chatRepo.getMessages(id).map((message) => messageToTimeline(message, localAgentInstanceId));
+    const refreshed = await refreshRelayDeliveryStatuses(chatRepo.getMessages(id), cloudStore, defaultProfileId());
+    const messages = refreshed.map((message) => messageToTimeline(message, localAgentInstanceId));
     return { conversationId: id, messages };
   });
 
@@ -2089,7 +2163,7 @@ export function buildServer(
     const cloud = cloudStore.get();
     let conversation = chatRepo.getConversation(id);
     if (!conversation) return reply.status(404).send({ error: "Conversation not found" });
-    conversation = await refreshRelayConversationPeer(conversation, cloud, deviceEnrollment, chatRepo);
+    conversation = await refreshRelayConversationPeer(conversation, cloud, peerRouting, body.send_as === "file_request" ? "file.request" : "message.send");
     const messageId = body.client_message_id ?? `msg_${randomUUID()}`;
     const detectedIntent = intentExtractor.extract(body.text);
     const isFileRequest = body.send_as === "file_request" || detectedIntent.intent === "file_request";
@@ -2133,7 +2207,13 @@ export function buildServer(
             idempotency_key: body.idempotency_key ?? `ui-${messageId}`
           }, fresh.deviceAccessToken!);
         });
-        chatRepo.markMessageStatus(messageId, "sent");
+        chatRepo.updateMessageDeliveryStatus(messageId, "queued_at_relay", null, {
+          relay_task_id: relay.relay_task_id,
+          relay_status: relay.status,
+          relay_accepted_at: relay.accepted_at,
+          to_agent_instance_id: conversation.peer_agent_instance_id,
+          peer_user_id: conversation.peer_user_id
+        });
         if (isFileRequest) {
           chatRepo.appendMessage({
             conversationId: id,
@@ -2143,7 +2223,7 @@ export function buildServer(
             messageType: "agent_status",
             text: "Waiting for remote approval",
             payload: { relay_task_id: relay.relay_task_id, phase: "input_required" },
-            deliveryStatus: "sent"
+            deliveryStatus: "queued_at_relay"
           });
         }
         return {
@@ -2153,7 +2233,7 @@ export function buildServer(
           relay_task_id: relay.relay_task_id,
           task_id: a2aTaskId ?? undefined,
           type: isFileRequest ? "file_request" : "message",
-          delivery_status: "sent"
+          delivery_status: "queued_at_relay"
         };
       } catch (err) {
         const relayError = normalizeRelaySendError(err);
@@ -2397,17 +2477,31 @@ export function buildServer(
   });
 
   server.get("/files/indexed", async (request) => {
-    const q = (request.query ?? {}) as { limit?: string; offset?: string };
+    const q = (request.query ?? {}) as { limit?: string; offset?: string; query?: string; extension?: string };
     const limit = Math.max(1, Math.min(500, Number(q.limit ?? 100)));
     const offset = Math.max(0, Number(q.offset ?? 0));
+    const query = String(q.query ?? "").trim().toLowerCase();
+    const extension = String(q.extension ?? "").trim().toLowerCase().replace(/^\./, "");
+    const where: string[] = [];
+    const params: Array<string | number> = [];
+    if (query) {
+      where.push("(LOWER(file_name) LIKE ? OR LOWER(display_path) LIKE ?)");
+      params.push(`%${query}%`, `%${query}%`);
+    }
+    if (extension) {
+      where.push("extension = ?");
+      params.push(`.${extension}`);
+    }
+    const whereSql = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
     const db = getDb();
     const rows = db.prepare(`
       SELECT id, file_path, display_path, file_name, extension, size_bytes, modified_at
       FROM file_index
+      ${whereSql}
       ORDER BY modified_at DESC
       LIMIT ? OFFSET ?
-    `).all(limit, offset) as Array<Record<string, unknown>>;
-    const total = (db.prepare("SELECT COUNT(*) as n FROM file_index").get() as { n: number }).n;
+    `).all(...params, limit, offset) as Array<Record<string, unknown>>;
+    const total = (db.prepare(`SELECT COUNT(*) as n FROM file_index ${whereSql}`).get(...params) as { n: number }).n;
     const items = rows.map((r) => ({
       id: Number(r.id),
       displayPath: r.display_path as string,
@@ -2421,13 +2515,47 @@ export function buildServer(
     return { items, total, limit, offset };
   });
 
-  server.get("/approvals/pending", async () => ({ approvals: protocol.listApprovals().filter((item) => item.status === "pending") }));
+  server.get("/files/search/debug", async (request) => {
+    const q = (request.query ?? {}) as { query?: string; limit?: string };
+    const query = String(q.query ?? "").trim();
+    if (!query) return { error: "query is required" };
+    const limit = Math.max(1, Math.min(20, Number(q.limit ?? 10)));
+    const parsed = parseFileRequest(query);
+    const indexed = searchFileRequestIndex(parsed, { limit });
+    const resolved = await resolveFileRequestCandidates(query, fileSearch, { limit });
+    const db = getDb();
+    const indexedCount = (db.prepare("SELECT COUNT(*) as n FROM file_index").get() as { n: number }).n;
+    return {
+      query,
+      parsed,
+      indexedCount,
+      searchedRoots: resolved.searchedRoots,
+      filenameCandidates: indexed.map((candidate) => ({
+        candidate_id: String(candidate.id),
+        file_name: candidate.fileName,
+        display_path: `Local file / ${candidate.fileName}`,
+        extension: candidate.extension,
+        size_bytes: candidate.sizeBytes,
+        modified_at: candidate.modifiedAt,
+        match_score: candidate.score,
+        match_reason: candidate.reason
+      })),
+      finalCandidates: resolved.candidates.map(toApprovalCandidatePayload),
+      source: resolved.source
+    };
+  });
+
+  server.get("/approvals/pending", async () => ({
+    approvals: protocol.listApprovals()
+      .filter((item) => item.status === "pending")
+      .map(approvalToSafeResponse)
+  }));
 
   server.get("/approvals/:id", async (request, reply) => {
     const { id } = request.params as { id: string };
     const approval = protocol.getApproval(id);
     if (!approval) return reply.status(404).send({ error: "Approval not found" });
-    return approval;
+    return approvalToSafeResponse(approval);
   });
 
   server.post("/approvals/:id/approve", async (request, reply) => {
@@ -2435,6 +2563,13 @@ export function buildServer(
     const body = (request.body ?? {}) as { idempotency_key?: string };
     const current = protocol.getApproval(id);
     if (!current) return reply.status(404).send({ error: "Approval not found" });
+    if (isUnboundFileTransferApproval(current)) {
+      return reply.status(409).send({
+        error: "APPROVAL_HAS_NO_BOUND_FILE",
+        message: "This approval has no selected local file. Refine the search and select a candidate before approving.",
+        approval: approvalToSafeResponse(current)
+      });
+    }
     const policy = adminPolicy.evaluate({
       role: "user",
       sensitivity: "unknown",
@@ -2460,11 +2595,11 @@ export function buildServer(
         eventType: "policy_denied_transfer",
         detailsJson: { policy }
       });
-      return reply.status(403).send({ error: "POLICY_DENIED", policy, approval: current });
+      return reply.status(403).send({ error: "POLICY_DENIED", policy, approval: approvalToSafeResponse(current) });
     }
     const decision = protocol.applyApprovalDecisionWithResult(id, "approve", { idempotencyKey: body.idempotency_key });
     if (!decision.approval) return reply.status(404).send({ error: "Approval not found" });
-    if (decision.outcome === "denied") return reply.status(409).send({ error: decision.error, approval: decision.approval });
+    if (decision.outcome === "denied") return reply.status(409).send({ error: decision.error, approval: approvalToSafeResponse(decision.approval) });
     const cloudTransfer = await approvalTransfers.scheduleForApproval(decision.approval);
     notificationEvents.record({
       eventType: "approval_approved",
@@ -2485,7 +2620,7 @@ export function buildServer(
         transferId: cloudTransfer.transferId ?? undefined
       });
     }
-    return { ...decision.approval, cloudTransfer };
+    return { ...approvalToSafeResponse(decision.approval), cloudTransfer };
   });
 
   server.post("/approvals/:id/rebind-file", async (request, reply) => {
@@ -2521,10 +2656,15 @@ export function buildServer(
 
     db.prepare(`
       UPDATE approval_requests
-      SET selected_file_id = ?, bound_file_path = ?, bound_size_bytes = ?, bound_sha256 = ?
+      SET approval_type = 'file.transfer.offer',
+          selected_file_id = ?,
+          bound_file_path = ?,
+          bound_size_bytes = ?,
+          bound_sha256 = ?
       WHERE id = ?
     `).run(String(row.id), row.file_path, row.size_bytes, hash.digest("hex"), id);
-    return protocol.getApproval(id);
+    const rebound = protocol.getApproval(id);
+    return rebound ? approvalToSafeResponse(rebound) : null;
   });
 
   server.post("/approvals/:id/reject", async (request, reply) => {
@@ -2532,7 +2672,7 @@ export function buildServer(
     const body = (request.body ?? {}) as { idempotency_key?: string };
     const decision = protocol.applyApprovalDecisionWithResult(id, "reject", { idempotencyKey: body.idempotency_key });
     if (!decision.approval) return reply.status(404).send({ error: "Approval not found" });
-    if (decision.outcome === "denied") return reply.status(409).send({ error: decision.error, approval: decision.approval });
+    if (decision.outcome === "denied") return reply.status(409).send({ error: decision.error, approval: approvalToSafeResponse(decision.approval) });
     notificationEvents.record({
       eventType: "approval_rejected",
       title: "Approval rejected",
@@ -2546,7 +2686,7 @@ export function buildServer(
     if (decision.outcome === "applied") {
       appendApprovalDecisionTimeline(chatRepo, decision.approval.taskId, "rejected", { approvalId: decision.approval.id });
     }
-    return decision.approval;
+    return approvalToSafeResponse(decision.approval);
   });
 
   server.post("/approvals/:id/feedback", async (request, reply) => {
@@ -2558,8 +2698,8 @@ export function buildServer(
     });
     const approval = decision.approval;
     if (!approval) return reply.status(404).send({ error: "Approval not found" });
-    if (decision.outcome === "denied") return reply.status(409).send({ error: decision.error, approval });
-    if (decision.outcome === "replay") return { approval, newApproval: null, candidates: [] };
+    if (decision.outcome === "denied") return reply.status(409).send({ error: decision.error, approval: approvalToSafeResponse(approval) });
+    if (decision.outcome === "replay") return { approval: approvalToSafeResponse(approval), newApproval: null, candidates: [] };
     notificationEvents.record({
       eventType: "approval_feedback",
       title: "Approval feedback sent",
@@ -2580,43 +2720,33 @@ export function buildServer(
     // Transition to SEARCH_REFINED
     try { wfTransition(approval.taskId, "SEARCH_REFINED", { refinedQuery: refined.newQuery, rejected: rejectedIds }); } catch { /* already */ }
 
-    // Re-search with new query and exclusions
-    const newCandidates = hybridSearch(refined.newQuery, {
-      ...refined.searchOptions,
-      limit: 10,
+    const resolved = await resolveFileRequestCandidates(refined.newQuery, fileSearch, {
+      searchOptions: refined.searchOptions,
+      limit: 10
     });
+    const newCandidates = resolved.candidates;
 
     // Create a new approval for the new top candidate
     const top = newCandidates[0];
     const newApproval = await protocol.createApproval(approval.taskId, {
-      approvalType: "file.transfer.offer",
+      approvalType: top ? "file.transfer.offer" : "file.search.refinement",
       requesterAgentId: approval.requesterAgentId,
       ownerAgentId: approval.ownerAgentId,
-      selectedFileId: top ? String(top.id) : null,
-      boundFilePath: top?.filePath ?? null,
-      boundSha256: null,
-      boundSizeBytes: top?.sizeBytes ?? null,
+      selectedFileId: top?.id ?? null,
+      boundFilePath: top?.boundFilePath ?? null,
+      boundSha256: top?.boundSha256 ?? null,
+      boundSizeBytes: top?.boundSizeBytes ?? null,
     });
     try { wfTransition(approval.taskId, "APPROVAL_REQUIRED", { approvalId: newApproval.id, candidateCount: newCandidates.length, refined: true }); } catch { /* ignore */ }
-    appendRefinedApprovalTimeline(chatRepo, approval.taskId, newApproval.id, body.feedback ?? "", newCandidates.map((candidate) => ({
-      candidate_id: String(candidate.id),
-      file_name: candidate.fileName,
-      display_path: candidate.displayPath,
-      extension: candidate.extension,
-      mime_type: "application/octet-stream",
-      size_bytes: candidate.sizeBytes,
-      modified_at: candidate.modifiedAt,
-      match_score: candidate.score,
-      match_reason: candidate.reason,
-      safety_labels: ["Approval required", "Local path hidden from recipient"]
-    })));
+    const safeCandidates = newCandidates.map(toApprovalCandidatePayload);
+    appendRefinedApprovalTimeline(chatRepo, approval.taskId, newApproval.id, body.feedback ?? "", safeCandidates);
 
     return {
       ok: true,
-      previousApproval: approval,
-      refinedSearch: refined,
-      candidates: newCandidates,
-      newApproval,
+      previousApproval: approvalToSafeResponse(approval),
+      refinedSearch: { ...refined, resolvedSource: resolved.source },
+      candidates: safeCandidates,
+      newApproval: approvalToSafeResponse(newApproval),
     };
   });
 
@@ -2630,6 +2760,16 @@ export function buildServer(
     if (!current) return { ok: false, status: "not-found" };
     if (current.taskId !== (body.taskId ?? "")) {
       return { ok: false, status: "task-mismatch" };
+    }
+    if (action === "approve" && isUnboundFileTransferApproval(current)) {
+      return {
+        ok: false,
+        approvalId: current.id,
+        taskId: current.taskId,
+        status: current.status,
+        replay: false,
+        error: "APPROVAL_HAS_NO_BOUND_FILE"
+      };
     }
     const decision = protocol.applyApprovalDecisionWithResult(body.approvalId ?? "", action, {
       feedback: body.feedback,
@@ -3343,50 +3483,111 @@ async function requireFreshUserAccessToken(
 async function refreshRelayConversationPeer(
   conversation: ChatConversationRecord,
   cloud: LocalCloudIdentity | null,
-  enrollmentService: DeviceEnrollmentService,
-  chatRepo: ChatRepository
+  peerRouting: PeerRoutingService,
+  capability = "message.send"
 ): Promise<ChatConversationRecord> {
-  if (conversation.mode !== "cloud_relay" || !conversation.peer_user_id || !cloud?.controlPlaneUrl) {
+  if (conversation.mode !== "cloud_relay" || !cloud?.controlPlaneUrl) {
     return conversation;
   }
-  let token = cloud.userAccessToken;
-  if (cloud.refreshToken) {
-    token = await enrollmentService.refreshUserAccessToken().catch(() => null);
-  }
-  if (!token && !cloud.deviceAccessToken) return conversation;
+  return peerRouting.refreshConversationPeer(conversation, { cloud, capability });
+}
 
-  const directoryClient = new DirectoryClient(new ControlPlaneClient(cloud.controlPlaneUrl));
-  let directory: { agents?: CloudAgentInstance[] } | null = null;
-  if (token) {
+async function refreshRelayDeliveryStatuses(
+  messages: ChatMessageRecord[],
+  cloudStore: LocalCloudIdentityStore,
+  profileId: string
+): Promise<ChatMessageRecord[]> {
+  const pendingStatuses = new Set<DeliveryStatus>([
+    "local_pending",
+    "sent",
+    "queued_at_relay",
+    "delivered_to_remote_agent"
+  ]);
+  const repo = new ChatRepository();
+  const refreshed: ChatMessageRecord[] = [];
+  for (const message of messages) {
+    const relayTaskId = typeof message.payload_json.relay_task_id === "string" ? message.payload_json.relay_task_id : null;
+    if (!relayTaskId || !pendingStatuses.has(message.delivery_status)) {
+      refreshed.push(message);
+      continue;
+    }
     try {
-      directory = await directoryClient.getUserAgents(conversation.peer_user_id, token);
+      const status = await fetchRelayDeliveryStatus(cloudStore, profileId, relayTaskId);
+      const updated = repo.updateMessageDeliveryStatus(message.id, status.delivery_status, status.receipt);
+      refreshed.push(updated ?? message);
     } catch {
-      directory = null;
+      refreshed.push(message);
     }
   }
-  if (!directory && cloud.deviceAccessToken) {
-    try {
-      directory = await directoryClient.getUserAgentsWithDevice(conversation.peer_user_id, cloud.deviceAccessToken);
-    } catch {
-      directory = null;
-    }
-  }
-  if (!directory) {
-    return conversation;
-  }
+  return refreshed;
+}
 
-  const best = chooseRelayPeerAgent(directory.agents ?? []);
-  if (best?.agent_instance_id && best.agent_instance_id !== conversation.peer_agent_instance_id) {
-    return chatRepo.updateConversationPeerAgent(conversation.id, best.agent_instance_id) ?? conversation;
-  }
-  return conversation;
+async function fetchRelayDeliveryStatus(
+  cloudStore: LocalCloudIdentityStore,
+  profileId: string,
+  relayTaskId: string
+): Promise<{
+  relay_task_id: string;
+  delivery_status: DeliveryStatus;
+  relay_status: string;
+  delivered_at: string | null;
+  completed_at: string | null;
+  receipt: RelayDeliveryReceipt;
+}> {
+  const task = await withRecoveredDeviceToken(cloudStore, profileId, async (fresh) =>
+    new RelayClient(new ControlPlaneClient(fresh.controlPlaneUrl)).getTask(relayTaskId, fresh.deviceAccessToken!)
+  );
+  const responseStatus = typeof task.response?.status === "string" ? task.response.status : null;
+  const responseError = typeof task.response?.error === "string" ? task.response.error : undefined;
+  const deliveryStatus = normalizeRelayDeliveryStatus(task.status, responseStatus);
+  const deliveredAt = typeof task.response?.delivered_at === "string"
+    ? task.response.delivered_at
+    : task.completedAt ?? task.deliveredAt ?? null;
+  const receipt: RelayDeliveryReceipt = {
+    relay_task_id: relayTaskId,
+    status: deliveryStatus,
+    delivered_at: deliveredAt ?? undefined,
+    error: responseError,
+    from_agent_instance_id: task.toAgentInstanceId,
+    to_agent_instance_id: task.fromAgentInstanceId
+  };
+  return {
+    relay_task_id: relayTaskId,
+    delivery_status: deliveryStatus,
+    relay_status: task.status,
+    delivered_at: task.deliveredAt ?? null,
+    completed_at: task.completedAt ?? null,
+    receipt
+  };
+}
+
+function normalizeRelayDeliveryStatus(relayStatus: string, responseStatus: string | null): DeliveryStatus {
+  if (responseStatus && isDeliveryStatus(responseStatus)) return responseStatus;
+  if (relayStatus === "completed") return "stored_by_remote_agent";
+  if (relayStatus === "delivered") return "delivered_to_remote_agent";
+  if (relayStatus === "pending") return "queued_at_relay";
+  if (relayStatus === "cancelled" || relayStatus === "expired") return "failed";
+  return "queued_at_relay";
+}
+
+function isDeliveryStatus(value: string): value is DeliveryStatus {
+  return [
+    "local_pending",
+    "queued_at_relay",
+    "delivered_to_remote_agent",
+    "stored_by_remote_agent",
+    "read_by_remote_user",
+    "sent",
+    "delivered",
+    "failed"
+  ].includes(value);
 }
 
 function chooseRelayPeerAgent(agents: CloudAgentInstance[]): CloudAgentInstance | null {
   const ranked = [...agents].sort((a, b) => {
     const statusRank = statusScore(b.status) - statusScore(a.status);
     if (statusRank !== 0) return statusRank;
-    return Date.parse(b.last_seen_at ?? "0") - Date.parse(a.last_seen_at ?? "0");
+    return Date.parse(b.last_seen_at ?? b.last_heartbeat_at ?? "0") - Date.parse(a.last_seen_at ?? a.last_heartbeat_at ?? "0");
   });
   return ranked[0] ?? null;
 }
@@ -3614,6 +3815,7 @@ function conversationToUi(
     subtitle: peerAgentInstanceId
       ? `${peer?.email ? `${peer.email} · ` : ""}Relay peer ${shortId(peerAgentInstanceId)}`
       : "Single-device local mode",
+    peerUserId: peer?.userId ?? conversation.peer_user_id,
     agentInstanceId: peerAgentInstanceId,
     presence: peerAgentInstanceId ? (peer?.presence ?? "unknown") : "online",
     unread: conversation.unread_count,
@@ -3643,7 +3845,10 @@ function messageToTimeline(message: ChatMessageRecord, localAgentInstanceId: str
       sender_label: isIncoming ? String(payload.sender_label ?? payload.sender ?? "Peer") : "You",
       text: message.text ?? "",
       created_at: message.created_at,
-      delivery_status: message.delivery_status
+      delivery_status: message.delivery_status,
+      relay_task_id: typeof payload.relay_task_id === "string" ? payload.relay_task_id : null,
+      delivery_receipt: typeof payload.delivery_receipt === "object" && payload.delivery_receipt !== null ? payload.delivery_receipt : null,
+      delivery_status_updated_at: typeof payload.delivery_status_updated_at === "string" ? payload.delivery_status_updated_at : null
     };
   }
   if (message.message_type === "file_request") {
@@ -3825,6 +4030,90 @@ function appendRefinedApprovalTimeline(
     },
     deliveryStatus: "delivered"
   });
+}
+
+function approvalToSafeResponse(approval: {
+  id: string;
+  taskId: string;
+  approvalType: string;
+  requesterAgentId: string;
+  ownerAgentId: string;
+  status: string;
+  selectedFileId: string | null;
+  boundFilePath: string | null;
+  boundSha256: string | null;
+  boundSizeBytes: number | null;
+  feedbackText: string | null;
+  expiresAt: string;
+  createdAt: string;
+  decidedAt: string | null;
+}): Record<string, unknown> {
+  const fileName = approval.boundFilePath ? basename(approval.boundFilePath) : "Selected local file";
+  const candidates = approval.selectedFileId ? [{
+    candidate_id: approval.selectedFileId,
+    file_name: fileName,
+    display_path: "Local path hidden from recipient",
+    extension: extname(fileName).toLowerCase(),
+    mime_type: "application/octet-stream",
+    size_bytes: approval.boundSizeBytes ?? 0,
+    modified_at: approval.createdAt,
+    match_score: approval.boundFilePath ? 1 : 0,
+    match_reason: approval.boundFilePath ? "Bound approval candidate" : "No bound local file",
+    safety_labels: ["Approval required", "Local path hidden from recipient"]
+  }] : [];
+
+  return {
+    id: approval.id,
+    task_id: approval.taskId,
+    approval_type: approval.approvalType,
+    requester_agent_id: approval.requesterAgentId,
+    requester_display_name: approvalRequesterDisplayName(approval.id, approval.requesterAgentId),
+    owner_agent_id: approval.ownerAgentId,
+    status: approval.status,
+    selected_file_id: approval.selectedFileId,
+    bound_sha256: approval.boundSha256,
+    bound_size_bytes: approval.boundSizeBytes,
+    feedback_text: approval.feedbackText,
+    expires_at: approval.expiresAt,
+    created_at: approval.createdAt,
+    decided_at: approval.decidedAt,
+    candidates
+  };
+}
+
+function approvalRequesterDisplayName(approvalId: string, fallback: string): string {
+  try {
+    const repo = new ChatRepository();
+    for (const conversation of repo.listConversations()) {
+      for (const message of repo.getMessages(conversation.id)) {
+        const payload = message.payload_json;
+        if (payload.approval_id !== approvalId) continue;
+        const requester = typeof payload.requester === "string" ? payload.requester.trim() : "";
+        if (requester && !isRawAgentId(requester)) return requester;
+        if (conversation.title && !/^Remote agent ag/i.test(conversation.title)) return conversation.title;
+      }
+    }
+  } catch {
+    // Keep approval serialization safe even if chat history is unavailable.
+  }
+  return isRawAgentId(fallback) ? "Remote agent" : fallback;
+}
+
+function isRawAgentId(value: string): boolean {
+  return /^ag[ei][_-]/i.test(value.trim()) || /^Remote agent ag[ei][_-]/i.test(value.trim());
+}
+
+function isUnboundFileTransferApproval(approval: {
+  approvalType: string;
+  boundFilePath: string | null;
+  boundSha256: string | null;
+  boundSizeBytes: number | null;
+}): boolean {
+  return (approval.approvalType === "file.transfer.offer" || approval.approvalType === "file.search.refinement") && (
+    !approval.boundFilePath ||
+    !approval.boundSha256 ||
+    approval.boundSizeBytes == null
+  );
 }
 
 function shortId(value: string): string {

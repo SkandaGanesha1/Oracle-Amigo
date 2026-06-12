@@ -1,5 +1,30 @@
-export type DeliveryStatus = "local_pending" | "sent" | "delivered" | "failed";
+export type DeliveryStatus =
+  | "local_pending"
+  | "queued_at_relay"
+  | "delivered_to_remote_agent"
+  | "stored_by_remote_agent"
+  | "read_by_remote_user"
+  | "sent"
+  | "delivered"
+  | "failed";
 export type PresenceState = "online" | "stale" | "offline" | "revoked" | "unknown";
+export type PeerPresenceStatus = "online" | "stale" | "offline" | "unavailable";
+export type PeerPresenceReason =
+  | "heartbeat_recent"
+  | "heartbeat_stale"
+  | "no_active_agent"
+  | "not_enrolled"
+  | "unknown"
+  | "stale_route";
+
+export interface PeerPresence {
+  status: PeerPresenceStatus;
+  reason: PeerPresenceReason;
+  label: string;
+  lastHeartbeatAt?: string;
+  activeAgentInstanceId?: string;
+  capabilities?: string[];
+}
 export type TrustLevel = "verified" | "unverified" | "external" | "local" | "blocked";
 export type MissionStatus = "active" | "awaiting_approval" | "completed" | "failed" | "cancelled";
 export type ConsentStatus = "pending" | "granted" | "rejected" | "expired" | "revoked";
@@ -368,6 +393,9 @@ export interface HumanChatMessage {
       text: string;
       created_at: string;
       delivery_status: DeliveryStatus;
+      relay_task_id?: string | null;
+      delivery_receipt?: Record<string, unknown> | null;
+      delivery_status_updated_at?: string | null;
 }
 
 export interface AgentStatusMessage {
@@ -637,6 +665,7 @@ export interface Conversation {
   id: string;
   title: string;
   subtitle: string;
+  peerUserId?: string | null;
   agentInstanceId: string | null;
   presence: PresenceState;
   unread: number;

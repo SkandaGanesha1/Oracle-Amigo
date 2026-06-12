@@ -1,22 +1,13 @@
 import { OracleAvatar } from "../../components/primitives/OracleAvatar";
 import { OracleBadge } from "../../components/primitives/OracleBadge";
 import type { Conversation } from "../../api/types";
-
-const presenceToBadgeColor: Record<string, "success" | "warning" | "default" | "danger"> = {
-  online: "success",
-  stale: "warning",
-  offline: "default",
-  revoked: "danger",
-  unknown: "default",
-};
+import { normalizePeerPresence, presenceBadgeColor } from "../../lib/normalizePeerPresence";
 
 interface ConversationListItemProps {
   conversation: Conversation;
   isActive: boolean;
   onSelect: (id: string) => void;
 }
-
-const unknownPresence = "unknown";
 
 const FILENAME_EXT_RE = /\.(pdf|docx?|xlsx?|pptx?|zip|rar|7z|txt|csv|json|xml|exe|dll|bat|sh|ps1|png|jpg|gif|mp4|mp3)$/i;
 const UUID_AGENT_RE = /^ag[ei]_[a-f0-9-]{36,}$/;
@@ -31,19 +22,12 @@ function sanitizeLabel(raw: string): string {
 }
 
 export function ConversationListItem({ conversation, isActive, onSelect }: ConversationListItemProps) {
-  const presence = conversation.presence ?? unknownPresence;
-  const badgeColor = presenceToBadgeColor[presence] ?? "default";
-  const isAgent = !!conversation.agentInstanceId;
-  const presenceLabel: Record<string, string> = {
-    online: "Online",
-    stale: "Idle",
-    offline: "Offline",
-    revoked: "Disconnected",
-    unknown: "Presence unavailable",
-  };
+  const presence = normalizePeerPresence(conversation);
+  const badgeColor = presenceBadgeColor(presence);
+  const isAgent = Boolean(conversation.agentInstanceId && !conversation.peerUserId);
   const displayTitle = sanitizeLabel(conversation.title);
   const subtitle = isAgent
-    ? `Remote agent \u00b7 ${presenceLabel[presence] ?? "Presence unavailable"}`
+    ? `Remote agent \u00b7 ${presence.label}`
     : sanitizeLabel(conversation.lastMessage);
 
   return (
