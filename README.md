@@ -30,9 +30,40 @@ npm run build
 ```bash
 npm run dev
 npm run dev:ui
+npm run dev:voice-launcher
 ```
 
 Open `http://127.0.0.1:3399/` for the local agent UI, or the Vite URL from `npm run dev:ui`.
+
+## Quick Voice Launcher
+
+Oracle Amigo Quick Voice lives in `apps/voice-launcher/` as a separate Tauri v2 + React mini-launcher. It is a compact command surface only; the local agent remains the source of truth for directory, relay, approvals, storage, and file transfer.
+
+```bash
+npm run build:voice-launcher
+npm run tauri:voice-dev
+npm run tauri:voice-build
+```
+
+The launcher defaults to `http://127.0.0.1:3399`, opens with `Ctrl+Space`, supports typed command previews, microphone permission/waveform UI, and never stores raw audio. If the local agent is offline, Tauri shell startup is restricted to the allowlisted local-agent command.
+
+Voice APIs:
+
+- `GET /voice/status`
+- `POST /voice/commands`
+- `GET /voice/commands/:id`
+- `POST /voice/commands/:id/confirm`
+- `POST /voice/commands/:id/cancel`
+
+Remote file commands such as `Ask Docin to send me NonPO invoice india.pdf file` create a preview first. Confirmation submits the existing relay file request, and the receiver must still approve a bound file before transfer.
+
+Voice launcher docs:
+
+- [Architecture](docs/voice-launcher-architecture.md)
+- [Voice command API](docs/voice-command-api.md)
+- [Parser](docs/voice-command-parser.md)
+- [Privacy model](docs/voice-privacy-model.md)
+- [Windows setup](docs/voice-launcher-windows-setup.md)
 
 ## Control Plane
 

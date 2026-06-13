@@ -42,3 +42,10 @@ storage/files/
 # Runtime data directories (local inboxes, approved files, test storage - do not commit)
 data/
 apps/control-plane/data/
+
+# Rust/Tauri build artifacts
+**/target/
+target/
+**/*.exe
+**/*.dll
+

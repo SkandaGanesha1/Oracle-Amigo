@@ -1,0 +1,45 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Quick Voice can show the launcher, register the configured shortcut, and start only the local Oracle Amigo agent command.",
+  "windows": ["main"],
+  "permissions": [
+    "global-shortcut:allow-is-registered",
+    "global-shortcut:allow-register",
+    "global-shortcut:allow-unregister",
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [
+        {
+          "name": "start-local-agent-dev",
+          "cmd": "npm.cmd",
+          "args": ["run", "dev:agent"],
+          "cwd": "../../"
+        },
+        {
+          "name": "start-local-agent-prod",
+          "cmd": "node",
+          "args": ["dist/server.js"],
+          "cwd": "../../"
+        }
+      ]
+    },
+    {
+      "identifier": "shell:allow-spawn",
+      "allow": [
+        {
+          "name": "start-local-agent-dev",
+          "cmd": "npm.cmd",
+          "args": ["run", "dev:agent"],
+          "cwd": "../../"
+        },
+        {
+          "name": "start-local-agent-prod",
+          "cmd": "node",
+          "args": ["dist/server.js"],
+          "cwd": "../../"
+        }
+      ]
+    }
+  ]
+}

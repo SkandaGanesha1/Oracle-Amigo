@@ -389,3 +389,30 @@ CREATE TABLE IF NOT EXISTS notification_events (
   metadata_json TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS voice_commands (
+  id TEXT PRIMARY KEY,
+  profile_id TEXT NOT NULL,
+  org_id TEXT,
+  user_id TEXT,
+  agent_id TEXT,
+  agent_instance_id TEXT,
+  transcript TEXT NOT NULL,
+  source TEXT NOT NULL,
+  locale TEXT,
+  stt_confidence REAL,
+  parsed_intent TEXT NOT NULL,
+  parsed_json TEXT NOT NULL DEFAULT '{}',
+  preview_json TEXT NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL,
+  conversation_id TEXT,
+  relay_task_id TEXT,
+  error_message TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  confirmed_at TEXT,
+  completed_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_voice_commands_profile_created
+  ON voice_commands(profile_id, created_at DESC);

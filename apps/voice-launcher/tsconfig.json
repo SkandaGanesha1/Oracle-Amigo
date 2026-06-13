@@ -1,0 +1,9 @@
+{
+  "extends": "../../tsconfig.ui.json",
+  "compilerOptions": {
+    "types": ["vite/client"],
+    "rootDir": "src",
+    "noEmit": true
+  },
+  "include": ["src"]
+}
