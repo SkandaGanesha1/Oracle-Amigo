@@ -77,6 +77,8 @@ import { ApprovalTransferOrchestrator } from "./runtime/ApprovalTransferOrchestr
 import { resolveFileRequestCandidates, toApprovalCandidatePayload } from "./runtime/FileRequestCandidateResolver.js";
 import { getDeviceTokenRecoveryStatus, structuredEnrollmentError, withRecoveredDeviceToken } from "./runtime/CloudTokenRecovery.js";
 import { ChatRepository, type ChatConversationRecord, type ChatMessageRecord, type DeliveryStatus, type RelayDeliveryReceipt } from "./chat/ChatRepository.js";
+import { VoiceCommandService } from "./voice/VoiceCommandService.js";
+import { registerVoiceCommandRoutes } from "./voice/VoiceCommandRoutes.js";
 
 const FileSearchSchema = z.object({
   query: z.string().trim().min(1).max(500)
@@ -267,6 +269,134 @@ export function buildServer(
     enrollmentService: deviceEnrollment,
     profileId: defaultProfileId()
   });
+  const voiceCommands = new VoiceCommandService({
+    db: getDb(),
+    getCloudIdentity: () => cloudStore.get(),
+    resolveUser: async (query) => {
+      const cloud = cloudStore.get();
+      if (!cloud?.controlPlaneUrl) return null;
+      let token = cloud.userAccessToken;
+      if (cloud.refreshToken) {
+        token = await deviceEnrollment.refreshUserAccessToken().catch(() => token ?? null);
+      }
+      if (!token) return null;
+      const usersResponse = await new DirectoryClient(new ControlPlaneClient(cloud.controlPlaneUrl)).searchUsers(query, token);
+      const users = usersResponse.users ?? [];
+      const normalized = query.trim().toLowerCase();
+      const exact = users.find((user) =>
+        user.email?.toLowerCase() === normalized ||
+        user.display_name?.toLowerCase() === normalized
+      );
+      const user = exact ?? users[0] ?? null;
+      return user ? {
+        userId: user.user_id,
+        displayName: user.display_name ?? null,
+        email: user.email ?? null
+      } : null;
+    },
+    executeRemoteFileRequest: async ({ commandId, targetUserId, targetLabel, fileQuery, idempotencyKey }) => {
+      const cloud = cloudStore.get();
+      if (!cloud?.deviceAccessToken || !cloud.agentInstanceId) {
+        return { status: "failed", errorMessage: "This device is not enrolled for cloud relay." };
+      }
+      const target = await peerRouting.resolveTarget({
+        peerUserId: targetUserId,
+        capability: "file.request",
+        cloud
+      });
+      const toAgentInstanceId = target.agentInstanceId;
+      if (!toAgentInstanceId) {
+        return { status: "failed", errorMessage: "No active remote agent is available for this user." };
+      }
+
+      const text = `Send me ${fileQuery} file`;
+      const conversation = chatRepo.findCloudRelayConversationByPeerUser(targetUserId) ?? chatRepo.createConversation({
+        orgId: cloud.orgId,
+        localUserId: cloud.userId,
+        localAgentInstanceId: cloud.agentInstanceId,
+        peerUserId: targetUserId,
+        peerAgentInstanceId: toAgentInstanceId,
+        mode: "cloud_relay",
+        title: target.displayName ?? targetLabel
+      });
+      chatRepo.updateConversationPeer(conversation.id, {
+        peerUserId: targetUserId,
+        peerAgentInstanceId: toAgentInstanceId,
+        title: target.displayName ?? targetLabel
+      });
+
+      const a2aTaskId = `task_${randomUUID()}`;
+      const messageId = `msg_voice_${commandId}`;
+      chatRepo.appendMessage({
+        id: messageId,
+        conversationId: conversation.id,
+        taskId: a2aTaskId,
+        senderUserId: cloud.userId,
+        senderAgentInstanceId: cloud.agentInstanceId,
+        receiverAgentInstanceId: toAgentInstanceId,
+        messageType: "file_request",
+        text,
+        payload: {
+          requester: cloud.displayName ?? cloud.userEmail ?? "You",
+          target: target.displayName ?? targetLabel,
+          natural_language_request: text,
+          query: text,
+          source: "voice-launcher",
+          voice_command_id: commandId,
+          status: "submitted"
+        },
+        deliveryStatus: "local_pending"
+      });
+
+      try {
+        const relay = await withRecoveredDeviceToken(cloudStore, defaultProfileId(), async (fresh) =>
+          new RelayClient(new ControlPlaneClient(fresh.controlPlaneUrl)).send({
+            to_agent_instance_id: toAgentInstanceId,
+            a2a_task_id: a2aTaskId,
+            type: "file.request",
+            payload: { kind: "file_request", text, requestText: text, voice_command_id: commandId },
+            idempotency_key: idempotencyKey
+          }, fresh.deviceAccessToken!)
+        );
+        chatRepo.updateMessageDeliveryStatus(messageId, "queued_at_relay", null, {
+          relay_task_id: relay.relay_task_id,
+          relay_status: relay.status,
+          relay_accepted_at: relay.accepted_at,
+          to_agent_instance_id: toAgentInstanceId,
+          peer_user_id: targetUserId,
+          voice_command_id: commandId
+        });
+        chatRepo.appendMessage({
+          conversationId: conversation.id,
+          taskId: a2aTaskId,
+          senderAgentInstanceId: cloud.agentInstanceId,
+          receiverAgentInstanceId: toAgentInstanceId,
+          messageType: "agent_status",
+          text: "Waiting for remote approval",
+          payload: { relay_task_id: relay.relay_task_id, phase: "input_required", voice_command_id: commandId },
+          deliveryStatus: "queued_at_relay"
+        });
+        return { status: "submitted", conversationId: conversation.id, relayTaskId: relay.relay_task_id };
+      } catch (err) {
+        const relayError = normalizeRelaySendError(err);
+        chatRepo.markMessageStatus(messageId, "failed", relayError.message);
+        return { status: "failed", conversationId: conversation.id, errorMessage: relayError.message };
+      }
+    }
+  });
+  registerVoiceCommandRoutes(server, voiceCommands, () => {
+    const cloud = cloudStore.get();
+    return {
+      enrolled: cloud?.status === "enrolled",
+      user: cloud ? {
+        email: cloud.userEmail,
+        displayName: cloud.displayName,
+        agentInstanceId: cloud.agentInstanceId
+      } : null,
+      heartbeat: heartbeatService.status(),
+      inbox: inboxPoller.status()
+    };
+  });
   const remoteDispatcher = new RemoteTaskDispatcher(protocol, getDb(), defaultProfileId(), chatRepo, fileSearch);
   const heartbeatService = new HeartbeatService(cloudStore, defaultProfileId());
   const inboxPoller = new InboxPoller(cloudStore, remoteDispatcher, defaultProfileId());
@@ -316,8 +446,20 @@ export function buildServer(
     reply.status(500).send({ error: "Internal server error" });
   });
 
-  server.addHook("onRequest", async (request) => {
+  server.addHook("onRequest", async (request, reply) => {
     requestStartTimes.set(request, Date.now());
+    const origin = request.headers.origin;
+    if (isAllowedLocalAppOrigin(origin)) {
+      reply.header("Access-Control-Allow-Origin", origin);
+      reply.header("Vary", "Origin");
+      reply.header("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
+      reply.header("Access-Control-Allow-Headers", "content-type,authorization");
+      reply.header("Access-Control-Allow-Credentials", "false");
+      if (request.method === "OPTIONS") {
+        reply.status(204).send();
+        return;
+      }
+    }
     logger.info("request started", { method: request.method, url: request.url });
   });
 
@@ -3731,6 +3873,12 @@ function requireDeviceAccessToken(identity: LocalCloudIdentity, reply: FastifyRe
     return null;
   }
   return identity.deviceAccessToken;
+}
+
+function isAllowedLocalAppOrigin(origin: unknown): origin is string {
+  if (typeof origin !== "string") return false;
+  if (origin === "tauri://localhost" || origin === "http://tauri.localhost") return true;
+  return /^https?:\/\/(?:127\.0\.0\.1|localhost):\d+$/i.test(origin);
 }
 
 function normalizeRelaySendError(error: unknown): { statusCode: number; code: string; message: string } {

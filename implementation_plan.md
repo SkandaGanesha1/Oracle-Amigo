@@ -1,112 +1,215 @@
 # Implementation Plan
 
-Fix receiver-side remote file-request search and approval-binding so exact filename requests ("Send me Job Offer-Associate Consultant.pdf file") reliably find the file via filename-first search, 0-candidate cases show refinement/manual-bind UI instead of misleading pending approval with null boundFilePath, only create transferable approval when a real file is bound, send status updates back to sender, and complete the end-to-end transfer with SHA-256 verification.
+[Overview]
+Create a lightweight Tauri-based desktop voice launcher ("Amigo Voice Launcher") that registers a global shortcut (Ctrl+Space default, configurable), opens a compact always-on-top floating window (620x260-360px), captures microphone input via browser Web Audio API (POC path per user preference), transcribes with browser STT fallback to local agent, parses transcript into structured commands, sends to existing local agent /voice/commands endpoint, shows waveform/ transcript/preview/status, and integrates with the Oracle Amigo backend without duplicating any agent logic, directory, relay, A2A, approval, or storage code.
 
-The current flow in RemoteTaskDispatcher.dispatch / handleMessageSend extracts noisy text, uses QueryRewriter (which removes some stop words but not all request verbs and does not extract exactFilename), runs HybridRetrievalPipeline (FTS5 on diluted query, vec fallback to FNV stub, RRF with weak filenameScore, no exact filename priority or extension filter from request), creates approval with top=candidates[0] (null when 0), leading to ApprovalTransferOrchestrator skipping on !boundFilePath and PersonalAgentProtocol.createApproval allowing null bounds. This matches the screenshots (file request received, searching, 0 candidates, pending approval with no file, no transfer). Local agent works because it uses full intent pipeline; remote does not. The fix adds FileRequestParser to extract cleanQuery/exactFilename/extensions, FileRequestSearch with exact-filename priority then FTS/vec fallback (returning reason per candidate), updates dispatcher to use parser+search and avoid transferable approval on 0 candidates (instead show refinement card with "Search Again / Choose File / Reject"), adds manual rebind endpoint usage in UI, disables approve until bound, sends relay status updates, and adds E2E test. This fits existing retrieval/intent/protocol/runtime without new deps, respects sandbox/audit boundaries, uses Zod for parser output, and follows AGENTS.md (focused tests, Conventional Commits).
+This adds a thin voice command surface on top of the existing distributed stack (local agent Fastify server on http://127.0.0.1:PORT, cloud directory, relay inbox polling, RemoteTaskDispatcher, ApprovalTransferOrchestrator, ChatRepository, PersonalAgentProtocol). It follows the exact architecture in the query (global shortcut → Tauri window → mic/waveform/STT → VoiceCommandParser → local agent API → full relay/A2A flow to remote agent). Browser STT for Phase 1 enables rapid validation of hotkey/window/command flow before adding whisper.cpp sidecar. Reuses existing React/Vite patterns from ui/, Zod schemas, Fastify route style from src/server.ts, and AGENTS.md conventions (ES modules, camelCase, focused Vitest tests, Conventional Commits). No new backend agent system; voice launcher is strictly an input surface. Window states follow the defined state machine (hidden → listening → transcribing → preview_required → executing → completed). Security rules enforced (mic only after shortcut, visible indicator, Esc cancel, no raw audio storage, confirmation for remote actions).
 
 [Types]
-Extend RewrittenQuery and RetrievalMatch with filename-specific fields; add FileRequestParseResult and update ApprovalRecord/DeliveryStatus with validation rules.
+Add TypeScript interfaces/enums for voice-specific payloads, state machine, and command parsing that integrate with existing Zod-validated Fastify schemas and ChatRepository types.
 
-type FileRequestParseResult = {
-  originalText: string;
-  cleanQuery: string; // stop words removed, normalized
-  exactFilename: string | null; // "Job Offer-Associate Consultant.pdf"
-  extensions: string[]; // [".pdf"]
-  requestWordsRemoved: string[];
-  confidence: number; // 0-1
-};
+type VoiceLauncherState = 
+  | "hidden" 
+  | "opening" 
+  | "requesting_mic_permission" 
+  | "listening" 
+  | "speech_detected" 
+  | "transcribing" 
+  | "transcript_ready" 
+  | "parsing_command" 
+  | "preview_required" 
+  | "executing" 
+  | "submitted" 
+  | "waiting_remote_approval" 
+  | "completed" 
+  | "failed";
 
-interface RetrievalMatch {
-  id: number;
-  filePath: string;
-  displayPath: string;
-  fileName: string;
-  extension: string;
-  sizeBytes: number;
-  modifiedAt: string;
-  score: number;
-  reason: "exact-filename" | "normalized-filename" | "filename-token-match" | "lexical" | "semantic" | "recency";
+interface VoiceCommandParseResult {
+  intent: "remote_file_request" | "find_file" | "show_approvals" | "open_chat" | "open_inbox";
+  targetPersonQuery?: string;
+  fileQuery?: string;
+  originalTranscript: string;
+  confidence: number; // 0.0-1.0, >0.85 auto-confirm
+  requiresConfirmation: boolean;
+  locale?: string;
 }
 
-type ApprovalRecord = { // extended from PersonalAgentProtocol.ts
-  ...existing fields,
-  boundFilePath: string | null; // required for transferable
-  selectedFileId: string | null;
-  status: "pending" | "approved" | "rejected" | "feedback_received" | "expired" | "search_refinement";
-};
+interface VoiceCommandRequest {
+  transcript: string;
+  source: "voice-launcher";
+  mode: "preview_then_execute" | "auto_execute";
+  locale?: string;
+  confidence?: number;
+}
 
-Use Zod schemas (z.object with .refine for confidence > 0.7 and exactFilename matching extension pattern) at parser and API boundaries.
+interface VoiceCommandPreview {
+  commandId: string;
+  intent: string;
+  title: string;
+  targetUser?: { displayName: string; email?: string };
+  fileQuery?: string;
+  dataMovementNote: string;
+  action: string;
+  requiresConfirmation: boolean;
+}
+
+interface VoiceLauncherConfig {
+  shortcut: string; // "CommandOrControl+Space" | "CommandOrControl+Shift+Space" | "Alt+Space" | "Alt+A" | custom
+  windowWidth: number; // 620
+  windowHeightCollapsed: number; // 260
+  windowHeightExpanded: number; // 360
+  alwaysOnTop: boolean;
+  transparent: boolean;
+  skipTaskbar: boolean;
+  sttProvider: "browser" | "whisper-sidecar"; // default "browser" per user
+}
+
+Use Zod for all API boundaries (extend existing schemas in src/server.ts). Add VoiceCommandStatus enum matching DB states (captured, transcribed, parsed, preview_required, confirmed, submitted, running, completed, failed, cancelled).
 
 [Files]
-Create 2 new files, modify 8 existing files; no deletions or moves; update tests and docs.
+Modify root config files, create new Tauri app directory with React frontend + Rust backend, add voice module to existing local agent, create documentation and tests. No files deleted.
 
-New files:
-- src/intent/FileRequestParser.ts (parses noisy requests into cleanQuery/exactFilename/extensions per PHASE 1 rules, with Zod validation)
-- src/retrieval/FileRequestSearch.ts (filename-first search with exact/case-insensitive/token/FTS/vec fallback per PHASE 2, returns matches with reason)
+New files (full paths and purpose):
+- apps/voice-launcher/package.json (Tauri v2 + Vite/React/TS deps, scripts for dev/tauri)
+- apps/voice-launcher/vite.config.ts (React plugin, base config matching ui/)
+- apps/voice-launcher/index.html (entry for Tauri WebView)
+- apps/voice-launcher/src/main.tsx (React root with state machine provider)
+- apps/voice-launcher/src/App.tsx (root layout with keyboard handlers)
+- apps/voice-launcher/src/components/VoiceLauncherWindow.tsx (main frameless/overlay window with state-driven UI)
+- apps/voice-launcher/src/components/WaveformOrb.tsx (animated canvas/WebGL waveform using AnalyserNode amplitude)
+- apps/voice-launcher/src/components/TranscriptView.tsx (shows "You said: ..." text)
+- apps/voice-launcher/src/components/CommandPreviewCard.tsx (renders preview with Send/Edit/Cancel per safety rules)
+- apps/voice-launcher/src/components/VoiceStatusBar.tsx (mic indicator, Esc hint, progress)
+- apps/voice-launcher/src/components/ErrorState.tsx (mic permission, agent offline, low confidence)
+- apps/voice-launcher/src/hooks/useMicCapture.ts (getUserMedia + MediaRecorder/WebAudio for POC browser STT)
+- apps/voice-launcher/src/hooks/useVoiceActivity.ts (VAD/silence detection)
+- apps/voice-launcher/src/hooks/useShortcutState.ts (Tauri global-shortcut registration + configurable shortcuts)
+- apps/voice-launcher/src/hooks/useTranscript.ts (STT result handling)
+- apps/voice-launcher/src/hooks/useCommandExecution.ts (POST to /voice/commands, confirm flow)
+- apps/voice-launcher/src/api/localAgentVoiceClient.ts (typed fetch wrapper for voice endpoints + fallback to typed input)
+- apps/voice-launcher/src/styles/voice-launcher.css (acrylic blur, orb animation, status colors)
+- apps/voice-launcher/src-tauri/Cargo.toml (tauri-plugin-global-shortcut, shell for sidecar)
+- apps/voice-launcher/src-tauri/tauri.conf.json (window config: 620x300, alwaysOnTop, transparent, label "voice-launcher")
+- apps/voice-launcher/src-tauri/capabilities/default.json (only global-shortcut:allow-register + http permissions to localhost agent port)
+- apps/voice-launcher/src-tauri/src/lib.rs (Rust side for window show/hide, shortcut invoke)
+- apps/voice-launcher/src-tauri/src/main.rs (Tauri builder)
+- apps/voice-launcher/src-tauri/src/shortcuts.rs (register/unregister configurable shortcuts)
+- apps/voice-launcher/src-tauri/src/window.rs (createVoiceWindow with dimensions, center on active monitor)
+- src/voice/VoiceCommandTypes.ts (all new TS types above + Zod schemas)
+- src/voice/VoiceCommandParser.ts (deterministic regex+keyword parser for first 7 supported commands, no LLM)
+- src/voice/VoiceCommandService.ts (business logic: parse → directory resolve → preview creation)
+- src/voice/VoiceCommandRoutes.ts (Fastify POST /voice/commands, GET /voice/commands/:id, POST /voice/commands/:id/confirm etc.)
+- docs/voice-launcher-architecture.md (full diagram + phases + security model)
+- docs/voice-command-parser.md (exact supported phrases, regex rules, confidence scoring)
+- docs/voice-privacy-model.md (no always-listen, visible mic, no raw audio, confirmation rules)
+- docs/voice-launcher-windows-setup.md (Tauri install, mic permission, shortcut conflicts)
 
-Existing files modified:
-- src/runtime/RemoteTaskDispatcher.ts (replace extractRequestText + rewrite + hybridSearch with parseFileRequest + searchFileRequest; if candidates.length === 0 create refinement card/task state SEARCH_NEEDS_REFINEMENT instead of transferable approval; update handleMessageSend to use peer routing if needed and send status receipt)
-- src/retrieval/HybridRetrievalPipeline.ts (expose or extend search to accept FileRequestParseResult for filename priority boost before RRF)
-- src/protocol/PersonalAgentProtocol.ts (update createApproval to reject null boundFilePath for "file.transfer.offer" type, add createRefinementApproval for 0-candidate case)
-- src/runtime/ApprovalTransferOrchestrator.ts (add check for boundFilePath before scheduling, improve error for null bound)
-- src/server.ts (add /files/search/debug endpoint per PHASE 8, update approval routes for rebind-file and status updates, integrate new parser/search in chat relay handler)
-- src/intent/IntentExtractor.ts (extend to detect file_request intent and pass to parser)
-- ui/src/components/stream-like/ApprovalCard.tsx or equivalent UI file (disable approve if !boundFilePath, show "No candidate files found. Search again / Choose file / Reject", use human names not agent IDs, add manual file picker calling rebind)
-- tests/FileSearch.test.ts and tests/ChatPersistence.test.ts (add tests for parser, FileRequestSearch with exact filename, 0-candidate flow, E2E relay-file-search)
-- docs/retrieval-algorithms.md and README.md (document new filename-first path and 0-candidate handling)
+Existing files modified (specific changes):
+- package.json (add dev:voice-launcher, tauri:voice-dev, build:voice-launcher scripts; add tauri CLI to devDeps)
+- src/server.ts (add voice_commands DB table migration in getDb init, register VoiceCommandRoutes, add /voice/status, integrate with existing ChatRepository/RemoteTaskDispatcher/ApprovalTransferOrchestrator for remote_file_request)
+- src/db/connection.ts (add voice_commands table schema with all fields listed in query)
+- tests/voice-command-parser.test.ts (new test file for 7 example utterances)
+- tests/voice-command-service.test.ts (new)
+- tests/voice-file-request-flow.test.ts (E2E with two-agent simulation)
+- AGENTS.md (update with voice-launcher section for build commands and testing)
 
-Configuration updates: none (reuses existing Zod/LLM provider).
+Configuration updates: tauri.conf.json for permissions/window, root .env.example for ORACLE_AMIGO_LOCAL_AGENT_URL.
 
 [Functions]
-Add 4 new functions, modify 7 existing ones.
+Add 12 new functions across voice module and Tauri Rust/TS layers; modify 6 existing functions in server and runtime to expose voice API without changing core relay/A2A logic.
 
 New functions:
-- parseFileRequest(text: string): FileRequestParseResult in src/intent/FileRequestParser.ts (signature: (text: string) => FileRequestParseResult; purpose: extract exactFilename, cleanQuery, extensions from noisy requests like "Send me Job Offer-Associate Consultant.pdf file" using regex for extensions, stop word removal, confidence scoring)
-- searchFileRequest(parsed: FileRequestParseResult, options?: SearchOptions): RetrievalMatch[] in src/retrieval/FileRequestSearch.ts (signature: (parsed: FileRequestParseResult, options?: SearchOptions) => RetrievalMatch[]; purpose: exact filename match first, then normalized/token/FTS/vec fallback with reason, limit 10)
-- createRefinementCard(taskId: string, parsed: FileRequestParseResult, indexedCount: number): void in src/runtime/RemoteTaskDispatcher.ts (purpose: append "No candidate files found" message with refinement actions for 0-candidate case)
-- getSearchDebug(query: string): {parsed: FileRequestParseResult, candidatesByReason: Record<string, RetrievalMatch[]>, indexedRoots: number} in src/server.ts (purpose: diagnostics endpoint per PHASE 8)
+- registerGlobalShortcut(shortcut: string, callback: () => void): Promise<void> in apps/voice-launcher/src-tauri/src/shortcuts.rs and TS hook (purpose: configurable Ctrl+Space etc. with Tauri plugin)
+- createVoiceWindow(): Window in apps/voice-launcher/src-tauri/src/window.rs (purpose: create 620x360 transparent always-on-top window centered on active monitor)
+- useMicCapture(): { start, stop, waveformData } hook in apps/voice-launcher/src/hooks/useMicCapture.ts (uses navigator.mediaDevices.getUserMedia + AnalyserNode for POC browser STT)
+- parseVoiceCommand(transcript: string): VoiceCommandParseResult in src/voice/VoiceCommandParser.ts (signature: (transcript: string, locale?: string) => VoiceCommandParseResult; deterministic regex for "Ask {person} to send me {file}", confidence scoring, returns requiresConfirmation)
+- handleVoiceCommand(req: VoiceCommandRequest): Promise<VoiceCommandPreview> in src/voice/VoiceCommandService.ts (purpose: calls parser, DirectoryClient.resolve, creates preview or routes to existing relay send-file-request)
+- postVoiceCommand(transcript: string): Promise<VoiceCommandPreview> in apps/voice-launcher/src/api/localAgentVoiceClient.ts (purpose: typed fetch to http://127.0.0.1:PORT/voice/commands)
+- confirmVoiceCommand(commandId: string): Promise<{status: string, relay_task_id?: string}> in same client file
+- renderWaveform(canvas: HTMLCanvasElement, amplitude: number[]): void in WaveformOrb.tsx (purpose: animated orb with idle/speaking/thinking states)
+- getVoiceLauncherConfig(): VoiceLauncherConfig in apps/voice-launcher/src/hooks/useShortcutState.ts (loads from tauri store or defaults)
 
 Modified functions:
-- dispatch(message: RelayInboxMessage) in src/runtime/RemoteTaskDispatcher.ts (exact name, current file src/runtime/RemoteTaskDispatcher.ts; required changes: for "message.send" or file request, use parseFileRequest + searchFileRequest instead of rewrite+hybridSearch; if 0 candidates create refinement instead of approval with null bound; appendMessage with refinement payload; ack only after success)
-- rewrite(query: string): RewrittenQuery in src/intent/QueryRewriter.ts (exact name, current file src/intent/QueryRewriter.ts; required changes: improve STOP_WORDS and FILE_EXT_PATTERN to better extract exactFilename, add exactFilename to return type)
-- search(query: string, options: SearchOptions) in src/retrieval/HybridRetrievalPipeline.ts (exact name, current file src/retrieval/HybridRetrievalPipeline.ts; required changes: if options.exactFilename, add exact filename query before FTS/RRF with higher weight)
-- createApproval(...) in src/protocol/PersonalAgentProtocol.ts (exact name, current file src/protocol/PersonalAgentProtocol.ts; required changes: throw or set status "search_refinement" if !selectedFileId && approvalType === "file.transfer.offer"; add support for refinement type)
-- scheduleForApproval(approval: ApprovalRecord) in src/runtime/ApprovalTransferOrchestrator.ts (exact name, current file src/runtime/ApprovalTransferOrchestrator.ts; required changes: improve skipped reason for null bound, add logging for 0-candidate cases)
-- applyApprovalDecision(...) in src/protocol/PersonalAgentProtocol.ts (exact name, current file src/protocol/PersonalAgentProtocol.ts; required changes: on feedback, trigger new search with refined query and create new approval instead of terminal state)
-- renderApprovalCard or equivalent in UI approval component (exact name if identifiable, current file ui/src/components/...ApprovalCard.tsx; required changes: disable approve if !boundFilePath, show human names, add "Choose file" button calling rebind, refinement UI)
+- buildServer(...) in src/server.ts (exact name, current file src/server.ts; required changes: init voice DB table, register new VoiceCommandRoutes, add voice_commands migration, expose /voice/* endpoints that delegate to VoiceCommandService which reuses existing RemoteTaskDispatcher and ChatRepository)
+- dispatch(message: RelayInboxMessage) in src/runtime/RemoteTaskDispatcher.ts (add support for voice-generated messages to append to chat timeline and create conversation if needed for "open_chat" intent)
+- createApproval(...) in src/protocol/PersonalAgentProtocol.ts (ensure voice-sourced approvals respect requiresConfirmation from parser)
+- parseBody(schema, body) helper (extend to support new VoiceCommandRequest schema)
+- handleA2ARequest in protocol/a2a/A2AHandler.js (minor extension if voice needs to trigger A2A tasks)
+- main React render in ui/src/main.tsx patterns (no change to full UI, but add link from voice launcher "Open in Oracle Amigo" that opens full chat with conversationId from voice response)
 
-Removed functions: none (deprecated direct hybridSearch on noisy text is replaced by parse+searchFileRequest; migration: update calls in dispatcher).
+Removed functions: none. Migration strategy: existing typed-command path in launcher serves as fallback.
 
 [Classes]
-Add 2 new classes.
+Add 3 new classes for parser, service, and React state machine; modify 2 existing classes for voice integration.
 
 New classes:
-- FileRequestParser (file path src/intent/FileRequestParser.ts, key methods: parse, extractExactFilename using regex for common extensions, removeRequestVerbs; no inheritance, uses Zod for output validation)
-- FileRequestSearch (file path src/retrieval/FileRequestSearch.ts, key methods: exactMatch, tokenMatch, fallbackToHybrid; extends or uses HybridRetrievalPipeline, returns matches with reason)
+- VoiceCommandParser (file path src/voice/VoiceCommandParser.ts, key methods: parse, normalizeTranscript, extractPersonAndFile using regex patterns for 7 commands listed, calculateConfidence; no inheritance, pure deterministic, Zod output validation)
+- VoiceCommandService (file path src/voice/VoiceCommandService.ts, key methods: execute, createPreview, resolveTargetViaDirectoryClient, handleRemoteFileRequest using existing relay flow; depends on DirectoryClient, ChatRepository, PersonalAgentProtocol)
+- VoiceLauncherStateMachine (file path apps/voice-launcher/src/hooks/useVoiceLauncherState.ts, key methods: transition, handleShortcut, handleTranscript, handleConfirm; uses React useReducer for the 14 defined states, integrates with Tauri invoke for window control)
 
 Modified classes:
-- RemoteTaskDispatcher (exact name, file path src/runtime/RemoteTaskDispatcher.ts; specific modifications: inject/use FileRequestParser and FileRequestSearch in dispatch/handleMessageSend, conditional approval creation only on candidates.length > 0, add refinement card for 0 candidates, send status receipt to sender via RelayClient)
-- PersonalAgentProtocol (exact name, file path src/protocol/PersonalAgentProtocol.ts; specific modifications: update createApproval to enforce boundFilePath for transferable type, add createRefinementTask method, improve feedback to create new approval)
-- RuleBasedQueryRewriter (exact name, file path src/intent/QueryRewriter.ts; specific modifications: enhance STOP_WORDS and add exactFilename extraction to RewrittenQuery)
+- RemoteTaskDispatcher (exact name, file path src/runtime/RemoteTaskDispatcher.ts; specific modifications: add handleVoiceCommand method that creates conversation, appends voice transcript as user message, triggers existing A2A file request flow for remote_file_request intent, returns relay_task_id for launcher status)
+- Fastify server instance in src/server.ts (add voice route registration in buildServer function, inject VoiceCommandService)
 
-No removed classes.
+No removed classes. All changes maintain sandbox/CommandPolicy boundaries.
 
 [Dependencies]
-No new packages or version changes (reuses existing zod, node:fs, retrieval pipeline, LLM provider). Add PeerRoutingService import if routing is extended for file requests (from previous plan). Integration requirement: register new parser in createQueryRewriter or IntentExtractor.
+Add Tauri v2 dependencies for the new voice-launcher app only; no changes to root agent dependencies. 
+
+New packages: 
+- @tauri-apps/cli (devDep in apps/voice-launcher/package.json, version ^2.0)
+- @tauri-apps/api (^2.0)
+- @tauri-apps/plugin-global-shortcut (^2.0)
+- tauri-plugin (for Rust sidecar support if whisper added later)
+- lucide-react (already in root, reuse for icons)
+- framer-motion (already present, reuse for state transitions)
+- Web Audio API is browser built-in (no new dep for POC STT).
+
+Integration requirements: run `npm install` in apps/voice-launcher after creation; add Tauri setup commands to root package.json; whisper.cpp sidecar added only in Phase 7 via tauri sidecar config (optional, after browser POC). No version conflicts with existing zod/fastify/react.
 
 [Testing]
-Add 4 new focused test files (tests/FileRequestParser.test.ts, tests/FileRequestSearch.test.ts, tests/RemoteFileRequest.test.ts, update tests/FileSearch.test.ts and tests/ChatPersistence.test.ts); modify existing E2E for relay-file-search to prove exact filename, 0-candidate refinement, manual bind, end-to-end transfer with SHA verification. Validation: run npm test, npm run test:e2e:relay-file-search, verify with curl /files/search/debug and admin audit; ensure no transferable approval on 0 candidates, UI disables approve, sender receives status updates. Name tests FeatureName.test.ts per AGENTS.md; use mocked embeddings and indexed fixtures.
+Use Vitest for unit tests following AGENTS.md (FeatureName.test.ts naming, focused on parser/policy/sandbox); add E2E with existing two-laptop simulation scripts. 
+
+Test file requirements: create tests/voice-command-parser.test.ts (7 exact utterances mapping to intents), tests/voice-launcher-window.test.ts (shortcut, states, keyboard), update tests/TwoLaptopE2E.test.ts and tests/LoopbackA2A.test.ts to include voice flow. Modify existing tests/AgentRegistry.test.ts if directory lookup changes. Validation strategies: mock getUserMedia for browser STT, test parser with "Ask Docin to send me NonPO invoice india.pdf file" → remote_file_request with target=Docin, fileQuery=NonPO invoice india.pdf; test 0-confidence requires confirmation; test Esc cancels mic; run full E2E with npm run test:e2e:relay and voice launcher pointing at Skanda agent (port 3399). Use existing demo-two-laptop.ps1 for verification. No raw audio in tests. Target 95% coverage on new voice/ module.
 
 [Implementation Order]
-Implement in the exact PHASE order from the diagnosis to first add parser (foundational for clean input), then search, then dispatcher integration, approval safety, UI, status updates, tests, and diagnostics to minimize conflicts and ensure incremental verification.
+Implement in strict phase order from the query (overlay+typed first, then mic, STT, parser, integration) to avoid blocking on complex audio and ensure incremental verification with existing E2E scripts.
 
-1. Create src/intent/FileRequestParser.ts with parseFileRequest and Zod schema (PHASE 1).
-2. Create src/retrieval/FileRequestSearch.ts with exact-filename priority search (PHASE 2).
-3. Update src/runtime/RemoteTaskDispatcher.ts to use parser + searchFileRequest and handle 0-candidate refinement instead of null-bound approval (PHASE 3).
-4. Update src/protocol/PersonalAgentProtocol.ts and ApprovalTransferOrchestrator.ts for boundFilePath enforcement and feedback creating new approval (PHASE 4,6).
-5. Add manual rebind support and UI changes in server.ts approval routes and UI approval card (PHASE 5,10).
-6. Add sender status updates via relay receipts (PHASE 7).
-7. Add /files/search/debug endpoint and diagnostics (PHASE 8).
-8. Add all new tests and update E2E for full flow (PHASE 9).
-9. Run full test suite, verify with curls on both agents, update docs/README.
-10. Commit with Conventional Commits (e.g. feat(retrieval): filename-first search for remote file requests).
+1. Update root package.json with new scripts and add Tauri CLI.
+2. Create entire apps/voice-launcher/ directory with Tauri config, React components, hooks for shortcut + typed command (Phase 1).
+3. Implement Rust side for global shortcut registration and window management.
+4. Add browser mic capture + WaveformOrb + basic state machine (Phase 2).
+5. Add browser STT fallback and transcript display (Phase 3, per user preference).
+6. Create src/voice/VoiceCommandParser.ts, Types.ts, Service.ts with deterministic parsing for all 7 commands and Zod schemas.
+7. Add VoiceCommandRoutes.ts and DB table + endpoints to src/server.ts and db/connection.ts (Phase 4-5).
+8. Wire command execution, preview, confirmation flow with existing RemoteTaskDispatcher, directory, relay, chat timeline (Phase 5).
+9. Add full UI states, keyboard (Esc/Enter/Ctrl+Enter), error states, "Open in Oracle Amigo" link.
+10. Add all tests, docs, privacy model, and Windows setup guide (Phase 9).
+11. Update AGENTS.md, run full test suite + two-agent simulation with voice command "Ask Docin to send me NonPO invoice india.pdf file", verify file transfer.
+12. Package with tauri build and test signed Windows installer (Phase 6).
+
+Refer to @implementation_plan.md for a complete breakdown of the task requirements and steps. You should periodically read this file again using the PowerShell section commands below.
+
+# Read Overview section
+$content = Get-Content implementation_plan.md; $start = ($content | Select-String -Pattern '\[Overview\]').LineNumber; $end = ($content | Select-String -Pattern '\[Types\]').LineNumber; $content[($start-1)..($end-2)]
+
+# Read Types section
+$content = Get-Content implementation_plan.md; $start = ($content | Select-String -Pattern '\[Types\]').LineNumber; $end = ($content | Select-String -Pattern '\[Files\]').LineNumber; $content[($start-1)..($end-2)]
+
+# Read Files section
+$content = Get-Content implementation_plan.md; $start = ($content | Select-String -Pattern '\[Files\]').LineNumber; $end = ($content | Select-String -Pattern '\[Functions\]').LineNumber; $content[($start-1)..($end-2)]
+
+# Read Functions section
+$content = Get-Content implementation_plan.md; $start = ($content | Select-String -Pattern '\[Functions\]').LineNumber; $end = ($content | Select-String -Pattern '\[Classes\]').LineNumber; $content[($start-1)..($end-2)]
+
+# Read Classes section
+$content = Get-Content implementation_plan.md; $start = ($content | Select-String -Pattern '\[Classes\]').LineNumber; $end = ($content | Select-String -Pattern '\[Dependencies\]').LineNumber; $content[($start-1)..($end-2)]
+
+# Read Dependencies section
+$content = Get-Content implementation_plan.md; $start = ($content | Select-String -Pattern '\[Dependencies\]').LineNumber; $end = ($content | Select-String -Pattern '\[Testing\]').LineNumber; $content[($start-1)..($end-2)]
+
+# Read Testing section
+$content = Get-Content implementation_plan.md; $start = ($content | Select-String -Pattern '\[Testing\]').LineNumber; $end = ($content | Select-String -Pattern '\[Implementation Order\]').LineNumber; $content[($start-1)..($end-2)]
+
+# Read Implementation Order section
+$content = Get-Content implementation_plan.md; $start = ($content | Select-String -Pattern '\[Implementation Order\]').LineNumber; $content[($start-1)..($content.Length-1)]
