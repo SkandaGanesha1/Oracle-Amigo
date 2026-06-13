@@ -6,6 +6,7 @@ import { Streamdown } from "streamdown"
 import { Button } from "~/components/ui/button"
 import { ButtonGroup, ButtonGroupText } from "~/components/ui/button-group"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "~/components/ui/tooltip"
+import { safeMediaSrc } from "~/lib/safeUrl"
 import { cn } from "~/lib/utils"
 
 export type MessageProps = HTMLAttributes<HTMLDivElement> & {
@@ -280,17 +281,18 @@ export function MessageAttachment({ data, className, onRemove, ...props }: Messa
   const filename = data.filename || ""
   const mediaType = data.mediaType?.startsWith("image/") && data.url ? "image" : "file"
   const isImage = mediaType === "image"
+  const mediaSrc = safeMediaSrc(data.url)
   const attachmentLabel = filename || (isImage ? "Image" : "Attachment")
 
   return (
     <div className={cn("group relative size-24 overflow-hidden rounded-lg", className)} {...props}>
-      {isImage ? (
+      {isImage && mediaSrc ? (
         <>
           <img
             alt={filename || "attachment"}
             className="size-full object-cover"
             height={100}
-            src={data.url}
+            src={mediaSrc}
             width={100}
           />
           {onRemove && (

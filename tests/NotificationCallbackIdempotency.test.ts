@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -5,6 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getDb } from "../src/db/connection.js";
 
 vi.setConfig({ testTimeout: 30_000 });
+
+const CALLBACK_SECRET = "callback-secret-for-tests-minimum-32-chars";
 
 describe("/approvals/notification-callback idempotency", () => {
   let tmpRoot: string;
@@ -19,6 +22,7 @@ describe("/approvals/notification-callback idempotency", () => {
     fixtureFile = join(tmpRoot, "real.txt");
     vi.stubEnv("AGENTIC_DB_PATH", tmpDb);
     vi.stubEnv("LOCALAPPDATA", tmpKeys);
+    vi.stubEnv("APPROVAL_CALLBACK_SECRET", CALLBACK_SECRET);
     writeFileSync(fixtureFile, "hello");
     const { indexRoot } = await import("../src/retrieval/FileIndexer.js");
     await indexRoot(tmpRoot);
@@ -37,13 +41,13 @@ describe("/approvals/notification-callback idempotency", () => {
     const res = await server.inject({
       method: "POST",
       url: "/approvals/notification-callback",
-      payload: { approvalId: "missing", taskId: "t1", action: "banana" },
+      payload: signedCallbackPayload({ approvalId: "missing", taskId: "t1", action: "banana" }),
     });
-    expect(res.statusCode).toBe(200);
+    expect(res.statusCode).toBe(400);
     const body = res.json() as { ok: boolean; status: string; error?: string };
     expect(body.ok).toBe(false);
     expect(body.status).toBe("invalid");
-    expect(body.error).toContain("banana");
+    expect(body.error).toBe("INVALID_CALLBACK");
   });
 
   it("rejects taskId mismatch", async () => {
@@ -61,7 +65,7 @@ describe("/approvals/notification-callback idempotency", () => {
     const res = await server.inject({
       method: "POST",
       url: "/approvals/notification-callback",
-      payload: { approvalId: approval.id, taskId: "wrong-task-id", action: "approve" },
+      payload: signedCallbackPayload({ approvalId: approval.id, taskId: "wrong-task-id", action: "approve" }),
     });
     const body = res.json() as { ok: boolean; status: string };
     expect(body.ok).toBe(false);
@@ -80,7 +84,7 @@ describe("/approvals/notification-callback idempotency", () => {
     const approval = await protocol.createApproval(task.id, { boundFilePath: fixtureFile });
 
     const server = await buildServer();
-    const payload = { approvalId: approval.id, taskId: task.id, action: "approve" };
+    const payload = signedCallbackPayload({ approvalId: approval.id, taskId: task.id, action: "approve" });
     const first = await server.inject({ method: "POST", url: "/approvals/notification-callback", payload });
     const firstBody = first.json() as { ok: boolean; status: string; replay: boolean };
     expect(firstBody.ok).toBe(true);
@@ -107,7 +111,7 @@ describe("/approvals/notification-callback idempotency", () => {
     const task = protocol.createTask({ type: "file.transfer.offer", actorAgentId: "t-agent" });
     const approval = await protocol.createApproval(task.id, { boundFilePath: fixtureFile });
     const server = await buildServer();
-    const payload = { approvalId: approval.id, taskId: task.id, action: "approve", idempotency_key: "same-approve" };
+    const payload = signedCallbackPayload({ approvalId: approval.id, taskId: task.id, action: "approve", idempotency_key: "same-approve" });
     const first = await server.inject({ method: "POST", url: "/approvals/notification-callback", payload });
     const second = await server.inject({ method: "POST", url: "/approvals/notification-callback", payload });
     expect(first.json<{ ok: boolean; replay: boolean }>().ok).toBe(true);
@@ -127,9 +131,9 @@ describe("/approvals/notification-callback idempotency", () => {
     const task = protocol.createTask({ type: "file.transfer.offer", actorAgentId: "t-agent" });
     const approval = await protocol.createApproval(task.id, { boundFilePath: fixtureFile });
     const server = await buildServer();
-    const approve = await server.inject({ method: "POST", url: "/approvals/notification-callback", payload: { approvalId: approval.id, taskId: task.id, action: "approve", idempotency_key: "approve-1" } });
+    const approve = await server.inject({ method: "POST", url: "/approvals/notification-callback", payload: signedCallbackPayload({ approvalId: approval.id, taskId: task.id, action: "approve", idempotency_key: "approve-1" }) });
     expect(approve.json<{ ok: boolean; status: string }>().status).toBe("approved");
-    const reject = await server.inject({ method: "POST", url: "/approvals/notification-callback", payload: { approvalId: approval.id, taskId: task.id, action: "reject", idempotency_key: "reject-after-approve" } });
+    const reject = await server.inject({ method: "POST", url: "/approvals/notification-callback", payload: signedCallbackPayload({ approvalId: approval.id, taskId: task.id, action: "reject", idempotency_key: "reject-after-approve" }) });
     const rejectBody = reject.json<{ ok: boolean; status: string; error?: string }>();
     expect(rejectBody.ok).toBe(false);
     expect(rejectBody.status).toBe("approved");
@@ -148,9 +152,9 @@ describe("/approvals/notification-callback idempotency", () => {
     const task = protocol.createTask({ type: "file.transfer.offer", actorAgentId: "t-agent" });
     const approval = await protocol.createApproval(task.id, { boundFilePath: fixtureFile });
     const server = await buildServer();
-    const reject = await server.inject({ method: "POST", url: "/approvals/notification-callback", payload: { approvalId: approval.id, taskId: task.id, action: "reject", idempotency_key: "reject-1" } });
+    const reject = await server.inject({ method: "POST", url: "/approvals/notification-callback", payload: signedCallbackPayload({ approvalId: approval.id, taskId: task.id, action: "reject", idempotency_key: "reject-1" }) });
     expect(reject.json<{ ok: boolean; status: string }>().status).toBe("rejected");
-    const approve = await server.inject({ method: "POST", url: "/approvals/notification-callback", payload: { approvalId: approval.id, taskId: task.id, action: "approve", idempotency_key: "approve-after-reject" } });
+    const approve = await server.inject({ method: "POST", url: "/approvals/notification-callback", payload: signedCallbackPayload({ approvalId: approval.id, taskId: task.id, action: "approve", idempotency_key: "approve-after-reject" }) });
     const approveBody = approve.json<{ ok: boolean; status: string }>();
     expect(approveBody.ok).toBe(false);
     expect(approveBody.status).toBe("rejected");
@@ -180,7 +184,7 @@ describe("/approvals/notification-callback idempotency", () => {
     const approve = await server.inject({
       method: "POST",
       url: "/approvals/notification-callback",
-      payload: { approvalId: refined.id, taskId: task.id, action: "approve", idempotency_key: "approve-refined" }
+      payload: signedCallbackPayload({ approvalId: refined.id, taskId: task.id, action: "approve", idempotency_key: "approve-refined" })
     });
     expect(approve.json<{ ok: boolean; status: string }>().status).toBe("approved");
   });
@@ -200,7 +204,7 @@ describe("/approvals/notification-callback idempotency", () => {
     const approve = await server.inject({
       method: "POST",
       url: "/approvals/notification-callback",
-      payload: { approvalId: approval.id, taskId: task.id, action: "approve", idempotency_key: "approve-expired" }
+      payload: signedCallbackPayload({ approvalId: approval.id, taskId: task.id, action: "approve", idempotency_key: "approve-expired" })
     });
     const body = approve.json<{ ok: boolean; status: string; error?: string }>();
     expect(body.ok).toBe(false);
@@ -214,7 +218,7 @@ describe("/approvals/notification-callback idempotency", () => {
     const res = await server.inject({
       method: "POST",
       url: "/approvals/notification-callback",
-      payload: { approvalId: "no-such-approval", taskId: "t1", action: "approve" },
+      payload: signedCallbackPayload({ approvalId: "no-such-approval", taskId: "t1", action: "approve" }),
     });
     const body = res.json() as { ok: boolean; status: string };
     expect(body.ok).toBe(false);
@@ -224,6 +228,29 @@ describe("/approvals/notification-callback idempotency", () => {
 
 function transferCount(): number {
   return (getDb().prepare("SELECT COUNT(*) AS n FROM transfers").get() as { n: number }).n;
+}
+
+function signedCallbackPayload(input: {
+  approvalId: string;
+  taskId: string;
+  action: string;
+  idempotency_key?: string;
+  feedback?: string;
+}): Record<string, string> {
+  const nonce = `nonce-${input.approvalId}-${input.taskId}`.slice(0, 128).padEnd(16, "0");
+  const signature = createHmac("sha256", CALLBACK_SECRET)
+    .update(`${input.approvalId}|${input.taskId}|${input.action}|${nonce}`)
+    .digest("hex");
+  const payload: Record<string, string> = {
+    approvalId: input.approvalId,
+    taskId: input.taskId,
+    action: input.action,
+    nonce,
+    signature,
+  };
+  if (input.idempotency_key) payload.idempotency_key = input.idempotency_key;
+  if (input.feedback) payload.feedback = input.feedback;
+  return payload;
 }
 
 async function waitForTransferCount(expected: number): Promise<void> {

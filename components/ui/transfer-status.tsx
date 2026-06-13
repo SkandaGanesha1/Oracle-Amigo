@@ -15,31 +15,49 @@ type TransferStatusData = {
 
 export const TransferStatus: FC<{ taskId?: string }> = ({ taskId }) => {
   const [transfers, setTransfers] = useState<TransferStatusData[]>([]);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    let active = true;
+    let controller: AbortController | null = null;
     const fetchTransfers = async () => {
+      controller?.abort();
+      controller = new AbortController();
       try {
-        const res = await fetch("/transfers");
-        if (res.ok) {
-          const body = (await res.json()) as { transfers: TransferStatusData[] };
-          setTransfers(
-            taskId
-              ? body.transfers.filter((t) => t.task_id === taskId)
-              : body.transfers
-          );
+        const res = await fetch("/transfers", { signal: controller.signal });
+        if (!active) return;
+        if (!res.ok) {
+          setError(`Transfers failed: HTTP ${res.status}`);
+          return;
         }
-      } catch { /* ignore */ }
+        const body = (await res.json()) as { transfers: TransferStatusData[] };
+        if (!active) return;
+        setTransfers(
+          taskId
+            ? body.transfers.filter((t) => t.task_id === taskId)
+            : body.transfers
+        );
+        setError(null);
+      } catch (err) {
+        if (!active || (err instanceof DOMException && err.name === "AbortError")) return;
+        setError(err instanceof Error ? err.message : "Transfers failed");
+      }
     };
     fetchTransfers();
     const interval = setInterval(fetchTransfers, 3000);
-    return () => clearInterval(interval);
+    return () => {
+      active = false;
+      controller?.abort();
+      clearInterval(interval);
+    };
   }, [taskId]);
 
-  if (transfers.length === 0) return null;
+  if (transfers.length === 0 && !error) return null;
 
   return (
     <div className="rounded border border-white/10 bg-black/20 p-3 text-xs text-white/70">
       <h3 className="mb-1 text-[11px] font-medium text-white/40">TRANSFERS</h3>
+      {error && <div className="mb-2 rounded bg-red-500/10 px-2 py-1 text-[10px] text-red-300">{error}</div>}
       <div className="space-y-1.5">
         {transfers.map((t) => (
           <div key={t.id} className="flex items-center justify-between gap-2">

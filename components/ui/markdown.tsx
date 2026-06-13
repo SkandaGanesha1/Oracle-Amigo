@@ -24,6 +24,19 @@ function extractLanguage(className?: string): string {
   return match ? match[1] : "plaintext"
 }
 
+const allowedProtocols = new Set(["http:", "https:", "mailto:", "tel:"])
+
+function safeUrlTransform(url: string): string {
+  const trimmed = url.trim()
+  if (trimmed.startsWith("/") || trimmed.startsWith("#")) return trimmed
+  try {
+    const parsed = new URL(trimmed)
+    return allowedProtocols.has(parsed.protocol) ? trimmed : ""
+  } catch {
+    return ""
+  }
+}
+
 const INITIAL_COMPONENTS: Partial<Components> = {
   code: function CodeComponent({ className, children, ...props }) {
     const isInline =
@@ -68,6 +81,8 @@ const MemoizedMarkdownBlock = memo(
     return (
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkBreaks]}
+        skipHtml
+        urlTransform={safeUrlTransform}
         components={components}
       >
         {content}

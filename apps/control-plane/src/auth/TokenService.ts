@@ -1,7 +1,9 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, generateKeyPairSync, randomBytes, type KeyObject } from "node:crypto";
 import jwt, { type JwtPayload, type SignOptions } from "jsonwebtoken";
 import { loadConfig } from "../config.js";
 import type { AccessTokenClaims, AuthContext, DeviceTokenClaims, DeviceAuthContext } from "../types/cloud.js";
+
+let devKeyPair: { privateKey: KeyObject; publicKey: KeyObject } | null = null;
 
 export function issueAccessToken(input: {
   userId: string;
@@ -10,7 +12,6 @@ export function issueAccessToken(input: {
   displayName: string;
 }): { token: string; expiresIn: number } {
   const cfg = loadConfig();
-  const now = Math.floor(Date.now() / 1000);
   const claims: Omit<AccessTokenClaims, "iat" | "exp" | "iss"> = {
     sub: input.userId,
     org: input.orgId,
@@ -20,9 +21,10 @@ export function issueAccessToken(input: {
   };
   const options: SignOptions = {
     issuer: cfg.TOKEN_ISSUER,
+    audience: "oracle-amigo:user",
     expiresIn: cfg.ACCESS_TOKEN_TTL_SECONDS
   };
-  const token = jwt.sign(claims, cfg.JWT_ACCESS_SECRET, options);
+  const token = jwt.sign(claims, getJwtPrivateKey().privateKey, { ...options, algorithm: "RS256" });
   return { token, expiresIn: cfg.ACCESS_TOKEN_TTL_SECONDS };
 }
 
@@ -34,7 +36,6 @@ export function issueDeviceToken(input: {
   orgId: string;
 }): { token: string; expiresIn: number; tokenHash: string } {
   const cfg = loadConfig();
-  const now = Math.floor(Date.now() / 1000);
   const claims: Omit<DeviceTokenClaims, "iat" | "exp" | "iss"> = {
     sub: input.agentInstanceId,
     org: input.orgId,
@@ -45,21 +46,26 @@ export function issueDeviceToken(input: {
   };
   const options: SignOptions = {
     issuer: cfg.TOKEN_ISSUER,
+    audience: "oracle-amigo:device",
     expiresIn: cfg.ACCESS_TOKEN_TTL_SECONDS
   };
-  const token = jwt.sign(claims, cfg.JWT_ACCESS_SECRET, options);
+  const token = jwt.sign(claims, getJwtPrivateKey().privateKey, { ...options, algorithm: "RS256" });
   return { token, expiresIn: cfg.ACCESS_TOKEN_TTL_SECONDS, tokenHash: hashOpaqueToken(token) };
 }
 
 export function verifyAccessToken(token: string): AccessTokenClaims {
   const cfg = loadConfig();
-  const decoded = jwt.verify(token, cfg.JWT_ACCESS_SECRET, { issuer: cfg.TOKEN_ISSUER });
+  const decoded = jwt.verify(token, getJwtPublicKey().publicKey, {
+    issuer: cfg.TOKEN_ISSUER,
+    audience: "oracle-amigo:user",
+    algorithms: ["RS256"]
+  });
   if (typeof decoded === "string") {
     throw new Error("Invalid token payload");
   }
   const payload = decoded as JwtPayload & Partial<AccessTokenClaims>;
-  if (!payload.sub || !payload.org || !payload.scope) {
-    throw new Error("Missing required token claims");
+  if (!payload.sub || !payload.org || payload.scope !== "user") {
+    throw new Error("Invalid user token claims");
   }
   return {
     sub: String(payload.sub),
@@ -75,12 +81,16 @@ export function verifyAccessToken(token: string): AccessTokenClaims {
 
 export function verifyDeviceToken(token: string): DeviceTokenClaims {
   const cfg = loadConfig();
-  const decoded = jwt.verify(token, cfg.JWT_ACCESS_SECRET, { issuer: cfg.TOKEN_ISSUER });
+  const decoded = jwt.verify(token, getJwtPublicKey().publicKey, {
+    issuer: cfg.TOKEN_ISSUER,
+    audience: "oracle-amigo:device",
+    algorithms: ["RS256"]
+  });
   if (typeof decoded === "string") {
     throw new Error("Invalid device token payload");
   }
   const payload = decoded as JwtPayload & Partial<DeviceTokenClaims>;
-  if (!payload.sub || !payload.org || payload.scope !== "device") {
+  if (!payload.sub || !payload.org || !payload.user || !payload.device || !payload.agent || payload.scope !== "device") {
     throw new Error("Invalid device token claims");
   }
   return {
@@ -124,4 +134,29 @@ export function generateOpaqueToken(): { token: string; hash: string } {
 
 export function hashOpaqueToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
+}
+
+function getJwtPrivateKey(): { privateKey: string | KeyObject } {
+  const cfg = loadConfig();
+  if (cfg.JWT_PRIVATE_KEY_PEM) return { privateKey: cfg.JWT_PRIVATE_KEY_PEM.replace(/\\n/g, "\n") };
+  if (cfg.CONTROL_PLANE_ENV === "production") {
+    throw new Error("JWT_PRIVATE_KEY_PEM is required in production");
+  }
+  return getDevKeyPair();
+}
+
+function getJwtPublicKey(): { publicKey: string | KeyObject } {
+  const cfg = loadConfig();
+  if (cfg.JWT_PUBLIC_KEY_PEM) return { publicKey: cfg.JWT_PUBLIC_KEY_PEM.replace(/\\n/g, "\n") };
+  if (cfg.CONTROL_PLANE_ENV === "production") {
+    throw new Error("JWT_PUBLIC_KEY_PEM is required in production");
+  }
+  return getDevKeyPair();
+}
+
+function getDevKeyPair(): { privateKey: KeyObject; publicKey: KeyObject } {
+  if (!devKeyPair) {
+    devKeyPair = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  }
+  return devKeyPair;
 }

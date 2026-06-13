@@ -11,4 +11,11 @@ describe("NetworkPolicy", () => {
       "example.com"
     ]);
   });
+
+  it("rejects private and metadata custom hosts", () => {
+    const policy = new NetworkPolicy();
+    expect(() => policy.resolve("custom", ["169.254.169.254"])).toThrow(/not allowed/);
+    expect(() => policy.resolve("custom", ["127.0.0.1"])).toThrow(/not allowed/);
+    expect(() => policy.resolve("custom", ["metadata.google.internal"])).toThrow(/not allowed/);
+  });
 });

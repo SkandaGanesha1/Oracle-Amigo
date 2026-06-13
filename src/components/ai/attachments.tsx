@@ -13,6 +13,7 @@ import type { ComponentProps, HTMLAttributes, ReactNode } from "react"
 import { createContext, useContext, useMemo } from "react"
 import { Button } from "~/components/ui/button"
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "~/components/ui/hover-card"
+import { safeMediaSrc } from "~/lib/safeUrl"
 import { cn } from "~/lib/utils"
 
 // ============================================================================
@@ -199,6 +200,7 @@ export const AttachmentPreview = ({
   ...props
 }: AttachmentPreviewProps) => {
   const { data, mediaCategory, variant } = useAttachmentContext()
+  const mediaSrc = safeMediaSrc(data.url)
 
   const iconSize = variant === "inline" ? "size-3" : "size-4"
 
@@ -226,12 +228,12 @@ export const AttachmentPreview = ({
   )
 
   const renderContent = () => {
-    if (mediaCategory === "image" && data.type === "file" && data.url) {
-      return renderImage(data.url, data.filename, variant === "grid")
+    if (mediaCategory === "image" && data.type === "file" && mediaSrc) {
+      return renderImage(mediaSrc, data.filename, variant === "grid")
     }
 
-    if (mediaCategory === "video" && data.type === "file" && data.url) {
-      return <video className="size-full object-cover" muted src={data.url} />
+    if (mediaCategory === "video" && data.type === "file" && mediaSrc) {
+      return <video className="size-full object-cover" muted src={mediaSrc} />
     }
 
     const iconMap: Record<AttachmentMediaCategory, typeof ImageIcon> = {

@@ -6,6 +6,8 @@ export type NotifyParams = {
   approvalId: string;
   taskId: string;
   candidateId: string;
+  callbackNonce?: string;
+  callbackSignature?: string;
   requesterName: string;
   requestedItem: string;
   topCandidateFileName: string;

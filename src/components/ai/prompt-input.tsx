@@ -62,6 +62,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "~/components/ui/select"
+import { safeMediaSrc } from "~/lib/safeUrl"
 import { cn } from "~/lib/utils"
 
 // ============================================================================
@@ -271,6 +272,7 @@ export function PromptInputAttachment({ data, className, ...props }: PromptInput
 
   const mediaType = data.mediaType?.startsWith("image/") && data.url ? "image" : "file"
   const isImage = mediaType === "image"
+  const mediaSrc = safeMediaSrc(data.url)
 
   const attachmentLabel = filename || (isImage ? "Image" : "Attachment")
 
@@ -287,12 +289,12 @@ export function PromptInputAttachment({ data, className, ...props }: PromptInput
         >
           <div className="relative size-5 shrink-0">
             <div className="absolute inset-0 flex size-5 items-center justify-center overflow-hidden rounded bg-background transition-opacity group-hover:opacity-0">
-              {isImage ? (
+              {isImage && mediaSrc ? (
                 <img
                   alt={filename || "attachment"}
                   className="size-5 object-cover"
                   height={20}
-                  src={data.url}
+                  src={mediaSrc}
                   width={20}
                 />
               ) : (
@@ -321,13 +323,13 @@ export function PromptInputAttachment({ data, className, ...props }: PromptInput
       </HoverCardTrigger>
       <PromptInputHoverCardContent className="w-auto p-2">
         <div className="w-auto space-y-3">
-          {isImage && (
+          {isImage && mediaSrc && (
             <div className="flex max-h-96 w-96 items-center justify-center overflow-hidden rounded-md border">
               <img
                 alt={filename || "attachment preview"}
                 className="max-h-full max-w-full object-contain"
                 height={384}
-                src={data.url}
+                src={mediaSrc}
                 width={448}
               />
             </div>
@@ -434,10 +436,17 @@ export const PromptInput = ({
   // Refs
   const inputRef = useRef<HTMLInputElement | null>(null)
   const formRef = useRef<HTMLFormElement | null>(null)
+  const mountedRef = useRef(true)
 
   // ----- Local attachments (only used when no provider)
   const [items, setItems] = useState<(FileUIPart & { id: string })[]>([])
   const files = usingProvider ? controller.attachments.files : items
+
+  useEffect(() => {
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
 
   // Keep a ref to files for cleanup on unmount (avoids stale closure)
   const filesRef = useRef(files)
@@ -700,6 +709,9 @@ export const PromptInput = ({
       }),
     )
       .then((convertedFiles: FileUIPart[]) => {
+        if (!mountedRef.current) {
+          return
+        }
         try {
           const result = onSubmit({ text, files: convertedFiles }, event)
 
@@ -707,6 +719,9 @@ export const PromptInput = ({
           if (result instanceof Promise) {
             result
               .then(() => {
+                if (!mountedRef.current) {
+                  return
+                }
                 clear()
                 if (usingProvider) {
                   controller.textInput.clear()
@@ -717,6 +732,9 @@ export const PromptInput = ({
               })
           } else {
             // Sync function completed without throwing, clear attachments
+            if (!mountedRef.current) {
+              return
+            }
             clear()
             if (usingProvider) {
               controller.textInput.clear()

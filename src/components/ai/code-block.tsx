@@ -2,15 +2,32 @@ import { CheckIcon, CopyIcon } from "lucide-react"
 import {
   type ComponentProps,
   createContext,
+  type CSSProperties,
   type HTMLAttributes,
+  Fragment,
+  type ReactNode,
   useContext,
   useEffect,
   useRef,
   useState,
 } from "react"
-import { type BundledLanguage, codeToHtml, type ShikiTransformer } from "shiki"
+import { type BundledLanguage, codeToTokens } from "shiki"
 import { Button } from "~/components/ui/button"
 import { cn } from "~/lib/utils"
+
+type HighlightToken = {
+  content: string
+  color?: string
+  bgColor?: string
+  fontStyle?: number
+}
+
+type HighlightLine = HighlightToken[]
+
+type HighlightResult = {
+  light: HighlightLine[]
+  dark: HighlightLine[]
+}
 
 type CodeBlockProps = HTMLAttributes<HTMLDivElement> & {
   code: string
@@ -26,46 +43,25 @@ const CodeBlockContext = createContext<CodeBlockContextType>({
   code: "",
 })
 
-const lineNumberTransformer: ShikiTransformer = {
-  name: "line-numbers",
-  line(node, line) {
-    node.children.unshift({
-      type: "element",
-      tagName: "span",
-      properties: {
-        className: [
-          "inline-block",
-          "min-w-10",
-          "mr-4",
-          "text-right",
-          "select-none",
-          "text-muted-foreground",
-        ],
-      },
-      children: [{ type: "text", value: String(line) }],
-    })
-  },
-}
-
 export async function highlightCode(
   code: string,
   language: BundledLanguage,
-  showLineNumbers = false,
-) {
-  const transformers: ShikiTransformer[] = showLineNumbers ? [lineNumberTransformer] : []
-
-  return await Promise.all([
-    codeToHtml(code, {
+): Promise<HighlightResult> {
+  const [light, dark] = await Promise.all([
+    codeToTokens(code, {
       lang: language,
       theme: "one-light",
-      transformers,
     }),
-    codeToHtml(code, {
+    codeToTokens(code, {
       lang: language,
       theme: "one-dark-pro",
-      transformers,
     }),
   ])
+
+  return {
+    light: light.tokens as HighlightLine[],
+    dark: dark.tokens as HighlightLine[],
+  }
 }
 
 export const CodeBlock = ({
@@ -76,21 +72,25 @@ export const CodeBlock = ({
   children,
   ...props
 }: CodeBlockProps) => {
-  const [html, setHtml] = useState<string>("")
-  const [darkHtml, setDarkHtml] = useState<string>("")
-  const mounted = useRef(false)
+  const [highlighted, setHighlighted] = useState<HighlightResult | null>(null)
+  const highlightRequest = useRef(0)
 
   useEffect(() => {
-    highlightCode(code, language, showLineNumbers).then(([light, dark]) => {
-      if (!mounted.current) {
-        setHtml(light)
-        setDarkHtml(dark)
-        mounted.current = true
-      }
-    })
+    const requestId = highlightRequest.current + 1
+    highlightRequest.current = requestId
+
+    highlightCode(code, language)
+      .then((nextHighlighted) => {
+        if (highlightRequest.current !== requestId) return
+        setHighlighted(nextHighlighted)
+      })
+      .catch(() => {
+        if (highlightRequest.current !== requestId) return
+        setHighlighted(null)
+      })
 
     return () => {
-      mounted.current = false
+      if (highlightRequest.current === requestId) highlightRequest.current += 1
     }
   }, [code, language, showLineNumbers])
 
@@ -106,12 +106,18 @@ export const CodeBlock = ({
         <div className="relative">
           <div
             className="overflow-auto dark:hidden [&>pre]:m-0 [&>pre]:bg-background! [&>pre]:p-4 [&>pre]:text-foreground! [&>pre]:text-sm [&_code]:font-mono [&_code]:text-sm"
-            dangerouslySetInnerHTML={{ __html: html }}
-          />
+          >
+            <pre>
+              <code>{highlighted ? renderTokenLines(highlighted.light, showLineNumbers) : code}</code>
+            </pre>
+          </div>
           <div
             className="hidden overflow-auto dark:block [&>pre]:m-0 [&>pre]:bg-background! [&>pre]:p-4 [&>pre]:text-foreground! [&>pre]:text-sm [&_code]:font-mono [&_code]:text-sm"
-            dangerouslySetInnerHTML={{ __html: darkHtml }}
-          />
+          >
+            <pre>
+              <code>{highlighted ? renderTokenLines(highlighted.dark, showLineNumbers) : code}</code>
+            </pre>
+          </div>
           {children && (
             <div className="absolute top-2 right-2 flex items-center gap-2">{children}</div>
           )}
@@ -119,6 +125,34 @@ export const CodeBlock = ({
       </div>
     </CodeBlockContext.Provider>
   )
+}
+
+function renderTokenLines(lines: HighlightLine[], showLineNumbers: boolean): ReactNode {
+  return lines.map((line, lineIndex) => (
+    <Fragment key={lineIndex}>
+      {showLineNumbers && (
+        <span className="inline-block min-w-10 mr-4 select-none text-right text-muted-foreground">
+          {lineIndex + 1}
+        </span>
+      )}
+      {line.map((token, tokenIndex) => (
+        <span key={`${lineIndex}-${tokenIndex}`} style={tokenStyle(token)}>
+          {token.content}
+        </span>
+      ))}
+      {lineIndex < lines.length - 1 ? "\n" : null}
+    </Fragment>
+  ))
+}
+
+function tokenStyle(token: HighlightToken): CSSProperties {
+  return {
+    color: token.color,
+    backgroundColor: token.bgColor,
+    fontStyle: token.fontStyle && (token.fontStyle & 1) ? "italic" : undefined,
+    fontWeight: token.fontStyle && (token.fontStyle & 2) ? 700 : undefined,
+    textDecorationLine: token.fontStyle && (token.fontStyle & 4) ? "underline" : undefined,
+  }
 }
 
 export type CodeBlockCopyButtonProps = ComponentProps<typeof Button> & {

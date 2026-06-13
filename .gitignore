@@ -49,3 +49,9 @@ target/
 **/*.exe
 **/*.dll
 
+
+# Generated outputs and images
+output/
+UI_images/
+**/*.map
+

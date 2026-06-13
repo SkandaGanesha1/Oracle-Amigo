@@ -1,6 +1,15 @@
 import { cn } from "@/lib/utils"
 import React, { useEffect, useState } from "react"
-import { codeToHtml } from "shiki"
+import { codeToTokens, type BundledLanguage, type SpecialLanguage } from "shiki"
+
+type HighlightToken = {
+  content: string
+  color?: string
+  bgColor?: string
+  fontStyle?: number
+}
+
+type HighlightLine = HighlightToken[]
 
 export type CodeBlockProps = {
   children?: React.ReactNode
@@ -36,19 +45,28 @@ function CodeBlockCode({
   className,
   ...props
 }: CodeBlockCodeProps) {
-  const [highlightedHtml, setHighlightedHtml] = useState<string | null>(null)
+  const [highlightedLines, setHighlightedLines] = useState<HighlightLine[] | null>(null)
 
   useEffect(() => {
+    let active = true
     async function highlight() {
       if (!code) {
-        setHighlightedHtml("<pre><code></code></pre>")
+        if (active) setHighlightedLines([])
         return
       }
 
-      const html = await codeToHtml(code, { lang: language, theme })
-      setHighlightedHtml(html)
+      try {
+        const result = await codeToTokens(code, { lang: language as BundledLanguage | SpecialLanguage, theme })
+        if (active) setHighlightedLines(result.tokens as HighlightLine[])
+      } catch {
+        if (active) setHighlightedLines(null)
+      }
     }
     highlight()
+
+    return () => {
+      active = false
+    }
   }, [code, language, theme])
 
   const classNames = cn(
@@ -56,20 +74,38 @@ function CodeBlockCode({
     className
   )
 
-  // SSR fallback: render plain code if not hydrated yet
-  return highlightedHtml ? (
-    <div
-      className={classNames}
-      dangerouslySetInnerHTML={{ __html: highlightedHtml }}
-      {...props}
-    />
-  ) : (
+  return (
     <div className={classNames} {...props}>
       <pre>
-        <code>{code}</code>
+        <code>
+          {highlightedLines ? renderTokenLines(highlightedLines) : code}
+        </code>
       </pre>
     </div>
   )
+}
+
+function renderTokenLines(lines: HighlightLine[]): React.ReactNode {
+  return lines.map((line, lineIndex) => (
+    <React.Fragment key={lineIndex}>
+      {line.map((token, tokenIndex) => (
+        <span key={`${lineIndex}-${tokenIndex}`} style={tokenStyle(token)}>
+          {token.content}
+        </span>
+      ))}
+      {lineIndex < lines.length - 1 ? "\n" : null}
+    </React.Fragment>
+  ))
+}
+
+function tokenStyle(token: HighlightToken): React.CSSProperties {
+  return {
+    color: token.color,
+    backgroundColor: token.bgColor,
+    fontStyle: token.fontStyle && (token.fontStyle & 1) ? "italic" : undefined,
+    fontWeight: token.fontStyle && (token.fontStyle & 2) ? 700 : undefined,
+    textDecorationLine: token.fontStyle && (token.fontStyle & 4) ? "underline" : undefined,
+  }
 }
 
 export type CodeBlockGroupProps = React.HTMLAttributes<HTMLDivElement>

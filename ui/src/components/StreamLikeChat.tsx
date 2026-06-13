@@ -37,6 +37,7 @@ import {
 import { Loader } from "@/components/ui/loader";
 import { api } from "../api/client";
 import { ApiRequestError } from "../api/localAgentClient";
+import { safeExternalHref } from "../lib/safeUrl";
 import type { AgentInstance, CandidateFile, ChatDiagnostics, CloudStatus, Conversation, DirectoryUser, StoredFile, TimelineMessage } from "../types";
 import { SidebarProvider, useSidebar } from "./SidebarContext";
 import { SidebarToggle } from "./SidebarToggle";
@@ -86,6 +87,7 @@ function StreamLikeChat() {
   const [directoryIssue, setDirectoryIssue] = useState<string | null>(null);
   const [startingPeerId, setStartingPeerId] = useState<string | null>(null);
   const runStreamsRef = useRef<Map<string, EventSource>>(new Map());
+  const mountedRef = useRef(true);
 
   const loadingMessagesRef = useRef<string | null>(null);
   const activeConversation = useMemo(
@@ -99,6 +101,7 @@ function StreamLikeChat() {
     void loadChatDiagnostics();
     void loadStoredFiles();
     return () => {
+      mountedRef.current = false;
       for (const stream of runStreamsRef.current.values()) stream.close();
       runStreamsRef.current.clear();
     };
@@ -159,14 +162,17 @@ function StreamLikeChat() {
     if (!options.silent) setError(null);
     try {
       const result = await api.conversations();
+      if (!mountedRef.current) return;
       setConversations(result.conversations);
       setActiveConversationId((current) => current ?? result.conversations[0]?.id ?? null);
     } catch (err) {
+      if (!mountedRef.current) return;
       const fallback = createLocalConversation();
       setConversations((current) => current.length > 0 ? current : [fallback]);
       setActiveConversationId((current) => current ?? fallback.id);
       if (!options.silent) setError(err instanceof Error ? err.message : "Unable to load conversations.");
     } finally {
+      if (!mountedRef.current) return;
       if (!options.silent) setLoadingConversations(false);
     }
   }
@@ -180,6 +186,7 @@ function StreamLikeChat() {
       api.relayInboxStatus()
     ]);
 
+    if (!mountedRef.current) return;
     setHealth(healthResult.status === "fulfilled" ? healthResult.value : null);
     const nextCloudStatus = cloudResult.status === "fulfilled" ? cloudResult.value : null;
     const nextInboxStatus = inboxResult.status === "fulfilled" ? inboxResult.value : null;
@@ -203,22 +210,28 @@ function StreamLikeChat() {
     if (!options.silent) setError(null);
     try {
       const result = await api.conversationMessages(conversationId);
+      if (!mountedRef.current) return;
       if (loadingMessagesRef.current !== conversationId) return;
       setMessages(result.messages);
       reconnectAgentRunStreams(conversationId, result.messages);
     } catch (err) {
+      if (!mountedRef.current) return;
       if (loadingMessagesRef.current !== conversationId) return;
       if (!options.silent) setError(err instanceof Error ? err.message : "Unable to load messages.");
     } finally {
+      if (!mountedRef.current) return;
       if (!options.silent && loadingMessagesRef.current === conversationId) setLoadingMessages(false);
     }
   }
 
   async function loadChatDiagnostics() {
     try {
-      setDiagnostics(await api.chatDiagnostics());
+      const result = await api.chatDiagnostics();
+      if (!mountedRef.current) return;
+      setDiagnostics(result);
       setDiagnosticsIssue(null);
     } catch (err) {
+      if (!mountedRef.current) return;
       if (err instanceof ApiRequestError && err.status === 404) {
         setDiagnosticsIssue("The local backend is running an older chat API. Restart the backend so agent runs, diagnostics, and streaming are available.");
       } else {
@@ -231,9 +244,11 @@ function StreamLikeChat() {
   async function loadStoredFiles() {
     try {
       const result = await api.files();
+      if (!mountedRef.current) return;
       setStoredFiles(result.files);
       setStoredFileIssue(null);
     } catch (err) {
+      if (!mountedRef.current) return;
       setStoredFiles([]);
       setStoredFileIssue(err instanceof Error ? err.message : "Unable to read received files.");
     }
@@ -255,7 +270,16 @@ function StreamLikeChat() {
     const stream = new EventSource(api.agentRunEventsUrl(runId));
     runStreamsRef.current.set(runId, stream);
     stream.addEventListener("snapshot", (event) => {
-      const run = JSON.parse((event as MessageEvent).data) as { status: string };
+      let run: { status: string };
+      try {
+        run = JSON.parse((event as MessageEvent).data) as { status: string };
+      } catch {
+        stream.close();
+        runStreamsRef.current.delete(runId);
+        void loadMessages(conversationId);
+        void loadChatDiagnostics();
+        return;
+      }
       void loadMessages(conversationId);
       void loadChatDiagnostics();
       if (run.status !== "running") {
@@ -1443,6 +1467,7 @@ function FileResultList({ candidates, status }: { candidates: CandidateFile[]; s
 function FileResultCard({ candidate, status }: { candidate: CandidateFile; status: string }) {
   const extension = candidate.extension.toLowerCase();
   const Icon = ["ppt", "pptx"].includes(extension) ? Presentation : FileText;
+  const previewUrl = safeExternalHref(candidate.preview_url);
   return (
     <div className="file-result-card">
       <div className={`file-result-icon file-result-icon--${["ppt", "pptx"].includes(extension) ? "presentation" : "document"}`}>
@@ -1455,8 +1480,8 @@ function FileResultCard({ candidate, status }: { candidate: CandidateFile; statu
       </div>
       <div className="file-result-actions">
         <span>{status.replace(/_/g, " ")}</span>
-        {candidate.preview_url && (
-          <a href={candidate.preview_url} target="_blank" rel="noreferrer" aria-label={`Open preview for ${candidate.file_name}`}>
+        {previewUrl && (
+          <a href={previewUrl} target="_blank" rel="noreferrer" aria-label={`Open preview for ${candidate.file_name}`}>
             <ExternalLink aria-hidden="true" />
           </a>
         )}
@@ -1705,10 +1730,10 @@ function ReceivedFileItem({ file }: { file: StoredFile }) {
         {verification && <small>{verification}</small>}
       </div>
       <div className="stored-file-actions">
-        <a href={`/storage/files/${file.id}/open`} target="_blank" rel="noreferrer" aria-label={`Open ${file.originalFileName}`}>
+        <a href={`/storage/files/${encodeURIComponent(file.id)}/open`} target="_blank" rel="noreferrer" aria-label={`Open ${file.originalFileName}`}>
           <FolderOpen aria-hidden="true" />
         </a>
-        <a href={`/storage/files/${file.id}/download`} aria-label={`Download ${file.originalFileName}`}>
+        <a href={`/storage/files/${encodeURIComponent(file.id)}/download`} aria-label={`Download ${file.originalFileName}`}>
           <Download aria-hidden="true" />
         </a>
         <button type="button" onClick={() => void verify()} aria-label={`Verify hash for ${file.originalFileName}`}>

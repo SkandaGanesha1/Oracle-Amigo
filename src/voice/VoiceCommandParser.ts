@@ -7,7 +7,7 @@ export class VoiceCommandParser {
     const originalTranscript = transcript.trim();
     const text = normalizeWhitespace(originalTranscript);
 
-    const askMatch = text.match(/^(?:ask|tell)\s+(.+?)\s+to\s+send\s+me\s+(.+?)$/i);
+    const askMatch = text.match(/^(?:ask|tell)\s+(.+?)\s+to\s+send(?:\s+me)?\s+(.+?)$/i);
     if (askMatch) return remoteFileRequest(originalTranscript, askMatch[1], askMatch[2], 0.94);
 
     const requestMatch = text.match(/^request\s+(.+?)\s+from\s+(.+?)$/i);

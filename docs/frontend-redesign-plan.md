@@ -10,6 +10,9 @@ Implementation direction:
 
 Completed in the current pass:
 
+- Added a Discord-inspired global `UserRail` in the routed app shell with Inbox/search actions, a local-agent avatar, person-only remote avatars, bottom Settings/account controls, HeroUI `Avatar`/`Badge` overlays, deterministic gradient initials, online/offline presence dots, and unread/incoming-message count badges.
+- Removed Inbox from the top `NavBar` because Inbox is now the first rail action; Settings remains reachable from the rail bottom and the `/settings` route.
+- Collapsed chat primary navigation to people, not raw agent instances: rail data is built from conversations, contacts, cloud status, and directory snapshots, with `agi_*` labels filtered out of the primary rail.
 - Added approval decision UI inside approval messages, including feedback, approve, reject, disabled terminal/pending states, and the exact-file warning.
 - Added a right inspector with Agent card panel, Approval Center, task timeline panel, received files, diagnostics, and read-only safety policy rows.
 - Added received-file open, download, and verify hash actions using explicit `/storage/files/:id/*` backend routes.

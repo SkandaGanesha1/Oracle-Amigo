@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { ApiRequestError, request } from "../api/localAgentClient";
+import { safeExternalHref } from "../lib/safeUrl";
 import { safeDisplayText } from "../lib/safeText";
 
 const ROOT = resolve(__dirname, "../../..");
@@ -52,6 +53,105 @@ describe("localAgentClient", () => {
 });
 
 describe("frontend hardening source contracts", () => {
+  it("blocks unsafe clickable URL schemes", () => {
+    expect(safeExternalHref("javascript:alert(1)")).toBeUndefined();
+    expect(safeExternalHref("data:text/html,<svg onload=alert(1)>")).toBeUndefined();
+    expect(safeExternalHref("//evil.example/path")).toBeUndefined();
+    expect(safeExternalHref("/storage/files/abc/open")).toBe("/storage/files/abc/open");
+    expect(safeExternalHref("https://example.com/docs")).toBe("https://example.com/docs");
+
+    const agentSources = read("ui/src/components/agentic-ai/AgentSources.tsx");
+    const streamLike = read("ui/src/components/StreamLikeChat.tsx");
+    const sharedSource = read("components/ui/source.tsx");
+    const aiSources = read("src/components/ai/sources.tsx");
+    expect(`${agentSources}\n${streamLike}\n${sharedSource}\n${aiSources}`).toContain("safeExternalHref");
+    expect(agentSources).not.toContain("href={source.url}");
+    expect(streamLike).not.toContain("href={candidate.preview_url}");
+  });
+
+  it("renders Shiki output as React tokens without raw HTML injection", () => {
+    const shared = read("components/ui/code-block.tsx");
+    const ai = read("src/components/ai/code-block.tsx");
+    for (const source of [shared, ai]) {
+      expect(source).toContain("codeToTokens");
+      expect(source).toContain("renderTokenLines");
+      expect(source).not.toContain("dangerouslySetInnerHTML");
+      expect(source).not.toContain("codeToHtml");
+    }
+  });
+
+  it("keeps local thread reply text out of persistent storage", () => {
+    const threads = read("ui/src/lib/messageThreads.ts");
+    const drawer = read("ui/src/components/stream-like/ThreadDrawer.tsx");
+    expect(threads).toContain("replyTextById");
+    expect(threads).toContain("migrateThreadStorage();");
+    expect(threads).toContain("StoredThreadReply");
+    expect(threads).toContain("function writeMap(map: StoredThreadMap)");
+    expect(threads).toContain("REPLY_CONTENT_PLACEHOLDER");
+    expect(drawer).toContain("full reply text stays in this browser session only");
+  });
+
+  it("migrates queued messages without persisting full retry text", () => {
+    const hooks = read("ui/src/hooks/queries.ts");
+    expect(hooks).toContain("function migrateQueueStorage");
+    expect(hooks).toContain("migrateQueueStorage();");
+    expect(hooks).toContain("textPreview");
+    expect(hooks).toContain("queuedMessageText");
+    expect(hooks).not.toContain("text: text");
+  });
+
+  it("cleans up frontend async error paths", () => {
+    const hooks = read("ui/src/hooks/queries.ts");
+    const voice = read("apps/voice-launcher/src/hooks/useHoldToTalk.ts");
+    const legacyPanel = read("components/ui/agent-chat-panel.tsx");
+    const admin = read("ui-admin/src/portal/PortalApp.tsx");
+
+    expect(hooks).toContain("source.onerror = () =>");
+    expect(hooks).toContain("source.close();");
+    expect(voice).toContain("hideTimerRef");
+    expect(voice).toContain("clearHideTimer");
+    expect(legacyPanel).toContain("setMessagesIfMounted");
+    expect(admin).toContain("clipboard.writeText(\"\")");
+    expect(admin).toContain("clipboard contents may remain visible");
+  });
+
+  it("guards remaining URL and async lifecycle edges", () => {
+    const redaction = read("ui/src/features/approvals/RedactionEditor.tsx");
+    const audit = read("components/ui/audit-timeline.tsx");
+    const transfer = read("components/ui/transfer-status.tsx");
+    const runs = read("ui/src/components/agentic-ai/useAgentRunEvents.ts");
+    const prompt = read("src/components/ai/prompt-input.tsx");
+    const webPreview = read("src/components/ai/web-preview.tsx");
+    const attachments = read("src/components/ai/attachments.tsx");
+    const message = read("src/components/ai/message.tsx");
+    const safeUrl = read("lib/safeUrl.ts");
+    const image = read("components/ui/image.tsx");
+    const realtime = read("ui/src/realtime/RealtimeTransport.ts");
+    const legacyChat = read("ui/src/components/StreamLikeChat.tsx");
+    const admin = read("ui-admin/src/portal/PortalApp.tsx");
+    expect(redaction).toContain("safeExternalHref");
+    expect(redaction).not.toContain("href={apply.data.job.downloadUrl}");
+    expect(`${audit}\n${transfer}`).toContain("AbortController");
+    expect(`${audit}\n${transfer}`).toContain("setError");
+    expect(runs).toContain("new Event(\"parseerror\")");
+    expect(prompt).toContain("mountedRef");
+    expect(prompt).toContain("if (!mountedRef.current)");
+    expect(webPreview).toContain("safeExternalHref(src ?? url)");
+    expect(webPreview).toContain("referrerPolicy=\"no-referrer\"");
+    expect(webPreview).not.toContain("allow-same-origin");
+    expect(`${attachments}\n${prompt}\n${message}`).toContain("safeMediaSrc");
+    expect(`${attachments}\n${prompt}\n${message}`).not.toContain("src={data.url}");
+    expect(safeUrl).toContain("export function safeMediaSrc");
+    expect(image).toContain("SAFE_IMAGE_TYPES");
+    expect(image).toContain("safeImageMediaType");
+    expect(realtime).toContain("function sameOriginSseUrl");
+    expect(realtime).toContain("Cross-origin SSE endpoints are not allowed");
+    expect(legacyChat).toContain("mountedRef");
+    expect(legacyChat).toContain("if (!mountedRef.current) return;");
+    expect(admin).toContain("clipboardClearTimerRef");
+    expect(admin).toContain("onClearClipboardLater");
+  });
+
   it("wraps the routed app in a render error boundary", () => {
     const app = read("ui/src/App.tsx");
     const boundary = read("ui/src/app/ErrorBoundary.tsx");
@@ -95,10 +195,12 @@ describe("frontend hardening source contracts", () => {
   it("routes enrolled users to the intent inbox by default", () => {
     const routes = read("ui/src/app/routes.tsx");
     const nav = read("ui/src/app/NavBar.tsx");
+    const rail = read("ui/src/app/UserRail.tsx");
     const section = read("ui/src/app/SectionContext.tsx");
     expect(routes).toContain("path=\"/inbox\"");
     expect(routes).toContain("to=\"/inbox\"");
-    expect(nav).toContain("{ id: \"inbox\"");
+    expect(nav).not.toContain("{ id: \"inbox\"");
+    expect(rail).toContain("navigate(\"/inbox\")");
     expect(section).toContain("inbox: \"Inbox\"");
   });
 
@@ -202,6 +304,23 @@ describe("frontend hardening source contracts", () => {
     expect(bubble).toContain("humanMessage.sender_label");
     expect(bubble).toContain("showRetry={isOutgoingHuman}");
     expect(hooks).toContain("queryKeys.contacts");
+  });
+
+  it("uses a Discord-inspired user rail without raw agent rows", () => {
+    const shell = read("ui/src/app/AppShell.tsx");
+    const rail = read("ui/src/app/UserRail.tsx");
+    const model = read("ui/src/app/userRailModel.ts");
+    expect(shell).toContain("<UserRail />");
+    expect(rail).toContain("Badge.Anchor");
+    expect(rail).toContain("Search directory");
+    expect(model).toContain("buildRailUsers");
+    expect(model).toContain("safePersonName");
+    expect(model).toContain("My local agent");
+    expect(model).toContain("RAW_AGENT_RE");
+    expect(model).toContain("directoryByAgentInstanceId");
+    expect(model).toContain("peerUserIdForContact");
+    expect(rail).toContain("Account profile:");
+    expect(rail).toContain("label=\"Settings\"");
   });
 
   it("wires reply actions to the persistent thread drawer", () => {
@@ -325,9 +444,10 @@ describe("frontend hardening source contracts", () => {
 
   it("makes chat empty-state and new-conversation controls focus directory search", () => {
     const main = read("ui/src/features/chat/MainChatLayout.tsx");
-    const sidebar = read("ui/src/features/chat/ConversationSidebar.tsx");
+    const rail = read("ui/src/app/UserRail.tsx");
     const directory = read("ui/src/features/chat/DirectorySearch.tsx");
-    expect(`${main}\n${sidebar}`).toContain("oa-focus-directory-search");
+    expect(`${main}\n${rail}`).toContain("oa-focus-directory-search");
+    expect(rail).toContain("setSearchOpen(true)");
     expect(directory).toContain("window.addEventListener(\"oa-focus-directory-search\"");
     expect(directory).toContain("inputRef.current?.focus()");
     expect(main).toContain("navigate(\"/approvals\")");

@@ -1,4 +1,5 @@
 import { mkdtempSync, rmSync } from "node:fs";
+import { generateKeyPairSync } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { FastifyInstance } from "fastify";
@@ -151,6 +152,76 @@ describe("admin hardening", () => {
     expect(res.statusCode).toBe(401);
   });
 
+  it("disabled users cannot keep using access tokens or refresh tokens", async () => {
+    const signup = await app.inject({
+      method: "POST",
+      url: "/v1/auth/signup",
+      payload: {
+        email: `disabled-user-${Date.now()}@example.com`,
+        password: "securePass123!",
+        display_name: "disabled-user"
+      }
+    });
+    expect(signup.statusCode).toBe(201);
+    const body = signup.json() as { access_token: string; refresh_token: string; user: { user_id: string } };
+
+    const disable = await app.inject({
+      method: "POST",
+      url: `/v1/admin/users/${encodeURIComponent(body.user.user_id)}/disable`,
+      headers: { authorization: "Bearer test-admin-token-1234" },
+      payload: {}
+    });
+    expect(disable.statusCode).toBe(200);
+
+    const me = await app.inject({
+      method: "GET",
+      url: "/v1/auth/me",
+      headers: { authorization: `Bearer ${body.access_token}` }
+    });
+    expect(me.statusCode).toBe(403);
+    expect(me.json().error).toBe("USER_DISABLED");
+
+    const refresh = await app.inject({
+      method: "POST",
+      url: "/v1/auth/refresh",
+      payload: { refresh_token: body.refresh_token }
+    });
+    expect(refresh.statusCode).toBe(401);
+    expect(["USER_DISABLED", "REVOKED_REFRESH_TOKEN"]).toContain(refresh.json().error);
+  });
+
+  it("rotates refresh tokens and rejects replay of the old token", async () => {
+    const signup = await app.inject({
+      method: "POST",
+      url: "/v1/auth/signup",
+      payload: {
+        email: `refresh-rotation-${Date.now()}@example.com`,
+        password: "securePass123!",
+        display_name: "refresh-rotation"
+      }
+    });
+    expect(signup.statusCode).toBe(201);
+    const firstToken = signup.json().refresh_token as string;
+
+    const refresh = await app.inject({
+      method: "POST",
+      url: "/v1/auth/refresh",
+      payload: { refresh_token: firstToken }
+    });
+    expect(refresh.statusCode).toBe(200);
+    expect(refresh.json().access_token).toBeTruthy();
+    expect(refresh.json().refresh_token).toBeTruthy();
+    expect(refresh.json().refresh_token).not.toBe(firstToken);
+
+    const replay = await app.inject({
+      method: "POST",
+      url: "/v1/auth/refresh",
+      payload: { refresh_token: firstToken }
+    });
+    expect(replay.statusCode).toBe(401);
+    expect(replay.json().error).toBe("REVOKED_REFRESH_TOKEN");
+  });
+
   it("admin device revoke prevents heartbeat", async () => {
     const enrolled = await signupAndEnroll("device-revoke");
     const revoke = await app.inject({
@@ -198,6 +269,7 @@ describe("admin hardening", () => {
 
   it("production admin setup is guarded unless explicitly enabled", async () => {
     const prodDir = mkdtempSync(join(tmpdir(), "admin-prod-setup-test-"));
+    const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
     const previous = { ...process.env };
     try {
       closeAll();
@@ -209,7 +281,10 @@ describe("admin hardening", () => {
         CONTROL_PLANE_DB_PATH: join(prodDir, "prod.db"),
         JWT_ACCESS_SECRET: "prod-access-secret-strong-enough-123",
         JWT_REFRESH_SECRET: "prod-refresh-secret-strong-enough-123",
+        JWT_PRIVATE_KEY_PEM: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+        JWT_PUBLIC_KEY_PEM: publicKey.export({ type: "spki", format: "pem" }).toString(),
         ADMIN_KEK: "prod-admin-kek-strong-enough-1234567890",
+        TRANSFER_KEK: "prod-transfer-kek-strong-enough-1234567890",
         ADMIN_COOKIE_HOST_PREFIX: "true",
         ADMIN_SETUP_ENABLED: "false"
       });

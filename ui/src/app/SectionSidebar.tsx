@@ -1,9 +1,7 @@
 import { Bot, Inbox, ShieldCheck, FileText, ListChecks, ScrollText, Settings, Wifi, Clock, Search, Calendar, HardDrive, Ban, Bell, CheckCircle2, Database, Shield, SlidersHorizontal, type LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import { useSection } from "./SectionContext";
-import { ConversationSidebar } from "../features/chat/ConversationSidebar";
 import { useA2ATasks, useAgentRuns, useAuditEvents, useCloudStatus, useContacts, useConversations, usePendingApprovals, useReceivedFiles, useTransfers } from "../hooks/queries";
-import { useParams } from "react-router-dom";
 import { useSidebar } from "../components/SidebarContext";
 import { SidebarToggle } from "../components/SidebarToggle";
 import { useDensityPreference } from "../lib/uiPreferences";
@@ -224,18 +222,9 @@ function SettingsSidebar() {
 
 export function SectionSidebar() {
   const section = useSection();
-  const { conversationId } = useParams<{ conversationId?: string }>();
-  const { data: conversationsData } = useConversations();
-  const { sidebarOpen } = useSidebar();
 
   if (section === "chats") {
-    return (
-      <ConversationSidebar
-        conversations={conversationsData?.conversations ?? []}
-        activeConversationId={conversationId ?? null}
-        sidebarOpen={sidebarOpen}
-      />
-    );
+    return null;
   }
 
   if (section === "inbox") return <InboxSidebar />;

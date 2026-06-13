@@ -14,8 +14,8 @@ describe("frontend interaction inventory", () => {
     const filesApi = read("ui/src/api/filesApi.ts");
     const server = read("src/server.ts");
 
-    expect(app).toContain("/storage/files/${file.id}/open");
-    expect(app).toContain("/storage/files/${file.id}/download");
+    expect(app).toContain("/storage/files/${encodeURIComponent(file.id)}/open");
+    expect(app).toContain("/storage/files/${encodeURIComponent(file.id)}/download");
     expect(app).toContain("api.verifyFile(file.id)");
     expect(app).not.toContain("<button type=\"button\"><FolderOpen /> Show</button>");
     expect(filesApi).toContain("/storage/files/${encodeURIComponent(fileId)}/verify");

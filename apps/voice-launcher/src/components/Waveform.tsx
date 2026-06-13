@@ -13,36 +13,56 @@ export function Waveform({ analyser, active }: WaveformProps) {
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
+
     const data = new Uint8Array(analyser?.frequencyBinCount ?? 64);
     let frame = 0;
 
     const draw = () => {
       frame = requestAnimationFrame(draw);
       if (analyser) analyser.getByteFrequencyData(data);
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.fillStyle = "#07111f";
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      const barCount = data.length;
-      const width = canvas.width / barCount;
-      for (let i = 0; i < barCount; i += 1) {
-        const value = active ? data[i] / 255 : 0.16 + Math.sin((Date.now() / 240) + i) * 0.04;
-        const height = Math.max(3, value * canvas.height * 0.82);
-        const x = i * width;
-        const y = (canvas.height - height) / 2;
-        const gradient = ctx.createLinearGradient(0, y, 0, y + height);
-        gradient.addColorStop(0, "#8b5cf6");
-        gradient.addColorStop(0.45, "#2dd4bf");
-        gradient.addColorStop(1, "#38bdf8");
-        ctx.fillStyle = gradient;
-        roundRect(ctx, x + 2, y, Math.max(2, width - 4), height, 4);
-        ctx.fill();
-      }
+      renderWhiteWaveform(ctx, canvas, data, active);
     };
+
     draw();
     return () => cancelAnimationFrame(frame);
   }, [active, analyser]);
 
-  return <canvas ref={canvasRef} className="waveform" width={420} height={70} aria-label="Microphone waveform" />;
+  return <canvas ref={canvasRef} className="waveform" width={320} height={76} aria-hidden="true" />;
+}
+
+function renderWhiteWaveform(
+  ctx: CanvasRenderingContext2D,
+  canvas: HTMLCanvasElement,
+  data: Uint8Array,
+  active: boolean
+) {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = "#000000";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  const barCount = 39;
+  const gap = 4;
+  const barWidth = 3;
+  const totalWidth = (barCount * barWidth) + ((barCount - 1) * gap);
+  const startX = (canvas.width - totalWidth) / 2;
+  const now = Date.now();
+
+  for (let i = 0; i < barCount; i += 1) {
+    const sampleIndex = Math.floor((i / barCount) * data.length);
+    const audioLevel = active ? data[sampleIndex] / 255 : 0;
+    const idlePulse = 0.16 + (Math.sin(now / 180 + i * 0.72) * 0.08);
+    const centerWeight = 1 - Math.abs(i - Math.floor(barCount / 2)) / Math.floor(barCount / 2);
+    const level = active ? Math.max(audioLevel, idlePulse * 0.9) : idlePulse;
+    const height = Math.max(8, Math.min(canvas.height - 8, (level * 52) + centerWeight * 12));
+    const x = startX + i * (barWidth + gap);
+    const y = (canvas.height - height) / 2;
+
+    ctx.fillStyle = "#ffffff";
+    ctx.globalAlpha = active ? 0.96 : 0.74;
+    roundRect(ctx, x, y, barWidth, height, 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
 }
 
 function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, width: number, height: number, radius: number) {

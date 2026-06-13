@@ -1,5 +1,5 @@
 import { ArrowRight, Copy, KeyRound, ShieldCheck } from "lucide-react";
-import { useEffect, useState, type FC, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FC, type FormEvent } from "react";
 import { ApiError } from "../api/client";
 import { setupFirstAdmin, startSetup } from "./api";
 import { QrCode } from "./QrCode";
@@ -28,18 +28,35 @@ export const SetupFlow: FC<Props> = ({ onCompleted }) => {
   const [recoveryCodes, setRecoveryCodes] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (stage !== "scan" || setupStart) return;
+    let active = true;
     setError(null);
     setBusy(true);
     startSetup()
-      .then((res) => setSetupStart(res))
+      .then((res) => {
+        if (active && mountedRef.current) setSetupStart(res);
+      })
       .catch((err: unknown) => {
+        if (!active || !mountedRef.current) return;
         if (err instanceof ApiError) setError(err.message);
         else setError(err instanceof Error ? err.message : "Failed to start setup.");
       })
-      .finally(() => setBusy(false));
+      .finally(() => {
+        if (active && mountedRef.current) setBusy(false);
+      });
+
+    return () => {
+      active = false;
+    };
   }, [stage, setupStart]);
 
   const submitCredentials = (event: FormEvent<HTMLFormElement>) => {
@@ -73,18 +90,30 @@ export const SetupFlow: FC<Props> = ({ onCompleted }) => {
         totp_code: code.trim(),
         setup_challenge: setupStart.challenge
       });
+      if (!mountedRef.current) return;
       setRecoveryCodes(res.recovery_codes);
+      setSetupStart(null);
+      setPassword("");
+      setConfirm("");
+      setCode("");
       setStage("codes");
     } catch (err) {
+      if (!mountedRef.current) return;
       if (err instanceof ApiError) setError(err.message);
       else setError(err instanceof Error ? err.message : "Setup failed.");
     } finally {
-      setBusy(false);
+      if (mountedRef.current) setBusy(false);
     }
   };
 
   const finish = () => {
-    onCompleted(recoveryCodes);
+    const codes = recoveryCodes;
+    setRecoveryCodes([]);
+    setSetupStart(null);
+    setPassword("");
+    setConfirm("");
+    setCode("");
+    onCompleted(codes);
   };
 
   return (

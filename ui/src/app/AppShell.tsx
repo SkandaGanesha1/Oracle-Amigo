@@ -6,6 +6,7 @@ import { SectionSidebar } from "./SectionSidebar";
 import { SectionContext, inferSection } from "./SectionContext";
 import { CommandPalette } from "../components/CommandPalette";
 import { useDensityPreference } from "../lib/uiPreferences";
+import { UserRail } from "./UserRail";
 
 export function AppShell() {
   const location = useLocation();
@@ -21,13 +22,16 @@ export function AppShell() {
         >
           Skip to content
         </a>
-        <div className={`flex h-full w-full flex-col bg-oa-bg density-${density}`} data-density={density}>
-          <NavBar />
-          <div className="flex min-h-0 flex-1 overflow-hidden">
-            <SectionSidebar />
-            <main id="main-content" className="flex min-h-0 flex-1" role="main" aria-label="Main content">
-              <Outlet />
-            </main>
+        <div className={`flex h-full w-full bg-oa-bg density-${density}`} data-density={density}>
+          <UserRail />
+          <div className="flex min-w-0 flex-1 flex-col">
+            <NavBar />
+            <div className="flex min-h-0 flex-1 overflow-hidden">
+              <SectionSidebar />
+              <main id="main-content" className="flex min-h-0 flex-1" role="main" aria-label="Main content">
+                <Outlet />
+              </main>
+            </div>
           </div>
         </div>
         <CommandPalette />

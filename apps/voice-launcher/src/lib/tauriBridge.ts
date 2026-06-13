@@ -1,3 +1,7 @@
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+
 declare global {
   interface Window {
     __TAURI__?: {
@@ -9,60 +13,39 @@ declare global {
           };
         };
       };
-      globalShortcut?: {
-        register?: (shortcut: string, handler: () => void) => Promise<void>;
-        unregister?: (shortcut: string) => Promise<void>;
-      };
-      window?: {
-        getCurrentWindow?: () => {
-          show: () => Promise<void>;
-          hide: () => Promise<void>;
-          setFocus: () => Promise<void>;
-        };
-      };
     };
   }
 }
 
-export async function registerLauncherShortcut(onOpen: () => void): Promise<void> {
-  if (getConfiguredShortcut() === "Ctrl+Space") return;
-  const shortcut = toTauriShortcut(getConfiguredShortcut());
-  const register = window.__TAURI__?.globalShortcut?.register;
-  if (!register) return;
-  await register(shortcut, onOpen);
+interface VoiceShortcutHandlers {
+  onStart: () => void;
+  onStop: () => void;
 }
 
-export async function updateLauncherShortcut(nextShortcut: string, onOpen: () => void): Promise<void> {
-  const previousShortcut = toTauriShortcut(getConfiguredShortcut());
-  localStorage.setItem("oa-voice-shortcut-v1", nextShortcut);
-  const globalShortcut = window.__TAURI__?.globalShortcut;
-  if (!globalShortcut?.register) return;
-  const shortcut = toTauriShortcut(nextShortcut);
-  if (globalShortcut.unregister && previousShortcut !== nextShortcut) {
-    await globalShortcut.unregister(previousShortcut).catch(() => undefined);
-  }
-  await globalShortcut.register(shortcut, onOpen);
-}
-
-export function getConfiguredShortcut(): string {
-  return localStorage.getItem("oa-voice-shortcut-v1") || "Ctrl+Space";
-}
-
-function toTauriShortcut(shortcut: string): string {
-  return shortcut
-    .replace(/^Ctrl\+/i, "CommandOrControl+")
-    .replace(/\+Ctrl\+/i, "+CommandOrControl+");
+export async function listenToVoiceShortcutEvents(handlers: VoiceShortcutHandlers): Promise<() => void> {
+  if (!isTauriRuntime()) return () => undefined;
+  const unlistenStart = await listen("voice:start", handlers.onStart);
+  const unlistenStop = await listen("voice:stop-and-submit", handlers.onStop);
+  return () => {
+    unlistenStart();
+    unlistenStop();
+  };
 }
 
 export async function hideLauncherWindow(): Promise<void> {
-  const win = window.__TAURI__?.window?.getCurrentWindow?.();
-  await win?.hide();
+  if (!isTauriRuntime()) return;
+  await getCurrentWindow().hide();
 }
 
 export async function showLauncherWindow(): Promise<void> {
-  const win = window.__TAURI__?.window?.getCurrentWindow?.();
-  await win?.show();
-  await win?.setFocus();
+  if (!isTauriRuntime()) return;
+  try {
+    await invoke("show_voice_window");
+  } catch {
+    const win = getCurrentWindow();
+    await win.show();
+    await win.setFocus();
+  }
 }
 
 export async function startLocalAgentSidecar(): Promise<void> {
@@ -78,6 +61,10 @@ export async function startLocalAgentSidecar(): Promise<void> {
     if (isAddressInUse(result.stderr) || isAddressInUse(result.stdout)) return;
     throw new Error(result.stderr || "Local agent startup command failed.");
   }
+}
+
+function isTauriRuntime(): boolean {
+  return "__TAURI_INTERNALS__" in window || "__TAURI__" in window;
 }
 
 function isAddressInUse(value: string): boolean {

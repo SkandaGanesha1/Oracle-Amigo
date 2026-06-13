@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type FC } from "react";
+import { useCallback, useEffect, useRef, useState, type FC, type SetStateAction } from "react";
 import { ApprovalCard, type PersonalApproval } from "./approval-card";
 
 type ChatMessage = {
@@ -23,20 +23,31 @@ export const AgentChatPanel: FC = () => {
   const [storedFiles, setStoredFiles] = useState<StoredFile[]>([]);
   const [showFiles, setShowFiles] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const mountedRef = useRef(true);
+
+  const setMessagesIfMounted = useCallback((updater: SetStateAction<ChatMessage[]>) => {
+    if (mountedRef.current) setMessages(updater);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  }, [messages, setMessagesIfMounted]);
 
   const refreshStoredFiles = useCallback(async () => {
     try {
       const res = await fetch("/storage/files");
       if (res.ok) {
         const body = (await res.json()) as { files: StoredFile[] };
-        setStoredFiles(body.files);
+        if (mountedRef.current) setStoredFiles(body.files);
       }
     } catch { /* ignore */ }
-  }, []);
+  }, [setMessagesIfMounted]);
 
   const sendMessage = useCallback(async (text: string) => {
     if (!text.trim() || loading) return;
@@ -64,10 +75,12 @@ export const AgentChatPanel: FC = () => {
       };
 
       if (body.type === "chat") {
-        setMessages((prev) => [...prev, { role: "agent", content: body.text ?? "" }]);
+        if (!mountedRef.current) return;
+        setMessagesIfMounted((prev) => [...prev, { role: "agent", content: body.text ?? "" }]);
       } else if (body.type === "approval_required" && body.candidates) {
+        if (!mountedRef.current) return;
         const cands = body.candidates;
-        setMessages((prev) => [
+        setMessagesIfMounted((prev) => [
           ...prev,
           {
             role: "agent",
@@ -87,27 +100,28 @@ export const AgentChatPanel: FC = () => {
         ]);
       }
     } catch (err) {
-      setMessages((prev) => [
+      if (!mountedRef.current) return;
+      setMessagesIfMounted((prev) => [
         ...prev,
         { role: "agent", content: `Error: ${err instanceof Error ? err.message : "Request failed"}` },
       ]);
     } finally {
-      setLoading(false);
+      if (mountedRef.current) setLoading(false);
     }
-  }, [loading]);
+  }, [loading, setMessagesIfMounted]);
 
   const handleReject = useCallback(async (approvalId: string) => {
     try {
       const res = await fetch(`/approvals/${approvalId}/reject`, { method: "POST" });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      setMessages((prev) => [...prev, { role: "agent", content: "Request rejected. ❌" }]);
+      setMessagesIfMounted((prev) => [...prev, { role: "agent", content: "Request rejected. ❌" }]);
     } catch (err) {
-      setMessages((prev) => [
+      setMessagesIfMounted((prev) => [
         ...prev,
         { role: "agent", content: `Rejection failed: ${err instanceof Error ? err.message : "Unknown error"}` },
       ]);
     }
-  }, []);
+  }, [setMessagesIfMounted]);
 
   const handleFeedback = useCallback(async (approvalId: string, feedback: string) => {
     try {
@@ -128,7 +142,7 @@ export const AgentChatPanel: FC = () => {
       if (body.candidates && body.newApproval) {
         const taskId = body.newApproval.taskId;
         const newApprovalId = body.newApproval.id;
-        setMessages((prev) => {
+        setMessagesIfMounted((prev) => {
           // Replace the old approval card with the new one bound to the new approvalId
           return prev.map((m) => {
             if (m.approval?.approvalId === approvalId) {
@@ -149,12 +163,12 @@ export const AgentChatPanel: FC = () => {
         });
       }
     } catch (err) {
-      setMessages((prev) => [
+      setMessagesIfMounted((prev) => [
         ...prev,
         { role: "agent", content: `Feedback failed: ${err instanceof Error ? err.message : "Unknown error"}` },
       ]);
     }
-  }, []);
+  }, [setMessagesIfMounted]);
 
   const handleSearchAgain = useCallback(async (approvalId: string) => {
     // Re-run search with the original query, with a small perturbation (no terms).
@@ -183,7 +197,7 @@ export const AgentChatPanel: FC = () => {
       if (body.candidates && body.newApproval) {
         const newApprovalId = body.newApproval.id;
         const taskId = body.newApproval.taskId;
-        setMessages((prev) => prev.map((m) => {
+        setMessagesIfMounted((prev) => prev.map((m) => {
           if (m.approval?.approvalId === approvalId) {
             return {
               ...m,
@@ -201,7 +215,7 @@ export const AgentChatPanel: FC = () => {
         }).concat([{ role: "agent", content: `Searched again. ${body.candidates!.length} candidate(s) remain.` }]));
       }
     } catch (err) {
-      setMessages((prev) => [
+      setMessagesIfMounted((prev) => [
         ...prev,
         { role: "agent", content: `Search again failed: ${err instanceof Error ? err.message : "Unknown error"}` },
       ]);
@@ -218,7 +232,7 @@ export const AgentChatPanel: FC = () => {
         sizeBytes: number; modifiedAt: string; filePath: string;
       }>; total: number };
       // Mark a flag in chat so the user knows they can pick from the full index.
-      setMessages((prev) => prev.map((m) => {
+      setMessagesIfMounted((prev) => prev.map((m) => {
         if (m.approval?.approvalId === approvalId) {
           return {
             ...m,
@@ -241,7 +255,7 @@ export const AgentChatPanel: FC = () => {
         return m;
       }).concat([{ role: "agent", content: `Browse mode: showing all ${body.total} indexed files. Pick one and approve.` }]));
     } catch (err) {
-      setMessages((prev) => [
+      setMessagesIfMounted((prev) => [
         ...prev,
         { role: "agent", content: `Choose manually failed: ${err instanceof Error ? err.message : "Unknown error"}` },
       ]);
@@ -263,18 +277,18 @@ export const AgentChatPanel: FC = () => {
       }
       const res = await fetch(`/approvals/${approvalId}/approve`, { method: "POST" });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      setMessages((prev) => [
+      setMessagesIfMounted((prev) => [
         ...prev,
         { role: "agent", content: `File approved and stored. ✅` },
       ]);
       refreshStoredFiles();
     } catch (err) {
-      setMessages((prev) => [
+      setMessagesIfMounted((prev) => [
         ...prev,
         { role: "agent", content: `Approval failed: ${err instanceof Error ? err.message : "Unknown error"}` },
       ]);
     }
-  }, [messages, refreshStoredFiles]);
+  }, [messages, refreshStoredFiles, setMessagesIfMounted]);
 
   return (
     <div className="flex h-full flex-col">

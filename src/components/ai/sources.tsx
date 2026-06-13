@@ -4,6 +4,7 @@ import { BookIcon, ChevronDownIcon } from "lucide-react"
 import type { ComponentProps } from "react"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "~/components/ui/collapsible"
 import { cn } from "~/lib/utils"
+import { safeExternalHref } from "~/lib/safeUrl"
 
 export type SourcesProps = ComponentProps<"div">
 
@@ -41,16 +42,31 @@ export const SourcesContent = ({ className, ...props }: SourcesContentProps) => 
 
 export type SourceProps = ComponentProps<"a">
 
-export const Source = ({ href, title, children, ...props }: SourceProps) => (
-  <a className="flex items-center gap-2" href={href} rel="noreferrer" target="_blank" {...props}>
-    {children ?? (
-      <>
-        <BookIcon className="h-4 w-4" />
-        <span className="block font-medium">{title}</span>
-      </>
-    )}
-  </a>
-)
+export const Source = ({ href, title, children, className, ...props }: SourceProps) => {
+  const safeHref = safeExternalHref(typeof href === "string" ? href : undefined)
+  if (!safeHref) {
+    return (
+      <span className={cn("flex items-center gap-2", className)}>
+        {children ?? (
+          <>
+            <BookIcon className="h-4 w-4" />
+            <span className="block font-medium">{title}</span>
+          </>
+        )}
+      </span>
+    )
+  }
+  return (
+    <a className="flex items-center gap-2" href={safeHref} rel="noreferrer" target="_blank" {...props}>
+      {children ?? (
+        <>
+          <BookIcon className="h-4 w-4" />
+          <span className="block font-medium">{title}</span>
+        </>
+      )}
+    </a>
+  )
+}
 
 /** Demo component for preview */
 export default function SourcesDemo() {

@@ -180,7 +180,7 @@ export function ThreadDrawer({ subject, onClose, onReply }: ThreadDrawerProps) {
             <div className="rounded-lg border border-oa-green/20 bg-oa-green/5 p-3">
               <div className="flex items-center gap-2 text-xs text-oa-green">
                 <CheckCircle2 className="h-4 w-4" />
-                Local thread replies persist on this device.
+                Local thread reply metadata persists on this device; full reply text stays in this browser session only.
               </div>
             </div>
           </div>

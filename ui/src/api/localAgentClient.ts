@@ -11,7 +11,7 @@ export class ApiRequestError extends Error {
 
 export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const hasBody = init?.body != null;
-  const headers = new Headers(init?.headers);
+  const headers = withLocalAgentAuth(init?.headers);
   if (hasBody && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
@@ -40,6 +40,15 @@ export const localAgentClient = {
   put: <T>(path: string, body: unknown) => request<T>(path, { method: "PUT", body: JSON.stringify(body) }),
   delete: <T>(path: string) => request<T>(path, { method: "DELETE" })
 };
+
+export function withLocalAgentAuth(headersInit?: HeadersInit): Headers {
+  const headers = new Headers(headersInit);
+  const token = import.meta.env.VITE_LOCAL_AGENT_API_TOKEN ?? import.meta.env.ORACLE_AMIGO_LOCAL_AGENT_API_TOKEN;
+  if (token && !headers.has("x-local-agent-token") && !headers.has("Authorization")) {
+    headers.set("x-local-agent-token", String(token));
+  }
+  return headers;
+}
 
 async function readResponseBody(response: Response): Promise<unknown> {
   if (response.status === 204 || response.status === 205) return undefined;

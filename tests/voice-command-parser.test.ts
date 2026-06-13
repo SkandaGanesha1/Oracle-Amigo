@@ -12,6 +12,15 @@ describe("voice command parser", () => {
     expect(parsed.confidence).toBeGreaterThan(0.9);
   });
 
+  it("extracts the requested Harassment Certification file command", () => {
+    const parsed = parseVoiceCommand("Ask Docin to send Harassment Certification.pdf file");
+
+    expect(parsed.intent).toBe("remote_file_request");
+    expect(parsed.targetPersonQuery).toBe("Docin");
+    expect(parsed.fileQuery).toBe("Harassment Certification.pdf");
+    expect(parsed.confidence).toBeGreaterThan(0.9);
+  });
+
   it("recognizes alternate remote file request phrasings", () => {
     expect(parseVoiceCommand("Request NonPO invoice india.pdf from Docin").intent).toBe("remote_file_request");
     expect(parseVoiceCommand("Send a file request to Docin for NonPO invoice india.pdf").intent).toBe("remote_file_request");

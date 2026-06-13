@@ -13,6 +13,7 @@ import { Button } from "~/components/ui/button"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "~/components/ui/collapsible"
 import { Input } from "~/components/ui/input"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "~/components/ui/tooltip"
+import { safeExternalHref } from "~/lib/safeUrl"
 import { cn } from "~/lib/utils"
 
 export interface WebPreviewContextValue {
@@ -157,13 +158,15 @@ export type WebPreviewBodyProps = ComponentProps<"iframe"> & {
 
 export const WebPreviewBody = ({ className, loading, src, ...props }: WebPreviewBodyProps) => {
   const { url } = useWebPreview()
+  const safePreviewUrl = safeExternalHref(src ?? url)
 
   return (
     <div className="flex-1">
       <iframe
         className={cn("size-full", className)}
-        sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-presentation"
-        src={(src ?? url) || undefined}
+        referrerPolicy="no-referrer"
+        sandbox="allow-scripts allow-forms allow-popups allow-presentation"
+        src={safePreviewUrl}
         title="Preview"
         {...props}
       />

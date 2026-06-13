@@ -1,5 +1,5 @@
 import { LifeBuoy, Loader2 } from "lucide-react";
-import { useCallback, useState, type FC } from "react";
+import { useCallback, useEffect, useRef, useState, type FC } from "react";
 import { LoginFlow } from "./auth/LoginFlow";
 import { SetupFlow } from "./auth/SetupFlow";
 import { useSession } from "./auth/useSession";
@@ -11,6 +11,29 @@ export const PortalApp: FC = () => {
   const session = useSession();
   const setup = useSetupStatus();
   const [recoveryNotice, setRecoveryNotice] = useState<string[] | null>(null);
+  const clipboardClearTimerRef = useRef<number | null>(null);
+
+  const clearClipboardTimer = useCallback(() => {
+    if (clipboardClearTimerRef.current !== null) {
+      window.clearTimeout(clipboardClearTimerRef.current);
+      clipboardClearTimerRef.current = null;
+    }
+  }, []);
+
+  const scheduleClipboardClear = useCallback(() => {
+    clearClipboardTimer();
+    clipboardClearTimerRef.current = window.setTimeout(() => {
+      clipboardClearTimerRef.current = null;
+      if (typeof navigator !== "undefined" && navigator.clipboard) {
+        void navigator.clipboard.writeText("").catch(() => undefined);
+      }
+      setRecoveryNotice(null);
+    }, 120000);
+  }, [clearClipboardTimer]);
+
+  const dismissRecoveryNotice = useCallback(() => {
+    setRecoveryNotice(null);
+  }, []);
 
   const handleLogin = useCallback(
     (user: AdminSessionUser) => {
@@ -28,6 +51,19 @@ export const PortalApp: FC = () => {
     [session]
   );
 
+  useEffect(() => {
+    if (session.status !== "authenticated") {
+      clearClipboardTimer();
+      dismissRecoveryNotice();
+      return;
+    }
+    if (!recoveryNotice) return;
+
+    scheduleClipboardClear();
+  }, [clearClipboardTimer, dismissRecoveryNotice, recoveryNotice, scheduleClipboardClear, session.status]);
+
+  useEffect(() => clearClipboardTimer, [clearClipboardTimer]);
+
   if (session.status === "loading" || setup.isLoading) {
     return <FullScreenSpinner label="Checking session…" />;
   }
@@ -36,7 +72,11 @@ export const PortalApp: FC = () => {
     return (
       <div className="flex h-full w-full flex-col gap-3">
         {recoveryNotice && (
-          <RecoveryBanner codes={recoveryNotice} onDismiss={() => setRecoveryNotice(null)} />
+          <RecoveryBanner
+            codes={recoveryNotice}
+            onClearClipboardLater={scheduleClipboardClear}
+            onDismiss={dismissRecoveryNotice}
+          />
         )}
         {session.lastError && !recoveryNotice && (
           <Notice tone="warn" message={session.lastError} onDismiss={() => session.clear()} />
@@ -103,17 +143,22 @@ const Notice: FC<NoticeProps> = ({ tone, message, onDismiss }) => {
   );
 };
 
-const RecoveryBanner: FC<{ codes: string[]; onDismiss: () => void }> = ({ codes, onDismiss }) => {
-  const copy = () => {
+const RecoveryBanner: FC<{
+  codes: string[];
+  onClearClipboardLater: () => void;
+  onDismiss: () => void;
+}> = ({ codes, onClearClipboardLater, onDismiss }) => {
+  const copy = async () => {
     if (typeof navigator !== "undefined" && navigator.clipboard) {
-      void navigator.clipboard.writeText(codes.join("\n")).catch(() => undefined);
+      await navigator.clipboard.writeText(codes.join("\n")).catch(() => undefined);
+      onClearClipboardLater();
     }
   };
   return (
     <div className="flex items-center justify-between gap-3 rounded-md border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-[11px] text-amber-100">
       <span className="inline-flex items-center gap-1.5">
         <LifeBuoy className="h-3 w-3" />
-        Your recovery codes have been rotated. Copy the new set — the old ones are now invalid.
+        Your recovery codes have been rotated. Copy the new set; clipboard contents may remain visible to other local apps until cleared.
       </span>
       <span className="flex items-center gap-2">
         <button type="button" onClick={copy} className="underline-offset-2 hover:underline">

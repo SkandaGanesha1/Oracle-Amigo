@@ -70,6 +70,8 @@ try
         var approvalId = argsDict.GetValueOrDefault("approval_id", "");
         var taskId = argsDict.GetValueOrDefault("task_id", "");
         var candidateId = argsDict.GetValueOrDefault("candidate_id", "");
+        var nonce = argsDict.GetValueOrDefault("nonce", "");
+        var signature = argsDict.GetValueOrDefault("signature", "");
         var feedback = "";
         if (args.UserInput != null && args.UserInput.TryGetValue("feedback", out var f))
         {
@@ -94,6 +96,8 @@ try
             ["action"] = action,
             ["feedback"] = feedback,
             ["candidateId"] = candidateId,
+            ["nonce"] = nonce,
+            ["signature"] = signature,
         };
 
         try
@@ -194,15 +198,21 @@ while (true)
                     .AddArgument("action", "approve")
                     .AddArgument("approval_id", notifyParams.ApprovalId ?? "")
                     .AddArgument("candidate_id", notifyParams.CandidateId ?? "")
-                    .AddArgument("task_id", notifyParams.TaskId ?? ""))
+                    .AddArgument("task_id", notifyParams.TaskId ?? "")
+                    .AddArgument("nonce", notifyParams.CallbackNonce ?? "")
+                    .AddArgument("signature", notifyParams.CallbackSignature ?? ""))
                 .AddButton(new AppNotificationButton("Reject")
                     .AddArgument("action", "reject")
                     .AddArgument("approval_id", notifyParams.ApprovalId ?? "")
-                    .AddArgument("task_id", notifyParams.TaskId ?? ""))
+                    .AddArgument("task_id", notifyParams.TaskId ?? "")
+                    .AddArgument("nonce", notifyParams.CallbackNonce ?? "")
+                    .AddArgument("signature", notifyParams.CallbackSignature ?? ""))
                 .AddButton(new AppNotificationButton("Send feedback")
                     .AddArgument("action", "feedback")
                     .AddArgument("approval_id", notifyParams.ApprovalId ?? "")
                     .AddArgument("task_id", notifyParams.TaskId ?? "")
+                    .AddArgument("nonce", notifyParams.CallbackNonce ?? "")
+                    .AddArgument("signature", notifyParams.CallbackSignature ?? "")
                     .SetInputId("feedback"));
 
             var toast = builder.BuildNotification();
@@ -273,6 +283,8 @@ internal record NotifyParams(
     string ApprovalId,
     string TaskId,
     string CandidateId,
+    string? CallbackNonce,
+    string? CallbackSignature,
     string RequesterName,
     string RequestedItem,
     string TopCandidateFileName,

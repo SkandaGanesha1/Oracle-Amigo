@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { X, FileText, Download, Shield } from "lucide-react";
 import type { StoredFile } from "../../api/types";
+import { withLocalAgentAuth } from "../../api/localAgentClient";
 import { formatSize } from "../../lib/format";
 
 interface FilePreviewDrawerProps {
@@ -13,11 +14,16 @@ export function FilePreviewDrawer({ file, onClose }: FilePreviewDrawerProps) {
     hash_verified: boolean;
     sha256: string;
   } | null>(null);
+  const [verifyError, setVerifyError] = useState<string | null>(null);
   const [verifying, setVerifying] = useState(false);
   const closeRef = useRef<HTMLButtonElement>(null);
+  const verifyRequestRef = useRef(0);
 
   useEffect(() => {
+    verifyRequestRef.current += 1;
     setVerifyResult(null);
+    setVerifyError(null);
+    setVerifying(false);
   }, [file?.id]);
 
   useEffect(() => {
@@ -32,15 +38,30 @@ export function FilePreviewDrawer({ file, onClose }: FilePreviewDrawerProps) {
   const fileId = file.id;
 
   async function handleVerify() {
+    const requestId = verifyRequestRef.current + 1;
+    verifyRequestRef.current = requestId;
     setVerifying(true);
+    setVerifyError(null);
     try {
-      const res = await fetch(`/storage/files/${fileId}/verify`);
-      if (res.ok) {
-        const data = await res.json() as { hash_verified: boolean; sha256: string };
+      const res = await fetch(`/storage/files/${encodeURIComponent(fileId)}/verify`, {
+        headers: withLocalAgentAuth()
+      });
+      if (!res.ok) {
+        throw new Error(`Verification failed with status ${res.status}.`);
+      }
+      const data = await res.json() as { hash_verified: boolean; sha256: string };
+      if (verifyRequestRef.current === requestId) {
         setVerifyResult(data);
       }
-    } catch { /* ignore */ }
-    setVerifying(false);
+    } catch (err) {
+      if (verifyRequestRef.current === requestId) {
+        setVerifyError(err instanceof Error ? err.message : "Verification failed.");
+      }
+    } finally {
+      if (verifyRequestRef.current === requestId) {
+        setVerifying(false);
+      }
+    }
   }
 
   return (
@@ -97,7 +118,7 @@ export function FilePreviewDrawer({ file, onClose }: FilePreviewDrawerProps) {
                 {verifying ? "Verifying..." : "Verify Hash"}
               </button>
               <a
-                href={`/storage/files/${file.id}/download`}
+                href={`/storage/files/${encodeURIComponent(file.id)}/download`}
                 className="inline-flex items-center gap-1.5 rounded-lg bg-oa-blue px-3 py-1.5 text-xs font-medium text-white transition hover:bg-oa-blue/80"
                 download
               >
@@ -105,6 +126,12 @@ export function FilePreviewDrawer({ file, onClose }: FilePreviewDrawerProps) {
                 Download
               </a>
             </div>
+
+            {verifyError && (
+              <div className="rounded-lg border border-oa-red/20 bg-oa-red/5 p-2.5 text-xs text-oa-red">
+                {verifyError}
+              </div>
+            )}
 
             {verifyResult && (
               <div className={`rounded-lg border p-2.5 text-xs ${verifyResult.hash_verified ? "border-oa-green/20 bg-oa-green/5 text-oa-green" : "border-oa-red/20 bg-oa-red/5 text-oa-red"}`}>

@@ -12,6 +12,10 @@ export interface CommandPolicyOptions {
   maxTimeoutMs?: number;
 }
 
+export interface NormalizedPolicyDecision extends PolicyDecision {
+  normalizedCommand?: string;
+}
+
 export class CommandPolicy {
   readonly maxCommandLength: number;
   readonly maxTimeoutMs: number;
@@ -21,13 +25,19 @@ export class CommandPolicy {
       id: "destructive-filesystem",
       classification: "destructive",
       reason: "Blocked destructive filesystem command",
-      pattern: /\brm\s+(-[a-zA-Z]*r[a-zA-Z]*f|-rf|-fr)\s+(\/|\*)/i
+      pattern: /\b(Remove-Item|rm|del|erase)\b[^;&|]*(?:-[a-zA-Z]*r[a-zA-Z]*|-Recurse)\b[^;&|]*(?:-[a-zA-Z]*f[a-zA-Z]*|-Force)\b/i
+    },
+    {
+      id: "destructive-root-or-wildcard",
+      classification: "destructive",
+      reason: "Blocked destructive filesystem command targeting a root or wildcard path",
+      pattern: /\b(Remove-Item|rm|del|erase)\b[^;&|]*(?:\/|\*|[a-z]:\\)(?:\s|$)/i
     },
     {
       id: "format-disk",
       classification: "destructive",
       reason: "Blocked disk formatting command",
-      pattern: /\bmkfs(\.\w+)?\b/i
+      pattern: /\b(mkfs(\.\w+)?|Format-Volume|format\.com|diskpart)\b/i
     },
     {
       id: "raw-disk-write",
@@ -51,13 +61,25 @@ export class CommandPolicy {
       id: "metadata-service",
       classification: "credential-exfiltration",
       reason: "Blocked cloud metadata service access",
-      pattern: /\b(curl|wget)\b[^;&|]*https?:\/\/169\.254\.169\.254/i
+      pattern: /\b(curl|wget|Invoke-WebRequest|Invoke-RestMethod|iwr|irm|certutil|bitsadmin|node|python|python3)\b[^;&|]*(?:169\.254\.169\.254|metadata\.google\.internal)/i
+    },
+    {
+      id: "encoded-powershell",
+      classification: "credential-exfiltration",
+      reason: "Blocked encoded PowerShell command",
+      pattern: /\bpowershell(?:\.exe)?\b[^;&|]*(?:-EncodedCommand|-enc)\b/i
+    },
+    {
+      id: "download-or-process-control",
+      classification: "credential-exfiltration",
+      reason: "Blocked download or process-control command",
+      pattern: /\b(Invoke-WebRequest|Invoke-RestMethod|iwr|irm|certutil|bitsadmin|Start-Process|reg(?:\.exe)?)\b/i
     },
     {
       id: "host-secret-path",
       classification: "credential-exfiltration",
       reason: "Blocked attempt to read common host secret paths",
-      pattern: /\b(cat|less|more|type|Get-Content)\b[^;&|]*(\.ssh\/|\.aws\/|\.azure\/|\.gnupg\/|\.kube\/|\.docker\/config\.json|\/etc\/shadow|\.codex\/\.sandbox-secrets)/i
+      pattern: /\b(cat|less|more|type|Get-Content|gc)\b[^;&|]*(\.ssh[\\/]|\.aws[\\/]|\.azure[\\/]|\.gnupg[\\/]|\.kube[\\/]|\.docker[\\/]config\.json|\/etc\/shadow|\.codex[\\/]\.sandbox-secrets)/i
     },
     {
       id: "sensitive-env-print",
@@ -72,7 +94,7 @@ export class CommandPolicy {
     this.maxTimeoutMs = options.maxTimeoutMs ?? Number(process.env.SANDBOX_MAX_TIMEOUT_MS ?? 120000);
   }
 
-  evaluate(command: string): PolicyDecision {
+  evaluate(command: string): NormalizedPolicyDecision {
     if (command.length > this.maxCommandLength) {
       return {
         allowed: false,
@@ -82,21 +104,57 @@ export class CommandPolicy {
       };
     }
 
+    const dynamic = detectDynamicShell(command);
+    if (dynamic) {
+      return {
+        allowed: false,
+        reason: dynamic.reason,
+        matchedRule: dynamic.rule,
+        classification: "credential-exfiltration"
+      };
+    }
+
+    const normalizedCommand = normalizeCommand(command);
     for (const rule of this.rules) {
-      if (rule.pattern.test(command)) {
+      if (rule.pattern.test(normalizedCommand)) {
         return {
           allowed: false,
           reason: rule.reason,
           matchedRule: rule.id,
-          classification: rule.classification
+          classification: rule.classification,
+          normalizedCommand
         };
       }
+    }
+
+    const privateNetwork = targetsPrivateNetwork(normalizedCommand);
+    if (privateNetwork) {
+      return {
+        allowed: false,
+        reason: "Blocked private or metadata network target",
+        matchedRule: "private-network-target",
+        classification: "credential-exfiltration",
+        normalizedCommand
+      };
+    }
+
+    const commandNames = extractCommandNames(normalizedCommand);
+    const deniedCommand = commandNames.find((name) => !ALLOWED_COMMANDS.has(name.toLowerCase()));
+    if (deniedCommand) {
+      return {
+        allowed: false,
+        reason: `Command '${deniedCommand}' is not allowlisted`,
+        matchedRule: "not-allowlisted",
+        classification: "review-required",
+        normalizedCommand
+      };
     }
 
     return {
       allowed: true,
       reason: "Command allowed by policy",
-      classification: this.classify(command)
+      classification: this.classify(normalizedCommand),
+      normalizedCommand
     };
   }
 
@@ -117,4 +175,113 @@ export class CommandPolicy {
     }
     return "general";
   }
+}
+
+const ALLOWED_COMMANDS = new Set([
+  "base64",
+  "cat",
+  "cargo",
+  "deno",
+  "dotnet",
+  "echo",
+  "git",
+  "gh",
+  "go",
+  "grep",
+  "head",
+  "ls",
+  "mkdir",
+  "node",
+  "npm",
+  "npx",
+  "pnpm",
+  "printf",
+  "python",
+  "python3",
+  "pytest",
+  "rg",
+  "sed",
+  "tail",
+  "tsx",
+  "tsc",
+  "uv",
+  "vitest",
+  "yarn",
+  "get-childitem",
+  "get-content",
+  "where.exe"
+]);
+
+export function normalizeCommand(command: string): string {
+  return command
+    .replace(/`[\r\n]?/g, "")
+    .replace(/#.*$/gm, "")
+    .replace(/\b(gci|ls|dir)\b/gi, "Get-ChildItem")
+    .replace(/\b(gc)\b/gi, "Get-Content")
+    .replace(/\b(iwr)\b/gi, "Invoke-WebRequest")
+    .replace(/\b(irm)\b/gi, "Invoke-RestMethod")
+    .replace(/\b(del|erase)\b/gi, "Remove-Item")
+    .trim();
+}
+
+function detectDynamicShell(command: string): { rule: string; reason: string } | null {
+  if (/\$\(|<\(|>\(/.test(command)) {
+    return { rule: "dynamic-command-substitution", reason: "Command substitution requires review" };
+  }
+  if (/[`]/.test(command)) {
+    return { rule: "dynamic-backtick", reason: "Backtick shell syntax requires review" };
+  }
+  if (/(?:^|[\s;&|])&\s*\$[A-Za-z_]/.test(command)) {
+    return { rule: "dynamic-powershell-invocation", reason: "Dynamic PowerShell invocation requires review" };
+  }
+  if (/\b(Invoke-Expression|iex)\b/i.test(command)) {
+    return { rule: "dynamic-powershell-expression", reason: "PowerShell expression evaluation is blocked" };
+  }
+  if (/['"]\s*\+\s*['"]/.test(command)) {
+    return { rule: "dynamic-string-concatenation", reason: "Shell string concatenation requires review" };
+  }
+  if (/\b(?:powershell|pwsh)(?:\.exe)?\b[^;&|]*(?:-command|-c)\b/i.test(command)) {
+    return { rule: "nested-shell", reason: "Nested shell commands require review" };
+  }
+  return null;
+}
+
+function targetsPrivateNetwork(command: string): boolean {
+  const value = command.toLowerCase();
+  const blockedHostPatterns = [
+    /\b(?:localhost|metadata\.google\.internal)\b/,
+    /\b127(?:\.\d{1,3}){0,3}\b/,
+    /\b10(?:\.\d{1,3}){3}\b/,
+    /\b169\.254(?:\.\d{1,3}){2}\b/,
+    /\b172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2}\b/,
+    /\b192\.168(?:\.\d{1,3}){2}\b/,
+    /\[?::1\]?\b/,
+    /\b0xa9fea9fe\b/,
+    /\b2852039166\b/,
+    /\b0251\.0376\.0251\.0376\b/
+  ];
+  return blockedHostPatterns.some((pattern) => pattern.test(value));
+}
+
+function extractCommandNames(command: string): string[] {
+  const segments = command
+    .split(/(?:&&|\|\||[;|])/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  const names: string[] = [];
+  for (const segment of segments) {
+    const tokens = segment.match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
+    const first = tokens.find((token) => !isShellAssignment(token) && !isShellRedirect(token));
+    if (!first) continue;
+    names.push(first.replace(/^['"]|['"]$/g, ""));
+  }
+  return names;
+}
+
+function isShellAssignment(token: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*=/.test(token);
+}
+
+function isShellRedirect(token: string): boolean {
+  return /^(?:\d?>|>>|<|2>|2>>)$/.test(token);
 }

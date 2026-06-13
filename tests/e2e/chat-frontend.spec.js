@@ -36,10 +36,58 @@ test.describe("Oracle Amigo routed chat frontend", () => {
     await page.goto("/");
 
     await expect(page).toHaveURL(/\/inbox$/);
-    await expect(page.getByRole("banner")).toContainText("Oracle Amigo");
+    await expect(page.getByRole("button", { name: "Oracle Amigo" })).toBeVisible();
+    await expect(page.getByRole("banner")).not.toContainText("Inbox");
+    await expect(page.getByRole("banner")).not.toContainText("Chats");
+    await expect(page.getByRole("banner")).not.toContainText("Settings");
     await expect(page.getByRole("navigation", { name: "Intent Inbox" })).toBeVisible();
     await expect(page.getByRole("main", { name: "Main content" })).toBeVisible();
     await expect(page.getByRole("main", { name: "Main content" })).toContainText("Intent Inbox");
+
+    const rail = page.getByLabel("People and inbox rail");
+    await expect(rail).toBeVisible();
+    const oracleButton = rail.getByRole("button", { name: "Oracle Amigo" });
+    const oracleLogo = oracleButton.getByRole("img", { name: "Oracle" });
+    await expect(oracleLogo).toBeVisible();
+    const oracleButtonBox = await oracleButton.boundingBox();
+    const oracleLogoBox = await oracleLogo.boundingBox();
+    expect(oracleButtonBox?.width).toBeGreaterThanOrEqual(48);
+    expect(oracleLogoBox?.width).toBeLessThanOrEqual(48);
+    expect(oracleLogoBox?.height).toBeLessThanOrEqual(48);
+    const railBox = await rail.boundingBox();
+    expect(railBox?.width).toBeGreaterThanOrEqual(70);
+    expect(railBox?.width).toBeLessThanOrEqual(74);
+
+    const avatar = rail.locator(".oa-rail-avatar").first();
+    await expect(avatar).toBeVisible();
+    const avatarBox = await avatar.boundingBox();
+    expect(avatarBox?.width).toBeGreaterThanOrEqual(32);
+    expect(avatarBox?.width).toBeLessThanOrEqual(48);
+    expect(avatarBox?.width).toBeGreaterThanOrEqual(38);
+    expect(avatarBox?.width).toBeLessThanOrEqual(42);
+    const avatarStyle = await avatar.evaluate((node) => {
+      const style = window.getComputedStyle(node);
+      return { borderRadius: style.borderRadius };
+    });
+    expect(avatarStyle.borderRadius).not.toBe("0px");
+    const presenceBadge = rail.locator(".oa-rail-presence-badge").first();
+    await expect(presenceBadge).toBeVisible();
+    const badgeBox = await presenceBadge.boundingBox();
+    expect(badgeBox?.width).toBeGreaterThanOrEqual(10);
+    expect(badgeBox?.width).toBeLessThanOrEqual(16);
+    if (!avatarBox || !badgeBox) throw new Error("Rail avatar and badge geometry was not available");
+    expect(badgeBox.x).toBeGreaterThan(avatarBox.x + avatarBox.width * 0.65);
+    expect(badgeBox.y).toBeGreaterThan(avatarBox.y + avatarBox.height * 0.65);
+    const badgeStyle = await presenceBadge.evaluate((node) => {
+      const style = window.getComputedStyle(node);
+      return { backgroundColor: style.backgroundColor, borderRadius: style.borderRadius };
+    });
+    expect(badgeStyle.borderRadius).not.toBe("0px");
+    expect(badgeStyle.backgroundColor).not.toBe("rgba(0, 0, 0, 0)");
+    expect(badgeStyle.backgroundColor).toBe("rgb(34, 197, 94)");
+
+    await oracleButton.click();
+    await expect(page).toHaveURL(/\/chats$/);
   });
 
   test("logs out from the active shell and returns to login", async ({ page }) => {
@@ -69,7 +117,6 @@ test.describe("Oracle Amigo routed chat frontend", () => {
       { name: "Vault", url: /\/files$/, text: "Vault" },
       { name: "Missions", url: /\/tasks$/, text: "Missions" },
       { name: "Audit", url: /\/audit$/, text: "Activity Log" },
-      { name: "Settings", url: /\/settings$/, text: "Account" },
     ];
 
     for (const tab of tabs) {
@@ -79,13 +126,17 @@ test.describe("Oracle Amigo routed chat frontend", () => {
       await expect(main).toContainText(tab.text);
       await expect(main).not.toContainText(/coming soon/i);
     }
+
+    await page.getByRole("button", { name: "Settings" }).click();
+    await expect(page).toHaveURL(/\/settings$/);
+    await expect(page.getByRole("main", { name: "Main content" })).toContainText("Account");
   });
 
   test("detects and sends a file request from the active composer", async ({ page }) => {
     await mockEnrolledAgent(page);
     await page.goto("/");
-    await page.getByRole("button", { name: "Chats" }).click();
-    await page.getByRole("button", { name: /My local agent/i }).click();
+    await page.getByLabel("People and inbox rail").getByRole("button", { name: "Oracle Amigo" }).click();
+    await page.getByRole("button", { name: "Open chat with My local agent" }).click();
 
     const textbox = page.getByPlaceholder("Type a message or / for commands...");
     await textbox.fill("Can you send me the API design document?");
@@ -116,8 +167,8 @@ test.describe("Oracle Amigo routed chat frontend", () => {
     await page.getByRole("button", { name: /enroll device/i }).click();
 
     await expect(page).toHaveURL(/\/inbox$/);
-    await page.getByRole("button", { name: "Chats" }).click();
-    await page.getByRole("button", { name: /My local agent/i }).click();
+    await page.getByLabel("People and inbox rail").getByRole("button", { name: "Oracle Amigo" }).click();
+    await page.getByRole("button", { name: "Open chat with My local agent" }).click();
     await page.getByPlaceholder("Type a message or / for commands...").fill("Please send the release checklist document");
     await page.getByRole("button", { name: "Send message" }).click();
     await page.getByRole("button", { name: "Approve" }).click();

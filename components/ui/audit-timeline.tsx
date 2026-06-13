@@ -14,27 +14,44 @@ type AuditEvent = {
 export const AuditTimeline: FC = () => {
   const [events, setEvents] = useState<AuditEvent[]>([]);
   const [chainValid, setChainValid] = useState<boolean | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    let active = true;
+    let controller: AbortController | null = null;
     const fetchEvents = async () => {
+      controller?.abort();
+      controller = new AbortController();
       try {
-        const res = await fetch("/audit/events");
-        if (res.ok) {
-          const body = (await res.json()) as { events: AuditEvent[]; chainValid?: { valid: boolean } };
-          setEvents(body.events);
-          if (body.chainValid) setChainValid(body.chainValid.valid);
+        const res = await fetch("/audit/events", { signal: controller.signal });
+        if (!active) return;
+        if (!res.ok) {
+          setError(`Audit events failed: HTTP ${res.status}`);
+          return;
         }
-      } catch { /* ignore */ }
+        const body = (await res.json()) as { events: AuditEvent[]; chainValid?: { valid: boolean } };
+        if (!active) return;
+        setEvents(body.events);
+        if (body.chainValid) setChainValid(body.chainValid.valid);
+        setError(null);
+      } catch (err) {
+        if (!active || (err instanceof DOMException && err.name === "AbortError")) return;
+        setError(err instanceof Error ? err.message : "Audit events failed");
+      }
     };
     fetchEvents();
     const interval = setInterval(fetchEvents, 5000);
-    return () => clearInterval(interval);
+    return () => {
+      active = false;
+      controller?.abort();
+      clearInterval(interval);
+    };
   }, []);
 
   if (events.length === 0) {
     return (
       <div className="rounded border border-white/10 bg-black/20 p-3 text-xs text-white/40">
-        No audit events yet.
+        {error ?? "No audit events yet."}
       </div>
     );
   }
@@ -53,6 +70,7 @@ export const AuditTimeline: FC = () => {
           </span>
         )}
       </div>
+      {error && <div className="mb-2 rounded bg-red-500/10 px-2 py-1 text-[10px] text-red-300">{error}</div>}
       <div className="space-y-2">
         {events.map((e) => (
           <div key={e.id} className="relative border-l-2 border-white/10 pl-3">

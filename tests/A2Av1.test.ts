@@ -352,6 +352,12 @@ describe("A2A v1.0.0 — PushNotificationStore", () => {
     expect(calls).toHaveLength(2);
     expect(results.every((r) => r.ok)).toBe(true);
   });
+
+  it("rejects private webhook URLs", () => {
+    const store = new A2Av1PushNotificationStore();
+    expect(() => store.set("task-A", { url: "http://169.254.169.254/latest/meta-data" })).toThrow(/HTTPS/);
+    expect(() => store.set("task-A", { url: "https://127.0.0.1/hook" })).toThrow(/not allowed/);
+  });
 });
 
 describe("A2A v1.0.0 — HTTP+JSON routes (full integration)", () => {

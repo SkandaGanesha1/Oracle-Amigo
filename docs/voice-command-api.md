@@ -1,6 +1,6 @@
 # Voice Command API
 
-The local agent exposes a preview-first voice command API for the separate Oracle Amigo Quick Voice launcher.
+The local agent exposes a voice command API for the separate Oracle Amigo Quick Voice launcher. The current launcher uses push-to-talk auto-submit, while the API still supports preview-first callers.
 
 ## Endpoints
 
@@ -16,12 +16,13 @@ The local agent exposes a preview-first voice command API for the separate Oracl
 {
   "transcript": "Ask Docin to send me NonPO invoice india.pdf file",
   "source": "voice-launcher",
-  "mode": "preview_then_execute",
+  "mode": "auto_execute",
+  "locale": "en-IN",
   "sttConfidence": 0.91
 }
 ```
 
-The response stores a safe command record and returns a preview. Remote file requests are not executed until `confirm` is called.
+The response stores a safe command record and returns a preview. The push-to-talk launcher immediately calls `POST /voice/commands/:id/confirm` after capture. Remote file requests then enter the existing relay flow; the remote user still approves before any file transfer.
 
 ## Execution Rules
 

@@ -1,4 +1,5 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
+import { timingSafeEqual } from "node:crypto";
 import { hashOpaqueToken, toAuthContext, toDeviceAuthContext, verifyAccessToken, verifyDeviceToken } from "./TokenService.js";
 import { getDb } from "../db/connection.js";
 import { resolveSession as resolveAdminSession, cookieName as adminCookieName, touchSession } from "../admin/AdminSessionService.js";
@@ -30,6 +31,10 @@ export function requireUserAuth() {
     }
     try {
       const claims = verifyAccessToken(token);
+      if (!isActiveUser(claims.org, claims.sub)) {
+        reply.code(403).send({ error: "USER_DISABLED", message: "User is not active" });
+        return reply;
+      }
       req.authContext = toAuthContext(claims);
     } catch (err) {
       reply.code(401).send({ error: "UNAUTHORIZED", message: err instanceof Error ? err.message : "Invalid token" });
@@ -44,11 +49,19 @@ export function optionalUserAuth() {
     if (!token) return;
     try {
       const claims = verifyAccessToken(token);
+      if (!isActiveUser(claims.org, claims.sub)) return;
       req.authContext = toAuthContext(claims);
     } catch {
       // ignore - optional
     }
   };
+}
+
+function isActiveUser(orgId: string, userId: string): boolean {
+  const row = getDb()
+    .prepare("SELECT status FROM users WHERE org_id = ? AND id = ?")
+    .get(orgId, userId) as { status: string } | undefined;
+  return row?.status === "active";
 }
 
 export function requireDeviceAuth() {
@@ -128,7 +141,7 @@ export function requireAdmin() {
       return reply;
     }
     const token = extractBearer(req) ?? (typeof req.headers["x-admin-token"] === "string" ? req.headers["x-admin-token"] : null);
-    if (!token || token !== expected) {
+    if (!token || !constantTimeEqual(token, expected)) {
       reply.code(401).send({ error: "UNAUTHORIZED", message: "Invalid admin credentials" });
       return reply;
     }
@@ -159,4 +172,10 @@ function readAdminSessionCookie(req: FastifyRequest): string | null {
   if (!cookies) return null;
   // Accept either the prod (__Host- prefixed) or dev cookie name.
   return cookies["__Host-admin_session"] ?? cookies[adminCookieName()] ?? null;
+}
+
+function constantTimeEqual(left: string, right: string): boolean {
+  const leftBuffer = Buffer.from(left);
+  const rightBuffer = Buffer.from(right);
+  return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
 }

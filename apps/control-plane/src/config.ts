@@ -8,9 +8,12 @@ const ConfigSchema = z.object({
   CONTROL_PLANE_ENV: z.enum(["development", "production", "test"]).default("development"),
   JWT_ACCESS_SECRET: z.string().min(16).default("dev-access-secret-change-me-in-production-32chars"),
   JWT_REFRESH_SECRET: z.string().min(16).default("dev-refresh-secret-change-me-in-production-32chars"),
+  JWT_PRIVATE_KEY_PEM: z.string().optional(),
+  JWT_PUBLIC_KEY_PEM: z.string().optional(),
   TOKEN_ISSUER: z.string().default("oracle-amigo-control-plane"),
   DEFAULT_ORG_SLUG: z.string().default("local-dev"),
   FILE_TRANSFER_STORE: z.string().default("./data/transfers"),
+  TRANSFER_KEK: z.string().min(32).default("dev-transfer-kek-change-me-32chars!"),
   ACCESS_TOKEN_TTL_SECONDS: z.coerce.number().int().min(60).default(900),
   REFRESH_TOKEN_TTL_SECONDS: z.coerce.number().int().min(3600).default(2592000),
   RELAY_POLL_MAX_BATCH: z.coerce.number().int().min(1).max(500).default(50),
@@ -60,8 +63,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     if (cfg.JWT_REFRESH_SECRET.includes("change-me")) {
       throw new Error("JWT_REFRESH_SECRET must be changed in production");
     }
+    if (!cfg.JWT_PRIVATE_KEY_PEM || !cfg.JWT_PUBLIC_KEY_PEM) {
+      throw new Error("JWT_PRIVATE_KEY_PEM and JWT_PUBLIC_KEY_PEM must be set in production");
+    }
     if (cfg.ADMIN_KEK.includes("change-me")) {
       throw new Error("ADMIN_KEK must be changed in production");
+    }
+    if (cfg.TRANSFER_KEK.includes("change-me")) {
+      throw new Error("TRANSFER_KEK must be changed in production");
     }
     if (cfg.ADMIN_BOOTSTRAP_TOKEN && cfg.ADMIN_BOOTSTRAP_TOKEN.length > 0) {
       throw new Error("ADMIN_BOOTSTRAP_TOKEN must be unset in production");

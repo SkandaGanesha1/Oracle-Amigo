@@ -3,6 +3,7 @@ import { Droplets, Eye, FileWarning, Stamp } from "lucide-react";
 import { useApplyRedaction, useRedactionPreview } from "../../hooks/queries";
 import { WatermarkPreview } from "./WatermarkPreview";
 import type { CandidateFile } from "../../types";
+import { safeExternalHref } from "../../lib/safeUrl";
 
 interface RedactionEditorProps {
   file: CandidateFile | undefined;
@@ -26,6 +27,7 @@ export function RedactionEditor({ file, recipientDisplayName }: RedactionEditorP
   );
   const effectiveWatermark = watermarkText.trim() || defaultWatermark;
   const supported = isPdf(file);
+  const redactedDownloadUrl = safeExternalHref(apply.data?.job?.downloadUrl);
 
   async function runPreview() {
     if (!file) return;
@@ -84,9 +86,9 @@ export function RedactionEditor({ file, recipientDisplayName }: RedactionEditorP
                 Preview ready: {preview.data.pageCount} pages, {preview.data.redactionCount} redaction mark.
               </div>
             )}
-            {apply.data?.job && (
+            {redactedDownloadUrl && (
               <a
-                href={apply.data.job.downloadUrl}
+                href={redactedDownloadUrl}
                 className="flex min-h-[36px] items-center justify-center gap-2 rounded-lg border border-oa-green/30 bg-oa-green/10 px-3 text-[10px] font-medium text-oa-green"
               >
                 <Stamp className="h-3.5 w-3.5" />

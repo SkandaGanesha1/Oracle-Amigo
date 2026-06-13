@@ -40,7 +40,10 @@ export function useAgentRunEvents({ runId, enabled = true }: UseAgentRunEventsOp
           setConnected(false);
         }
       } catch {
-        // ignore parse errors
+        setConnected(false);
+        setError(new Event("parseerror"));
+        es.close();
+        if (esRef.current === es) esRef.current = null;
       }
     };
 

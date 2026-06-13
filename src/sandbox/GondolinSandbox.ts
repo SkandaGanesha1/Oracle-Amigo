@@ -24,6 +24,7 @@ type GondolinVmLike = {
 
 export class GondolinSandbox implements SandboxRuntime {
   private vm: GondolinVmLike | null = null;
+  private queue: Promise<unknown> = Promise.resolve();
   private readonly dryRun: boolean;
   private readonly secretPolicy: SecretPolicy;
 
@@ -43,29 +44,37 @@ export class GondolinSandbox implements SandboxRuntime {
       return this.execDryRun(command);
     }
 
-    if (!this.vm) {
+    const vm = this.vm;
+    if (!vm) {
       throw new Error("Gondolin VM is not initialized");
     }
 
-    try {
-      const result = await withTimeout(
-        (signal) => this.vm!.exec(command, { cwd: options.workingDirectory, signal }),
-        options.timeoutMs ?? 30000
-      );
-      return {
-        exitCode: result.exitCode ?? 0,
-        stdout: this.secretPolicy.redactText(result.stdout ?? ""),
-        stderr: this.secretPolicy.redactText(result.stderr ?? "")
-      };
-    } catch (error) {
-      if (error instanceof TimeoutError) {
-        return { exitCode: null, stdout: "", stderr: "Command timed out", timedOut: true };
+    const run = async (): Promise<RawExecResult> => {
+      try {
+        const result = await withTimeout(
+          (signal) => vm.exec(command, { cwd: options.workingDirectory, signal }),
+          options.timeoutMs ?? 30000
+        );
+        return {
+          exitCode: result.exitCode ?? 0,
+          stdout: this.secretPolicy.redactText(result.stdout ?? ""),
+          stderr: this.secretPolicy.redactText(result.stderr ?? "")
+        };
+      } catch (error) {
+        if (error instanceof TimeoutError) {
+          return { exitCode: null, stdout: "", stderr: "Command timed out", timedOut: true };
+        }
+        return { exitCode: 1, stdout: "", stderr: error instanceof Error ? error.message : String(error) };
       }
-      return { exitCode: 1, stdout: "", stderr: error instanceof Error ? error.message : String(error) };
-    }
+    };
+
+    const pending = this.queue.then(run, run);
+    this.queue = pending.catch(() => undefined);
+    return pending;
   }
 
   async close(): Promise<void> {
+    await this.queue.catch(() => undefined);
     if (this.vm) {
       await this.vm.close();
       this.vm = null;

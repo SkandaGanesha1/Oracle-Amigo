@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Link2, ExternalLink, FileText, ChevronDown, Search } from "lucide-react";
+import { safeExternalHref } from "../../lib/safeUrl";
 
 interface Source {
   id: string;
@@ -41,6 +42,7 @@ export function AgentSources({ sources, className }: AgentSourcesProps) {
         {sources.map((source) => {
           const isOpen = expanded[source.id] ?? false;
           const TypeIcon = typeIcons[source.sourceType ?? "file"] ?? FileText;
+          const safeUrl = safeExternalHref(source.url);
 
           return (
             <div key={source.id} className="rounded-lg border border-oa-border bg-oa-bg-elevated">
@@ -61,9 +63,9 @@ export function AgentSources({ sources, className }: AgentSourcesProps) {
                   )}
                 </div>
                 <div className="flex items-center gap-1 shrink-0">
-                  {source.url && (
+                  {safeUrl && (
                     <a
-                      href={source.url}
+                      href={safeUrl}
                       target="_blank"
                       rel="noopener noreferrer"
                       onClick={(e) => e.stopPropagation()}

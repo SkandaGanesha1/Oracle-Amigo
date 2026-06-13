@@ -67,6 +67,22 @@ function queryKeyFromKind(kind: string): unknown[] {
   return ["missions"];
 }
 
+function sameOriginSseUrl(raw: string, baseUrl: string): string {
+  const value = raw.trim();
+  const base = baseUrl.trim();
+  const combined =
+    value.startsWith("http")
+      ? value
+      : base && value.startsWith("/")
+        ? `${base}${value}`
+        : value;
+  const parsed = new URL(combined, window.location.origin);
+  if (parsed.origin !== window.location.origin) {
+    throw new Error("Cross-origin SSE endpoints are not allowed");
+  }
+  return `${parsed.pathname}${parsed.search}${parsed.hash}`;
+}
+
 export class PollingTransport implements RealtimeTransport {
   kind = "polling" as const;
   private timers: number[] = [];
@@ -106,7 +122,7 @@ export class SseTransport implements RealtimeTransport {
     try {
       const baseUrl = (window as unknown as Record<string, string>).__API_BASE_URL__ ?? "";
       this.eventSources = this.subscriptions.map((subscription) => {
-        const url = subscription.url.startsWith("http") ? subscription.url : `${baseUrl}${subscription.url}`;
+        const url = sameOriginSseUrl(subscription.url, baseUrl);
         const eventSource = new EventSource(url);
         const handleEvent = (event: MessageEvent<string>) => {
           const data = parseSseData(event.data);
@@ -238,7 +254,13 @@ export class RealtimeLifecycle implements RealtimeTransport {
 
   private detectSseUrl(): string | null {
     try {
-      return localStorage.getItem("oa-realtime-sse-url");
+      const storedUrl = localStorage.getItem("oa-realtime-sse-url");
+      if (!storedUrl) return null;
+
+      const resolvedUrl = new URL(storedUrl, window.location.origin);
+      if (resolvedUrl.origin !== window.location.origin) return null;
+
+      return `${resolvedUrl.pathname}${resolvedUrl.search}${resolvedUrl.hash}`;
     } catch {
       return null;
     }

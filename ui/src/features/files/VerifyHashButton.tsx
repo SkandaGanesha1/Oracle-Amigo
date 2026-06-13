@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ShieldCheck, ShieldAlert, Loader } from "lucide-react";
 import { api } from "../../api/client";
 import { OracleTooltip } from "../../components/primitives/OracleTooltip";
@@ -10,14 +10,31 @@ interface VerifyHashButtonProps {
 export function VerifyHashButton({ fileId }: VerifyHashButtonProps) {
   const [state, setState] = useState<"idle" | "verifying" | "verified" | "mismatch">("idle");
   const [sha256, setSha256] = useState<string | null>(null);
+  const requestRef = useRef(0);
+
+  useEffect(() => {
+    requestRef.current += 1;
+    setState("idle");
+    setSha256(null);
+  }, [fileId]);
+
+  useEffect(() => {
+    return () => {
+      requestRef.current += 1;
+    };
+  }, []);
 
   async function handleVerify() {
+    const requestId = requestRef.current + 1;
+    requestRef.current = requestId;
     setState("verifying");
     try {
       const result = await api.verifyFile(fileId);
+      if (requestRef.current !== requestId) return;
       setSha256(result.sha256);
       setState(result.hash_verified ? "verified" : "mismatch");
     } catch {
+      if (requestRef.current !== requestId) return;
       setState("mismatch");
     }
   }

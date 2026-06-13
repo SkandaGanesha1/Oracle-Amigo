@@ -184,9 +184,10 @@ function consumeSetupChallenge(challenge: string): SetupChallengeRow | null {
   if (!row) return null;
   if (row.used_at) return null;
   if (new Date(row.expires_at).getTime() < Date.now()) return null;
-  getDb()
+  const claimed = getDb()
     .prepare("UPDATE admin_setup_challenges SET used_at = ? WHERE id = ? AND used_at IS NULL")
     .run(new Date().toISOString(), row.id);
+  if (Number(claimed.changes) !== 1) return null;
   return row;
 }
 
@@ -218,6 +219,10 @@ export async function setupFirstAdmin(input: SetupInput, ctx: Sessions.SessionCo
   const db = getDb();
   db.prepare("BEGIN IMMEDIATE").run();
   try {
+    const existing = db.prepare("SELECT COUNT(*) AS n FROM admin_users").get() as { n: number };
+    if (existing.n > 0) {
+      throw new AdminAuthError("SETUP_DISABLED", "An admin already exists; use login instead");
+    }
     const inserted = db
       .prepare(
         `INSERT INTO admin_users (id, email, display_name, password_hash, password_algo, is_disabled, created_at, updated_at)

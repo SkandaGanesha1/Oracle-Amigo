@@ -114,7 +114,7 @@ export function MainChatLayout() {
               <div className="flex flex-col gap-1">
                 <h2 className="text-lg font-semibold text-oa-text">Welcome</h2>
                 <p className="text-sm text-oa-text-muted">
-                  Select a conversation from the sidebar to get started
+                  Select a person from the left rail or search the directory to start.
                 </p>
               </div>
               <div className="flex flex-col gap-2 w-full">
@@ -124,7 +124,7 @@ export function MainChatLayout() {
                   className="flex min-h-[48px] items-center gap-2 rounded-lg bg-oa-surface px-4 py-2.5 text-sm text-oa-text transition-colors hover:bg-oa-bubble-bg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oa-blue focus-visible:ring-offset-2"
                 >
                   <Search className="h-4 w-4 text-oa-text-muted" />
-                  <span>Browse directory to find people and agents</span>
+                  <span>Search directory to find people</span>
                 </button>
                 <button
                   type="button"

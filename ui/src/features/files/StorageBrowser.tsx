@@ -108,7 +108,7 @@ export function StorageBrowser() {
                     <Eye className="h-3 w-3" />
                   </button>
                   <a
-                    href={`/storage/files/${file.id}/download`}
+                    href={`/storage/files/${encodeURIComponent(file.id)}/download`}
                     className="inline-flex items-center gap-1 rounded border border-oa-border bg-oa-surface-2 px-2 py-1 text-[10px] text-oa-text-muted transition hover:bg-oa-surface"
                     download
                   >

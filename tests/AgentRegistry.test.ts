@@ -82,35 +82,33 @@ describe("hashCard", () => {
 
 describe("fetchAgentCard", () => {
   it("fetches and hashes a card", async () => {
-    const card = { name: "Remote", description: "remote agent", supportedInterfaces: [], skills: [] };
-    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => card });
+    const card = sampleCard({ name: "Remote", description: "remote agent" });
+    const fetchMock = vi.fn().mockResolvedValue(mockJsonResponse(card));
     const result = await fetchAgentCard({ url: "https://example.com/card.json", fetchImpl: fetchMock as any });
     expect(result.card).toEqual(card);
     expect(result.cardHash).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it("throws on non-2xx", async () => {
-    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 404, json: async () => ({}) });
+    const fetchMock = vi.fn().mockResolvedValue({ ...mockJsonResponse({}), ok: false, status: 404 });
     await expect(fetchAgentCard({ url: "https://example.com/x", fetchImpl: fetchMock as any })).rejects.toThrow(/404/);
   });
 });
 
 describe("discoverAndRegister", () => {
   it("fetches card and registers agent with supported protocols + skills", async () => {
-    const card = {
+    const card = sampleCard({
       id: "did:wba:remote.example.com:e1_abc",
       name: "Remote Agent",
       description: "an agent",
-      protocolVersion: "0.3.0",
-      preferredTransport: "JSONRPC",
       additionalInterfaces: [
         { url: "https://remote.example.com/a2a/jsonrpc", transport: "JSONRPC" },
         { url: "https://remote.example.com/anp/message", transport: "ANP" },
       ],
-      skills: [{ id: "file-search", name: "File Search" }],
-    };
-    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => card });
-    const result = await discoverAndRegister({ url: "https://remote.example.com/card.json", fetchImpl: fetchMock as any });
+      skills: [{ id: "file-search", name: "File Search", description: "Search files", tags: [] }],
+    });
+    const fetchMock = vi.fn().mockResolvedValue(mockJsonResponse(card));
+    const result = await discoverAndRegister({ url: "https://example.com/card.json", fetchImpl: fetchMock as any });
     expect(result.did).toBe("did:wba:remote.example.com:e1_abc");
     const record = getAgent(result.did)!;
     expect(record.name).toBe("Remote Agent");
@@ -134,12 +132,41 @@ describe("refreshAgent", () => {
   });
 
   it("re-fetches and updates lastCardHash", async () => {
-    upsertAgent({ did: SAMPLE_DID, name: "X", agentCardUrl: "https://x.com/card" });
-    const card = { name: "X", description: "updated", supportedInterfaces: [], skills: [] };
-    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => card });
+    upsertAgent({ did: SAMPLE_DID, name: "X", agentCardUrl: "https://example.com/card" });
+    const card = sampleCard({ name: "X", description: "updated" });
+    const fetchMock = vi.fn().mockResolvedValue(mockJsonResponse(card));
     const result = await refreshAgent(SAMPLE_DID, fetchMock as any);
     expect(result?.card.name).toBe("X");
     const record = getAgent(SAMPLE_DID)!;
     expect(record.lastCardHash).toMatch(/^[0-9a-f]{64}$/);
   });
 });
+
+function sampleCard(overrides: Record<string, unknown> = {}) {
+  return {
+    protocolVersion: "0.3.0",
+    name: "Remote",
+    description: "",
+    url: "https://remote.example.com/a2a/jsonrpc",
+    preferredTransport: "JSONRPC",
+    version: "0.1.0",
+    capabilities: {},
+    defaultInputModes: ["text/plain"],
+    defaultOutputModes: ["application/json"],
+    skills: [],
+    ...overrides
+  };
+}
+
+function mockJsonResponse(body: unknown) {
+  const text = JSON.stringify(body);
+  return {
+    ok: true,
+    status: 200,
+    headers: new Headers({
+      "content-type": "application/json",
+      "content-length": String(Buffer.byteLength(text, "utf8"))
+    }),
+    text: async () => text
+  };
+}

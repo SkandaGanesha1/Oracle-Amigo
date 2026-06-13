@@ -15,7 +15,7 @@ export interface TransferEncryptionParams {
 }
 
 export function deriveTransferKey(transferId: string, fileName: string, sha256: string): Buffer {
-  // Derive a per-transfer key from server secret + transfer context using HMAC-SHA256
+  // Legacy fallback for transfers created before key wrapping was introduced.
   const cfg = loadConfig();
   const serverSecret = cfg.JWT_ACCESS_SECRET;
   return createHmac("sha256", serverSecret)
@@ -28,12 +28,45 @@ export function createEncryptionParams(
   fileName: string,
   sha256: string
 ): TransferEncryptionParams {
-  const key = deriveTransferKey(transferId, fileName, sha256);
+  const key = randomBytes(KEY_LENGTH);
   const iv = randomBytes(IV_LENGTH);
   const aad = createHash("sha256")
     .update(`${transferId}|${fileName}|${sha256}|${ENCRYPTION_ALGO}`)
     .digest();
   return { key, iv, aad, algo: ENCRYPTION_ALGO };
+}
+
+function transferKek(): Buffer {
+  const cfg = loadConfig();
+  return createHash("sha256").update(`oracle-amigo.transfer.kek.v1:${cfg.TRANSFER_KEK}`).digest();
+}
+
+export function wrapTransferKey(key: Buffer, transferId: string): string {
+  const iv = randomBytes(IV_LENGTH);
+  const cipher = createCipheriv(ENCRYPTION_ALGO, transferKek(), iv) as CipherGCM;
+  cipher.setAAD(Buffer.from(transferId, "utf8"));
+  const ciphertext = Buffer.concat([cipher.update(key), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return [
+    "v2",
+    iv.toString("base64url"),
+    ciphertext.toString("base64url"),
+    tag.toString("base64url")
+  ].join(".");
+}
+
+export function unwrapTransferKey(wrappedKey: string, transferId: string): Buffer {
+  if (/^[a-fA-F0-9]{64}$/.test(wrappedKey)) {
+    return Buffer.from(wrappedKey, "hex");
+  }
+  const [version, ivPart, ciphertextPart, tagPart] = wrappedKey.split(".");
+  if (version !== "v2" || !ivPart || !ciphertextPart || !tagPart) {
+    throw new Error("Invalid wrapped transfer key");
+  }
+  const decipher = createDecipheriv(ENCRYPTION_ALGO, transferKek(), Buffer.from(ivPart, "base64url")) as DecipherGCM;
+  decipher.setAAD(Buffer.from(transferId, "utf8"));
+  decipher.setAuthTag(Buffer.from(tagPart, "base64url"));
+  return Buffer.concat([decipher.update(Buffer.from(ciphertextPart, "base64url")), decipher.final()]);
 }
 
 export function encryptBuffer(
@@ -111,7 +144,8 @@ export interface DecryptedTransfer {
 export function readDecryptedTransfer(
   transferId: string,
   fileName: string,
-  sha256: string
+  sha256: string,
+  keyOverride?: Buffer
 ): DecryptedTransfer {
   const path = transferStorePath(transferId);
   const encPath = `${path}.enc`;
@@ -131,7 +165,7 @@ export function readDecryptedTransfer(
   const tag = Buffer.from(blob.subarray(offset, offset + 16));
   offset += 16;
   const ciphertext = Buffer.from(blob.subarray(offset));
-  const key = deriveTransferKey(transferId, fileName, sha256);
+  const key = keyOverride ?? deriveTransferKey(transferId, fileName, sha256);
   if (!aad.equals(createHash("sha256").update(`${transferId}|${fileName}|${sha256}|${ENCRYPTION_ALGO}`).digest())) {
     throw new Error("AAD mismatch - cannot decrypt");
   }

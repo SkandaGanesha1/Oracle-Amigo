@@ -14,17 +14,50 @@ const queueListeners = new Set<() => void>();
 
 interface QueuedMessage {
   conversationId: string;
-  text: string;
   clientMessageId: string;
   failedAt: string;
   failureReason: string;
+  textPreview?: string;
 }
+
+const queuedMessageText = new Map<string, string>();
 
 function getQueue(): QueuedMessage[] {
   try {
-    return JSON.parse(localStorage.getItem(QUEUE_KEY) ?? "[]");
+    return sanitizeQueueRecords(JSON.parse(localStorage.getItem(QUEUE_KEY) ?? "[]"));
   } catch { return []; }
 }
+
+function migrateQueueStorage(): void {
+  if (typeof localStorage === "undefined") return;
+  try {
+    const raw = localStorage.getItem(QUEUE_KEY);
+    if (!raw) return;
+    const migrated = sanitizeQueueRecords(JSON.parse(raw));
+    const next = JSON.stringify(migrated);
+    if (raw !== next) localStorage.setItem(QUEUE_KEY, next);
+  } catch {
+    localStorage.removeItem(QUEUE_KEY);
+  }
+}
+
+function sanitizeQueueRecords(value: unknown): QueuedMessage[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => {
+      const record = item as Record<string, unknown>;
+      return {
+        conversationId: String(record.conversationId ?? ""),
+        clientMessageId: String(record.clientMessageId ?? ""),
+        failedAt: String(record.failedAt ?? new Date().toISOString()),
+        failureReason: String(record.failureReason ?? "unknown"),
+        textPreview: typeof record.textPreview === "string" ? record.textPreview : "[message content not persisted]"
+      };
+    })
+    .filter((item) => item.conversationId && item.clientMessageId);
+}
+
+migrateQueueStorage();
 
 function setQueue(queue: QueuedMessage[]): void {
   localStorage.setItem(QUEUE_KEY, JSON.stringify(queue));
@@ -56,7 +89,7 @@ function useQueueSnapshot(): QueuedMessage[] {
   const snapshot = useSyncExternalStore(subscribeQueue, getQueueSnapshot, getQueueServerSnapshot);
   return useMemo(() => {
     try {
-      return JSON.parse(snapshot) as QueuedMessage[];
+      return sanitizeQueueRecords(JSON.parse(snapshot));
     } catch {
       return [];
     }
@@ -77,12 +110,21 @@ function addToQueue(msg: QueuedMessage): void {
   setQueue(queue);
 }
 
+function rememberQueuedMessageText(clientMessageId: string, text: string): void {
+  queuedMessageText.set(clientMessageId, text);
+}
+
 function removeFromQueue(conversationId: string, clientMessageId: string): void {
+  queuedMessageText.delete(clientMessageId);
   setQueue(getQueue().filter((q) => !(q.conversationId === conversationId && q.clientMessageId === clientMessageId)));
 }
 
 function clearConversationQueue(conversationId: string): void {
-  setQueue(getQueue().filter((q) => q.conversationId !== conversationId));
+  const queue = getQueue();
+  for (const msg of queue) {
+    if (msg.conversationId === conversationId) queuedMessageText.delete(msg.clientMessageId);
+  }
+  setQueue(queue.filter((q) => q.conversationId !== conversationId));
 }
 
 export const queryKeys = {
@@ -155,11 +197,11 @@ export function useCurrentProfile() {
   return useQuery({ queryKey: queryKeys.currentProfile, queryFn: api.me });
 }
 
-export function useDirectorySearch(query: string) {
+export function useDirectorySearch(query: string, enabled = query.trim().length > 0) {
   return useQuery({
     queryKey: queryKeys.directory(query),
     queryFn: () => api.directoryUsers(query),
-    enabled: query.trim().length > 0,
+    enabled,
     staleTime: 5000
   });
 }
@@ -263,6 +305,8 @@ export function useStartConversation() {
     },
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.conversations });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.contacts });
+      void queryClient.invalidateQueries({ queryKey: ["directory"] });
     }
   });
 }
@@ -349,14 +393,15 @@ function useSendChatMutation(conversationId: string, sendAs: ChatSendRequest["se
         }
       }
       if (context?.messageId) {
+        rememberQueuedMessageText(context.messageId, input.text);
         addToQueue({
           conversationId,
-          text: input.text,
           clientMessageId: context.messageId,
           failedAt: new Date().toISOString(),
           failureReason: err && typeof err === "object" && "details" in err
             ? ((err as { details: Record<string, unknown> }).details?.relay_unavailable === true ? "relay_unavailable" : "unknown")
-            : "timeout"
+            : "timeout",
+          textPreview: "[message content retained only in memory]"
         });
       }
     },
@@ -749,6 +794,7 @@ export function useMissionThread(missionId: string | null) {
     };
     source.addEventListener("thread_message", onMessage);
     source.onerror = () => {
+      source.close();
       void queryClient.invalidateQueries({ queryKey: queryKeys.missionThread(missionId) });
     };
     return () => source.close();
@@ -1194,8 +1240,13 @@ export function useRetryQueued(conversationId: string) {
   return useCallback(async () => {
     const queue = getQueue().filter((q) => q.conversationId === conversationId);
     for (const msg of queue) {
+      const text = queuedMessageText.get(msg.clientMessageId);
+      if (!text) {
+        removeFromQueue(conversationId, msg.clientMessageId);
+        continue;
+      }
       try {
-        await sendMessage.mutateAsync({ text: msg.text, clientMessageId: msg.clientMessageId });
+        await sendMessage.mutateAsync({ text, clientMessageId: msg.clientMessageId });
         removeFromQueue(conversationId, msg.clientMessageId);
       } catch {
         // still failed - stays in queue

@@ -1,0 +1,772 @@
+Your screenshot shows two separate things:
+
+1. Tauri dev is failing because cargo is not available:
+   failed to run 'cargo metadata'
+   program not found
+
+2. The release exe is launching, but the UI is still wrong:
+   too large
+   centered
+   too many controls
+   not push-to-talk
+   transcript is inside an input box
+   not positioned like ChatGPT’s small overlay
+
+The implementation should become:
+
+Hold Ctrl + Space
+→ small black overlay appears above Windows taskbar on right side
+→ mic starts immediately
+→ white waveform animates
+→ live transcript appears above the waveform
+→ release Ctrl + Space
+→ mic stops
+→ overlay hides
+→ final transcript is sent to Oracle Amigo local agent
+→ local agent parses and executes the command through existing relay/A2A flow
+1. Fix your current dev error first
+
+Your terminal error:
+
+failed to run 'cargo metadata'
+program not found
+
+means Rust/Cargo is not installed or not in PATH.
+
+Tauri requires Rust for tauri dev and its global shortcut plugin docs say the plugin requires Rust at least 1.77.2. The official Rust install page says Windows users should install rustup-init.exe, and Rust tools such as cargo, rustc, and rustup live under %USERPROFILE%\.cargo\bin, so the terminal may need to be restarted after install. (Tauri Global Shortcut, Rust install)
+
+Run this on Windows:
+
+winget install Rustlang.Rustup
+
+Then close all PowerShell/VS Code terminals and reopen.
+
+Verify:
+
+cargo --version
+rustc --version
+
+Then run:
+
+npm --prefix apps/voice-launcher run tauri dev
+
+Your existing release exe can run because it was already built, but tauri dev cannot rebuild without Cargo.
+
+2. Correct UI target
+
+Your mini app should not look like this:
+
+Oracle Amigo
+Quick Voice
+Ctrl+Space dropdown
+Transcript Ready
+text input
+Mic button
+Preview button
+
+It should look like this:
+
+┌──────────────────────────────────────┐
+│ Ask Docin to send Harassment...      │  ← live transcript, white text
+│                                      │
+│        ▌▌▌▌▌▌▌▌▌▌▌▌                 │  ← white waveform
+│                                      │
+│        Release to send               │  ← optional small hint
+└──────────────────────────────────────┘
+
+Required visual rules:
+
+Background: #000000
+Waveform: white only
+Transcript: white
+No visible textbox
+No title
+No Ctrl+Space dropdown
+No Mic button
+No Preview button
+No “Transcript Ready”
+No large “Oracle Amigo Quick Voice”
+No normal app chrome if possible
+Small rounded overlay
+Right side above taskbar
+Always on top
+Hidden from taskbar
+
+Recommended window size:
+
+Width: 420px
+Height: 180px
+Border radius: 18px
+Position: bottom-right, 24px from right edge, 84px above taskbar
+3. Push-to-talk behavior
+
+Use Rust-side global shortcut handling, not only JavaScript, because the Rust plugin example exposes ShortcutState::Pressed and ShortcutState::Released. That is exactly what you need for hold-to-talk. Tauri’s docs show the Rust handler matching ShortcutState::Pressed and ShortcutState::Released, and the plugin requires explicit permissions because global shortcuts are blocked by default. (Tauri Global Shortcut)
+
+Behavior:
+
+Ctrl+Space pressed:
+- position window bottom-right
+- show window
+- focus window
+- emit "voice:start"
+- start microphone
+- start waveform
+- start transcript capture
+
+Ctrl+Space released:
+- emit "voice:stop-and-submit"
+- stop microphone
+- finalize transcript
+- send transcript to local agent
+- hide window
+
+Important: hide the window, do not kill the process. It must stay running in the background to catch the next shortcut.
+
+4. Mic and speech recognition design
+
+For the visual waveform, use Web Audio API:
+
+navigator.mediaDevices.getUserMedia({ audio: true })
+AudioContext
+AnalyserNode
+frequency/time-domain samples
+canvas/SVG bars
+
+getUserMedia() requests user permission and returns a MediaStream; browsers must show permission/recording indicators because microphone capture is privacy-sensitive. It is available in secure contexts, including localhost, but users must grant permission. (MDN getUserMedia)
+
+For real-time transcript, use a layered adapter:
+
+SpeechTranscriber
+├── BrowserSpeechTranscriber      // fastest POC
+├── WhisperSidecarTranscriber     // better offline production path
+└── MockTranscriber               // tests/dev
+
+The Web Speech API provides asynchronous speech recognition through SpeechRecognition and supports speech recognition from microphone/audio sources, but browser/WebView behavior can vary. (MDN Web Speech API)
+
+For production/privacy, use whisper.cpp as a local sidecar. It is a lightweight C/C++ Whisper implementation and explicitly supports building offline voice assistant applications; it also supports voice activity detection through VAD models, which is useful for cleaner push-to-talk transcripts. (whisper.cpp)
+
+Recommended path:
+
+Phase 1:
+BrowserSpeechTranscriber + typed fallback
+
+Phase 2:
+whisper.cpp sidecar
+
+Phase 3:
+streaming partial transcript + VAD + local model selection
+5. Backend flow
+
+The voice launcher should call the existing Oracle Amigo local agent.
+
+Do not call the control plane directly from the launcher.
+
+Correct chain:
+
+Voice Launcher
+→ Local Agent /voice/commands
+→ Local Agent parses command
+→ Local Agent resolves Docin via directory
+→ Local Agent sends /relay/send-file-request
+→ Docin agent receives A2A relay task
+→ Docin approval card appears
+→ Docin approves exact file
+→ relay transfer completes
+→ requester receives file
+
+Add or verify these local agent routes:
+
+POST /voice/commands
+GET  /voice/commands/:id
+POST /voice/commands/:id/confirm
+POST /voice/commands/:id/cancel
+GET  /voice/status
+
+Request:
+
+{
+  "transcript": "Ask Docin to send Harassment Certification.pdf file",
+  "source": "quick_voice",
+  "mode": "push_to_talk",
+  "locale": "en-IN"
+}
+
+Response:
+
+{
+  "command_id": "vcmd_123",
+  "intent": "remote_file_request",
+  "status": "submitted",
+  "conversation_id": "conv_123",
+  "relay_task_id": "rt_123",
+  "message": "File request sent to Docin’s agent."
+}
+
+For your specific command:
+
+Ask Docin to send Harassment Certification.pdf file
+
+Parser output should be:
+
+{
+  "intent": "remote_file_request",
+  "target_person_query": "Docin",
+  "file_query": "Harassment Certification.pdf",
+  "requires_confirmation": false,
+  "confidence": 0.94
+}
+
+Since this is only asking Docin’s agent to find a file, not sending a local file from your device, it can be submitted immediately after release. Docin still must approve before the file is transferred.
+
+6. Window positioning
+
+For correct “right side above taskbar” behavior, do not just call center().
+
+In Rust, position the overlay near the Windows work area. The best Windows-native method is to use the work-area rectangle, which excludes the taskbar.
+
+Implement a Tauri command:
+
+#[tauri::command]
+fn show_voice_window(app: tauri::AppHandle) -> Result<(), String> {
+    let window = app.get_webview_window("voice-launcher")
+        .ok_or("voice-launcher window not found")?;
+
+    let width = 420;
+    let height = 180;
+    let margin_right = 24;
+    let margin_bottom = 24;
+
+    // Better: use Windows GetMonitorInfo rcWork.
+    // Fallback: use primary monitor size.
+    let monitor = window.primary_monitor()
+        .map_err(|e| e.to_string())?
+        .ok_or("no primary monitor")?;
+
+    let pos = monitor.position();
+    let size = monitor.size();
+
+    let x = pos.x + size.width as i32 - width - margin_right;
+    let y = pos.y + size.height as i32 - height - 96 - margin_bottom;
+
+    window.set_size(tauri::Size::Physical(tauri::PhysicalSize { width, height }))
+        .map_err(|e| e.to_string())?;
+
+    window.set_position(tauri::Position::Physical(tauri::PhysicalPosition { x, y }))
+        .map_err(|e| e.to_string())?;
+
+    window.show().map_err(|e| e.to_string())?;
+    window.set_focus().map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+Then improve later with GetMonitorInfoW and rcWork to handle taskbar position accurately.
+
+7. Tauri window config
+
+In apps/voice-launcher/src-tauri/tauri.conf.json:
+
+{
+  "app": {
+    "windows": [
+      {
+        "label": "voice-launcher",
+        "title": "Oracle Amigo Quick Voice",
+        "width": 420,
+        "height": 180,
+        "resizable": false,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "visible": false,
+        "transparent": false,
+        "center": false
+      }
+    ]
+  }
+}
+
+Use decorations: false once stable. During debugging, you can temporarily keep decorations on.
+
+8. Minimal black UI implementation
+
+Your React app should become this structure:
+
+export default function App() {
+  return (
+    <main className="voice-shell">
+      <TranscriptLine text={transcript || interimTranscript} />
+      <WhiteWaveform level={audioLevel} active={isListening} />
+      <div className="voice-hint">
+        {isListening ? "Release Ctrl+Space to send" : "Hold Ctrl+Space to speak"}
+      </div>
+    </main>
+  );
+}
+
+CSS:
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  background: #000000;
+  overflow: hidden;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.voice-shell {
+  width: 100%;
+  height: 100%;
+  background: #000000;
+  color: #ffffff;
+  display: grid;
+  grid-template-rows: 1fr 76px 28px;
+  align-items: center;
+  justify-items: center;
+  padding: 20px 24px 16px;
+  box-sizing: border-box;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 18px;
+}
+
+.transcript-line {
+  width: 100%;
+  color: #ffffff;
+  font-size: 18px;
+  line-height: 1.35;
+  text-align: center;
+  white-space: normal;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.waveform {
+  width: 220px;
+  height: 64px;
+}
+
+.wave-bar {
+  fill: #ffffff;
+  opacity: 0.95;
+}
+
+.voice-hint {
+  color: rgba(255, 255, 255, 0.56);
+  font-size: 12px;
+  letter-spacing: 0.02em;
+}
+
+No visible textbox. No buttons.
+
+9. White waveform component
+
+Example SVG bars:
+
+function WhiteWaveform({ level, active }: { level: number; active: boolean }) {
+  const bars = 21;
+
+  return (
+    <svg className="waveform" viewBox="0 0 220 64" aria-hidden="true">
+      {Array.from({ length: bars }).map((_, i) => {
+        const center = Math.abs(i - Math.floor(bars / 2));
+        const base = 12 + (bars / 2 - center) * 2.2;
+        const motion = active ? Math.sin(Date.now() / 120 + i * 0.6) * 10 * level : 0;
+        const h = Math.max(8, base + motion);
+        const x = 10 + i * 10;
+        const y = 32 - h / 2;
+
+        return (
+          <rect
+            key={i}
+            className="wave-bar"
+            x={x}
+            y={y}
+            width="5"
+            height={h}
+            rx="2.5"
+          />
+        );
+      })}
+    </svg>
+  );
+}
+
+For smoother animation, drive it through requestAnimationFrame and Web Audio AnalyserNode.
+
+10. Push-to-talk lifecycle
+
+Correct lifecycle:
+
+Pressed:
+- clear previous transcript
+- show window
+- start mic
+- start STT
+- start waveform
+
+While held:
+- stream interim transcript into top text
+- waveform reacts to amplitude
+
+Released:
+- stop mic
+- stop STT
+- finalize transcript
+- if transcript non-empty:
+    POST /voice/commands
+- hide window
+- show result in main Oracle Amigo chat
+
+Important:
+
+Do not close the process.
+Do not keep mic alive after release.
+Do not submit empty transcript.
+Do not store raw audio.
+11. Advanced Codex/OpenCode prompt
+
+Paste this into Codex/OpenCode from your repo root:
+
+You are working inside the Oracle Amigo repository.
+
+Goal:
+Redesign and fix apps/voice-launcher so it behaves like a compact ChatGPT-style push-to-talk desktop overlay for Windows.
+
+Current problems:
+- oracle-amigo-quick-voice.exe launches in the center.
+- Window is too large.
+- UI shows Oracle Amigo Quick Voice title.
+- UI shows Ctrl+Space dropdown.
+- UI shows Transcript Ready pill.
+- UI shows textbox.
+- UI shows Mic and Preview buttons.
+- Background is not pure black.
+- Waveform is not pure white.
+- It does not behave as hold-to-talk.
+- It should open while Ctrl+Space is held and hide when Ctrl+Space is released.
+- Final transcript should be sent to the existing Oracle Amigo local agent backend.
+
+Important:
+Do not duplicate backend logic.
+Voice launcher is only an input surface.
+Oracle Amigo local agent remains the brain.
+
+Expected UX:
+1. User holds Ctrl+Space.
+2. Small overlay appears on Windows bottom-right above taskbar.
+3. Mic starts automatically.
+4. UI is pure black #000000.
+5. White waveform animates while user speaks.
+6. Live transcript appears above waveform in white text.
+7. User releases Ctrl+Space.
+8. Mic stops.
+9. Overlay hides.
+10. Final transcript is sent to local agent.
+11. Local agent parses and executes command.
+
+Example command:
+“Ask Docin to send Harassment Certification.pdf file”
+
+Expected backend flow:
+voice launcher
+→ POST /voice/commands
+→ local agent parses remote_file_request
+→ resolves Docin through directory
+→ sends /relay/send-file-request
+→ Docin agent receives A2A request
+→ Docin approves exact file
+→ file transfers through relay
+→ requester receives file in Agentic App Storage
+
+Phase 0: Fix dev tooling docs
+- Detect if cargo is missing.
+- Add docs/voice-launcher-windows-setup.md.
+- Explain that tauri dev requires Rust/Cargo.
+- Add instructions:
+  winget install Rustlang.Rustup
+  restart terminal
+  cargo --version
+  rustc --version
+  npm --prefix apps/voice-launcher run tauri dev
+
+Phase 1: Tauri window behavior
+Modify apps/voice-launcher/src-tauri/tauri.conf.json:
+- width: 420
+- height: 180
+- resizable: false
+- decorations: false
+- alwaysOnTop: true
+- skipTaskbar: true
+- visible: false
+- transparent: false
+- center: false
+- title: Oracle Amigo Quick Voice
+
+Implement Rust-side global shortcut handling using tauri-plugin-global-shortcut.
+Use Rust handler because it provides Pressed and Released events.
+
+On Ctrl+Space Pressed:
+- position window bottom-right above taskbar
+- show window
+- focus window
+- emit "voice:start"
+
+On Ctrl+Space Released:
+- emit "voice:stop-and-submit"
+- hide window after transcript finalization or short timeout
+
+If Ctrl+Space conflicts, keep config-ready support for:
+- Ctrl+Space default
+- Ctrl+Shift+Space fallback
+but UI should not show a dropdown.
+
+Phase 2: Window positioning
+Implement a Rust command/helper:
+show_voice_window()
+
+It should:
+- calculate primary monitor work area
+- position window bottom-right
+- margin right: 24px
+- margin bottom above taskbar: 24px
+- fallback if monitor lookup fails
+
+Prefer Windows work-area APIs if available; otherwise use Tauri monitor size with safe bottom offset.
+
+Phase 3: Minimal UI
+Replace apps/voice-launcher/src/App.tsx with a minimal overlay UI:
+- no title
+- no buttons
+- no input box
+- no preview button
+- no mic button
+- no Ctrl+Space dropdown
+- no Transcript Ready label
+
+Components:
+- VoiceOverlay
+- TranscriptLine
+- WhiteWaveform
+- HiddenStatusForScreenReader
+
+Layout:
+- transcript at top
+- waveform center
+- small hint below:
+  “Release to send”
+  or hide hint if user wants absolute minimal mode
+
+CSS:
+- body background #000000
+- shell background #000000
+- transcript color #ffffff
+- waveform bars #ffffff
+- no gradients
+- no blue/cyan/purple accents
+- border subtle rgba(255,255,255,0.12)
+- border radius 18px
+
+Phase 4: Mic capture and waveform
+Implement:
+useMicCapture()
+useAudioLevel()
+useWaveformAnimation()
+
+Use:
+navigator.mediaDevices.getUserMedia({ audio: true })
+AudioContext
+AnalyserNode
+requestAnimationFrame
+
+Rules:
+- ask permission only when needed
+- start mic on voice:start
+- stop all tracks on voice:stop-and-submit
+- do not keep mic alive when hidden
+- do not save raw audio
+- show error if mic permission denied
+
+Phase 5: Speech transcription
+Implement a SpeechTranscriber interface:
+- start()
+- stop()
+- onInterimTranscript()
+- onFinalTranscript()
+
+Implement:
+BrowserSpeechTranscriber
+- uses window.SpeechRecognition or webkitSpeechRecognition if available
+- continuous = true
+- interimResults = true
+- language = en-IN or configurable
+
+MockTranscriber
+- for tests
+
+WhisperSidecarTranscriber placeholder
+- for future offline STT
+- do not block this implementation on whisper.cpp
+
+If browser speech recognition is unavailable:
+- show a tiny error:
+  “Speech recognition unavailable”
+- allow typed fallback only in development mode
+- production UI should not show a big textbox
+
+Phase 6: Voice command local-agent integration
+Implement or verify:
+apps/voice-launcher/src/lib/localAgentVoiceClient.ts
+
+It must call:
+POST /voice/commands
+
+Request:
+{
+  transcript,
+  source: "quick_voice",
+  mode: "push_to_talk",
+  locale: "en-IN"
+}
+
+If /voice/commands does not exist, add local-agent backend routes:
+POST /voice/commands
+GET /voice/commands/:id
+POST /voice/commands/:id/confirm
+POST /voice/commands/:id/cancel
+GET /voice/status
+
+Implement src/voice:
+- VoiceCommandParser.ts
+- VoiceCommandService.ts
+- VoiceCommandRoutes.ts
+- VoiceCommandTypes.ts
+
+Parser must support:
+1. Ask {person} to send me {file}
+2. Request {file} from {person}
+3. Find {file}
+4. Show pending approvals
+5. Open chat with {person}
+
+For:
+“Ask Docin to send Harassment Certification.pdf file”
+
+Return:
+{
+  intent: "remote_file_request",
+  target_person_query: "Docin",
+  file_query: "Harassment Certification.pdf",
+  confidence: 0.94,
+  requires_confirmation: false
+}
+
+For remote_file_request:
+- resolve Docin through DirectoryClient
+- choose active agent with file.request.search capability
+- create/find conversation
+- call existing relay send file request flow
+- append message/task into chat timeline
+- return relay_task_id
+
+Phase 7: Submit on key release
+When voice:stop-and-submit fires:
+- stop mic
+- finalize transcript
+- trim text
+- if empty, hide and do nothing
+- if non-empty, POST /voice/commands
+- hide overlay immediately after local agent accepts command
+- if request fails, optionally show Windows/local notification or log error
+- main Oracle Amigo chat should show the command/task
+
+Phase 8: Database
+Add voice_commands table if missing:
+id
+profile_id
+org_id
+user_id
+agent_id
+agent_instance_id
+transcript
+parsed_intent
+parsed_json
+status
+conversation_id
+relay_task_id
+created_at
+confirmed_at
+completed_at
+error_message
+
+States:
+captured
+transcribed
+parsed
+submitted
+running
+completed
+failed
+cancelled
+
+Phase 9: Security and privacy
+Rules:
+- no always-listening
+- mic only active while Ctrl+Space is held
+- visible mic state while overlay is visible
+- stop mic on release, Esc, blur timeout, or app hide
+- no raw audio persistence
+- store transcript only as command history
+- do not send local files from voice command without approval
+- remote file request is allowed, but remote user still approves
+- redact transcripts from debug logs unless verbose mode enabled
+
+Phase 10: Tests
+Add tests:
+- Ctrl+Space press emits start
+- Ctrl+Space release emits stop-and-submit
+- window positioning returns bottom-right coordinates
+- transcript renders above waveform
+- no textbox/buttons/title in normal UI
+- parser extracts Docin and Harassment Certification.pdf
+- empty transcript does not submit
+- remote_file_request calls local-agent voice command endpoint
+- local agent voice command calls relay send-file-request
+- mic stop stops all tracks
+
+Phase 11: Scripts
+Add or verify:
+dev:voice-launcher
+build:voice-launcher
+tauri:voice-dev
+tauri:voice-build
+
+Acceptance:
+- npm --prefix apps/voice-launcher run tauri dev works after Rust/Cargo install
+- Ctrl+Space press opens small overlay bottom-right above taskbar
+- overlay is #000000
+- waveform is white
+- transcript is white and appears above waveform
+- no textbox, no title, no buttons, no preview/dropdown
+- releasing Ctrl+Space hides overlay
+- transcript is sent to local agent
+- “Ask Docin to send Harassment Certification.pdf file” becomes a relay file request
+- full Oracle Amigo chat shows the task
+12. What to do now, in order
+1. Install Rust/Cargo and fix tauri dev.
+2. Change the overlay window size and position.
+3. Replace the current UI with pure black + transcript + white waveform.
+4. Move shortcut handling to Rust so you can detect Pressed/Released.
+5. Start mic on Pressed, stop/submit on Released.
+6. Add /voice/commands in local agent if missing.
+7. Parse “Ask Docin to send X file” into remote_file_request.
+8. Reuse existing /relay/send-file-request flow.
+9. Add tests.
+
+The key design rule:
+
+Quick Voice is not a chat window. It is a temporary push-to-talk command surface. The full Oracle Amigo chat remains the place where the task, approval, transfer, and receipt are shown.

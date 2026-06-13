@@ -12,12 +12,20 @@ export type ImageProps = GeneratedImageLike &
     alt: string
   }
 
+const SAFE_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"])
+const MAX_BASE64_LENGTH = 7 * 1024 * 1024
+
+function safeImageMediaType(mediaType: string | undefined): string {
+  const normalized = mediaType?.toLowerCase()
+  return normalized && SAFE_IMAGE_TYPES.has(normalized) ? normalized : "image/png"
+}
+
 function getImageSrc({
   base64,
   mediaType,
 }: Pick<GeneratedImageLike, "base64" | "mediaType">) {
-  if (base64 && mediaType) {
-    return `data:${mediaType};base64,${base64}`
+  if (base64 && mediaType && base64.length <= MAX_BASE64_LENGTH) {
+    return `data:${safeImageMediaType(mediaType)};base64,${base64}`
   }
   return undefined
 }
@@ -34,7 +42,7 @@ export const Image = ({
 
   useEffect(() => {
     if (uint8Array && mediaType) {
-      const blob = new Blob([uint8Array as BlobPart], { type: mediaType })
+      const blob = new Blob([uint8Array as BlobPart], { type: safeImageMediaType(mediaType) })
       const url = URL.createObjectURL(blob)
       setObjectUrl(url)
       return () => {

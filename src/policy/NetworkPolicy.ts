@@ -1,4 +1,5 @@
 import type { NetworkProfile } from "../sandbox/SandboxTypes.js";
+import { isPrivateOrMetadataHost } from "../security/SecurityGuards.js";
 
 export interface NetworkPolicyResult {
   profile: NetworkProfile;
@@ -32,6 +33,13 @@ export class NetworkPolicy {
   }
 
   private normalizeHost(host: string): string {
-    return host.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+    const normalized = host.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+    if (!normalized || !/^[a-z0-9.-]+$/.test(normalized)) {
+      throw new Error(`Invalid network host: ${host}`);
+    }
+    if (isPrivateOrMetadataHost(normalized)) {
+      throw new Error(`Network host is not allowed: ${normalized}`);
+    }
+    return normalized;
   }
 }

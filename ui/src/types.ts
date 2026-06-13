@@ -281,18 +281,26 @@ export interface AgentInstance {
   display_name: string;
   device_name?: string;
   status: string;
+  capabilities?: string[];
   relay_inbox_url: string;
   agent_card_url: string;
   agent_card_hash: string;
   last_seen_at: string | null;
+  last_heartbeat_at?: string | null;
 }
 
 export interface Contact {
   id: string;
+  org_id?: string;
   requester_user_id: string;
   target_user_id: string;
   status: string;
+  created_at?: string;
   updated_at: string;
+  requester_display_name?: string;
+  requester_email?: string;
+  target_display_name?: string;
+  target_email?: string;
 }
 
 export interface CandidateFile {

@@ -1,10 +1,10 @@
 import "dotenv/config";
-import { createHash, randomUUID } from "node:crypto";
-import { createReadStream, existsSync } from "node:fs";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createReadStream, existsSync, realpathSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { basename, extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import Fastify, { type FastifyReply } from "fastify";
+import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import { z, ZodError } from "zod";
 import { SandboxTool } from "./agent-tools/SandboxTool.js";
 import {
@@ -79,6 +79,8 @@ import { getDeviceTokenRecoveryStatus, structuredEnrollmentError, withRecoveredD
 import { ChatRepository, type ChatConversationRecord, type ChatMessageRecord, type DeliveryStatus, type RelayDeliveryReceipt } from "./chat/ChatRepository.js";
 import { VoiceCommandService } from "./voice/VoiceCommandService.js";
 import { registerVoiceCommandRoutes } from "./voice/VoiceCommandRoutes.js";
+import { assertPublicHttpsUrl, constantTimeEqual, requireLocalApiToken, signApprovalCallback, verifyApprovalCallbackSignature } from "./security/SecurityGuards.js";
+import { createHandshakeContext, verifyHandshakeOffer, verifyHandshakeResponse } from "./security/AnpHandshakeAdapter.js";
 
 const FileSearchSchema = z.object({
   query: z.string().trim().min(1).max(500)
@@ -108,8 +110,54 @@ const ChatConversationSendSchema = z.object({
   client_message_id: z.string().trim().min(1).max(200).optional()
 });
 
+const SkillIdSchema = z.string().trim().regex(/^[a-z0-9][a-z0-9-]{1,63}$/);
+
+const SkillWriteSchema = z.object({
+  manifest: z.object({
+    id: SkillIdSchema,
+    name: z.string().trim().min(1).max(120),
+    description: z.string().trim().max(2_000).optional(),
+    version: z.string().trim().min(1).max(50).optional(),
+    tags: z.array(z.string().trim().min(1).max(80)).max(30).optional(),
+    examples: z.array(z.string().trim().min(1).max(1_000)).max(20).optional(),
+    inputModes: z.array(z.string().trim().min(1).max(100)).max(20).optional(),
+    outputModes: z.array(z.string().trim().min(1).max(100)).max(20).optional()
+  }),
+  body: z.string().max(100_000).default("")
+});
+
+const RegistryTrustLevelSchema = z.enum(["local", "loopback", "trusted", "discovered", "blocked"]);
+
+const AgentRegistrySchema = z.object({
+  did: z.string().trim().min(1).max(500),
+  name: z.string().trim().min(1).max(200),
+  description: z.string().trim().max(2_000).optional(),
+  agentCardUrl: z.string().trim().max(2_000).optional(),
+  anpEndpoint: z.string().trim().max(2_000).optional(),
+  supportedProtocols: z.array(z.string().trim().min(1).max(100)).max(50).optional(),
+  skills: z.array(z.string().trim().min(1).max(200)).max(200).optional(),
+  trustLevel: RegistryTrustLevelSchema.optional(),
+  notes: z.string().trim().max(2_000).optional(),
+  autoFetch: z.boolean().optional()
+});
+
+const AgentRegistryDiscoverSchema = z.object({
+  url: z.string().trim().min(1).max(2_000),
+  trustLevel: RegistryTrustLevelSchema.optional()
+});
+
+const AnpVerifyOfferSchema = z.object({
+  offer: z.any(),
+  publicKey: z.string().trim().min(1).max(4_096)
+});
+
+const AnpVerifyResponseSchema = z.object({
+  response: z.any(),
+  publicKey: z.string().trim().min(1).max(4_096)
+});
+
 const FileIndexSchema = z.object({
-  roots: z.array(z.string().trim().min(1)).default([])
+  roots: z.array(z.string().trim().min(1)).max(20).default([])
 });
 
 const IntentClassifySchema = z.object({
@@ -221,6 +269,17 @@ const RelaySendSchema = z.object({
   message: "Either to_agent_instance_id or peer_user_id is required"
 });
 
+const ApprovalCallbackSchema = z.object({
+  approvalId: z.string().trim().min(1).max(200),
+  taskId: z.string().trim().min(1).max(200),
+  action: z.enum(["approve", "reject", "feedback"]).default("approve"),
+  feedback: z.string().max(1000).optional(),
+  idempotencyKey: z.string().trim().min(1).max(200).optional(),
+  idempotency_key: z.string().trim().min(1).max(200).optional(),
+  nonce: z.string().trim().min(16).max(128),
+  signature: z.string().trim().regex(/^[a-fA-F0-9]{64}$/)
+});
+
 const DEFAULT_DEV_ORG_SLUG = "local-dev";
 
 export function buildServer(
@@ -230,6 +289,7 @@ export function buildServer(
 ) {
   const logger = createLogger();
   const server = Fastify({ logger: false, rewriteUrl: getA2Av1UrlRewriter() });
+  const localOnly = { preHandler: requireLocalApiToken };
   // A2A v1.0.0 uses `application/a2a+json` as its content type
   server.addContentTypeParser("application/a2a+json", { parseAs: "string" }, (_req, body, done) => {
     try { done(null, body ? JSON.parse(body as string) : {}); } catch (err) { done(err as Error, undefined); }
@@ -239,6 +299,7 @@ export function buildServer(
   const agentRuns = new AgentRunService(tool, fileSearch, reasoner);
   const chatRunSubscriptions = new Map<string, () => void>();
   const protocol = new PersonalAgentProtocol();
+  const anpHandshakeContext = createHandshakeContext();
   const intentExtractor = createIntentExtractor();
   const queryRewriter = createQueryRewriter();
   const commandPolicy = new CommandPolicy();
@@ -254,6 +315,17 @@ export function buildServer(
   const redactionEngine = new RedactionEngine(getDb());
   const adminPolicy = new AdminPolicyEngine(getDb());
   const notificationEvents = new NotificationEventStore(getDb());
+  const approvalCallbackSecret = process.env.APPROVAL_CALLBACK_SECRET && process.env.APPROVAL_CALLBACK_SECRET.length >= 32
+    ? process.env.APPROVAL_CALLBACK_SECRET
+    : randomBytes(32).toString("base64url");
+
+  const createApprovalCallbackAuth = (approvalId: string, taskId: string) => {
+    const nonce = randomBytes(16).toString("base64url");
+    return {
+      nonce,
+      signature: signApprovalCallback({ approvalId, taskId, action: "notification", nonce, secret: approvalCallbackSecret })
+    };
+  };
 
   const sanitizeFacadePayload = <T>(value: T): T => {
     const redacted = redactSecretTextOnly(value, secretPolicy);
@@ -427,6 +499,10 @@ export function buildServer(
       reply.status(404).send({ error: message });
       return;
     }
+    if (isIndexRootValidationError(message)) {
+      reply.status(400).send({ error: "INVALID_INDEX_ROOT", message });
+      return;
+    }
     if (typeof message === 'string' && (message.includes('jwt expired') || message.includes('expired') || message.includes('TOKEN_EXPIRED'))) {
       reply.status(401).send({ 
         error: "TOKEN_EXPIRED", 
@@ -453,7 +529,7 @@ export function buildServer(
       reply.header("Access-Control-Allow-Origin", origin);
       reply.header("Vary", "Origin");
       reply.header("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
-      reply.header("Access-Control-Allow-Headers", "content-type,authorization");
+      reply.header("Access-Control-Allow-Headers", "content-type,authorization,x-local-agent-token");
       reply.header("Access-Control-Allow-Credentials", "false");
       if (request.method === "OPTIONS") {
         reply.status(204).send();
@@ -565,7 +641,7 @@ export function buildServer(
     request.raw.on("close", unsubscribe);
   });
 
-  server.post("/redactions/preview", async (request, reply) => {
+  server.post("/redactions/preview", localOnly, async (request, reply) => {
     const body = parseBody(RedactionRequestSchema, request.body ?? {});
     const file = getStoredFile(body.fileId);
     if (!file) return reply.status(404).send({ error: "File not found" });
@@ -576,7 +652,7 @@ export function buildServer(
     return sanitizeFacadePayload(preview);
   });
 
-  server.post("/redactions/apply", async (request, reply) => {
+  server.post("/redactions/apply", localOnly, async (request, reply) => {
     const body = parseBody(RedactionRequestSchema, request.body ?? {});
     const file = getStoredFile(body.fileId);
     if (!file) return reply.status(404).send({ error: "File not found" });
@@ -609,7 +685,7 @@ export function buildServer(
     return sanitizeFacadePayload({ job, policy });
   });
 
-  server.get("/redactions/:id/download", async (request, reply) => {
+  server.get("/redactions/:id/download", localOnly, async (request, reply) => {
     const { id } = request.params as { id: string };
     const output = redactionEngine.getOutput(id);
     if (!output || !existsSync(output.path)) return reply.status(404).send({ error: "Redacted file not found" });
@@ -619,12 +695,12 @@ export function buildServer(
       .send(createReadStream(output.path));
   });
 
-  server.get("/notifications", async (request) => {
+  server.get("/notifications", localOnly, async (request) => {
     const q = (request.query ?? {}) as { limit?: string };
     return sanitizeFacadePayload({ events: notificationEvents.list(Math.min(Math.max(Number(q.limit ?? 50), 1), 100)) });
   });
 
-  server.post("/notifications", async (request) => {
+  server.post("/notifications", localOnly, async (request) => {
     const body = parseBody(NotificationEventSchema, request.body ?? {});
     const event = notificationEvents.record(body);
     return sanitizeFacadePayload({ event });
@@ -656,13 +732,13 @@ export function buildServer(
     }, { controlPlaneUrl: body.control_plane_url ?? defaultControlPlaneUrl() });
   });
 
-  server.post("/cloud/logout", async () => {
+  server.post("/cloud/logout", localOnly, async () => {
     heartbeatService.stop();
     inboxPoller.stop();
     return deviceEnrollment.logout();
   });
 
-  server.post("/cloud/enroll", async (request, reply) => {
+  server.post("/cloud/enroll", localOnly, async (request, reply) => {
     const body = parseBody(CloudEnrollSchema, request.body ?? {});
     let result: Awaited<ReturnType<AgentRegistrationService["enroll"]>>;
     try {
@@ -689,7 +765,7 @@ export function buildServer(
     return result;
   });
 
-  server.post("/cloud/device-identity/reset", async (_request, reply) => {
+  server.post("/cloud/device-identity/reset", localOnly, async (_request, reply) => {
     const cloud = cloudStore.getOrCreate();
     if (!cloud.userAccessToken) {
       return reply.status(401).send({
@@ -956,7 +1032,7 @@ export function buildServer(
         : "Message received and classified as normal chat.";
       if (configuration?.pushNotificationConfig) {
         const list = pushNotificationStore.get(task.id) ?? [];
-        list.push({ taskId: task.id, pushNotificationConfig: configuration.pushNotificationConfig });
+        list.push({ taskId: task.id, pushNotificationConfig: sanitizePushNotificationConfig(configuration.pushNotificationConfig) });
         pushNotificationStore.set(task.id, list);
       }
       return makeTask({
@@ -976,7 +1052,7 @@ export function buildServer(
       wfTransition(task.id, "INTENT_CLASSIFIED", { text });
       if (configuration.pushNotificationConfig) {
         const list = pushNotificationStore.get(task.id) ?? [];
-        list.push({ taskId: task.id, pushNotificationConfig: configuration.pushNotificationConfig });
+        list.push({ taskId: task.id, pushNotificationConfig: sanitizePushNotificationConfig(configuration.pushNotificationConfig) });
         pushNotificationStore.set(task.id, list);
       }
       configuration.emit(makeMessage("agent", [makeTextPart("Streaming started...")], { contextId: message.contextId, taskId: task.id }));
@@ -1036,7 +1112,7 @@ export function buildServer(
     onPushNotificationConfigSet: async (taskId, config): Promise<TaskPushNotificationConfig> => {
       const list = pushNotificationStore.get(taskId) ?? [];
       const id = config.id ?? randomUUID();
-      const stored: TaskPushNotificationConfig = { taskId, pushNotificationConfig: { ...config, id } };
+      const stored: TaskPushNotificationConfig = { taskId, pushNotificationConfig: sanitizePushNotificationConfig({ ...config, id }) };
       list.push(stored);
       pushNotificationStore.set(taskId, list);
       return stored;
@@ -1332,12 +1408,12 @@ export function buildServer(
 
   const a2aV1Handler = new A2Av1Handler(a2aV1Ctx);
   registerA2Av1RoutesWithOptions(server, a2aV1Handler, {
-    requireRemoteAuth: process.env.AGENTIC_A2A_REMOTE_AUTH_REQUIRED === "true",
+    requireRemoteAuth: process.env.AGENTIC_A2A_REMOTE_AUTH_REQUIRED !== "false",
     verifyAuth: async (request, tenant) => {
       const token = request.headers.authorization?.replace(/^Bearer\s+/i, "").trim();
       if (!token) return null;
       const identity = cloudStore.get();
-      if (!identity?.deviceAccessToken || identity.deviceAccessToken !== token) return null;
+      if (!identity?.deviceAccessToken || !constantTimeEqual(identity.deviceAccessToken, token)) return null;
       return {
         token,
         orgId: identity.orgId ?? undefined,
@@ -1383,12 +1459,11 @@ export function buildServer(
     });
   });
 
-  server.post("/skills", async (request, reply) => {
-    const body = (request.body ?? {}) as { path?: string; manifest?: any; body?: string };
-    if (!body.path) return reply.status(400).send({ error: "path required" });
-    if (!body.manifest?.id || !body.manifest?.name) return reply.status(400).send({ error: "manifest.id and manifest.name required" });
+  server.post("/skills", localOnly, async (request, reply) => {
+    const body = parseBody(SkillWriteSchema, request.body ?? {});
+    const skillDir = skillPathForId(body.manifest.id);
     try {
-      await writeSkill(body.path, {
+      await writeSkill(skillDir, {
         id: body.manifest.id,
         name: body.manifest.name,
         description: body.manifest.description ?? "",
@@ -1399,7 +1474,7 @@ export function buildServer(
         outputModes: body.manifest.outputModes ?? ["application/json"],
         body: body.body ?? "",
       });
-      const loaded = await loadSkillFromDir(body.path);
+      const loaded = await loadSkillFromDir(skillDir);
       if (loaded) skillRegistry.upsert(loaded);
       return reply.send({ ok: true, skill: loaded });
     } catch (err) {
@@ -1407,13 +1482,13 @@ export function buildServer(
     }
   });
 
-  server.delete("/skills/:id", async (request, reply) => {
-    const params = request.params as { id: string };
-    const skill = skillRegistry.get(params.id);
+  server.delete("/skills/:id", localOnly, async (request, reply) => {
+    const { id } = parseBody(z.object({ id: SkillIdSchema }), request.params);
+    const skill = skillRegistry.get(id);
     if (!skill) return reply.status(404).send({ error: "Skill not found" });
     try {
-      await deleteSkill(skill.path);
-      skillRegistry.remove(params.id);
+      await deleteSkill(skillPathForId(id));
+      skillRegistry.remove(id);
       return reply.send({ ok: true });
     } catch (err) {
       return reply.status(500).send({ ok: false, error: err instanceof Error ? err.message : String(err) });
@@ -1463,20 +1538,8 @@ export function buildServer(
     return agent;
   });
 
-  server.post("/registry", async (request, reply) => {
-    const body = (request.body ?? {}) as {
-      did?: string;
-      name?: string;
-      description?: string;
-      agentCardUrl?: string;
-      anpEndpoint?: string;
-      supportedProtocols?: string[];
-      skills?: string[];
-      trustLevel?: TrustLevel;
-      notes?: string;
-      autoFetch?: boolean;
-    };
-    if (!body.did || !body.name) return reply.status(400).send({ error: "did and name required" });
+  server.post("/registry", localOnly, async (request, reply) => {
+    const body = parseBody(AgentRegistrySchema, request.body ?? {});
     try {
       if (body.autoFetch && body.agentCardUrl) {
         const result = await discoverAndRegister({
@@ -1503,7 +1566,7 @@ export function buildServer(
     }
   });
 
-  server.delete("/registry/:did", async (request, reply) => {
+  server.delete("/registry/:did", localOnly, async (request, reply) => {
     const params = request.params as { did: string };
     const decoded = decodeURIComponent(params.did);
     const ok = deleteAgent(decoded);
@@ -1511,7 +1574,7 @@ export function buildServer(
     return { ok: true };
   });
 
-  server.put("/registry/:did/trust", async (request, reply) => {
+  server.put("/registry/:did/trust", localOnly, async (request, reply) => {
     const params = request.params as { did: string };
     const body = (request.body ?? {}) as { trustLevel?: TrustLevel };
     if (!body.trustLevel) return reply.status(400).send({ error: "trustLevel required" });
@@ -1522,7 +1585,7 @@ export function buildServer(
     return updated;
   });
 
-  server.post("/registry/:did/refresh", async (request, reply) => {
+  server.post("/registry/:did/refresh", localOnly, async (request, reply) => {
     const params = request.params as { did: string };
     const decoded = decodeURIComponent(params.did);
     const result = await refreshAgent(decoded);
@@ -1530,9 +1593,8 @@ export function buildServer(
     return { ok: true, did: decoded, cardHash: result.cardHash };
   });
 
-  server.post("/registry/discover", async (request, reply) => {
-    const body = (request.body ?? {}) as { url?: string; trustLevel?: TrustLevel };
-    if (!body.url) return reply.status(400).send({ error: "url required" });
+  server.post("/registry/discover", localOnly, async (request, reply) => {
+    const body = parseBody(AgentRegistryDiscoverSchema, request.body ?? {});
     try {
       const result = await discoverAndRegister({ url: body.url, trustLevel: body.trustLevel });
       return reply.send({ ok: true, did: result.did, cardHash: result.cardHash, card: result.card });
@@ -1541,7 +1603,7 @@ export function buildServer(
     }
   });
 
-  server.get("/memory/conversations", async (request) => {
+  server.get("/memory/conversations", localOnly, async (request) => {
     const q = (request.query ?? {}) as { limit?: string; offset?: string };
     const limit = Math.max(1, Math.min(100, Number(q.limit ?? 25)));
     const offset = Math.max(0, Number(q.offset ?? 0));
@@ -1552,7 +1614,7 @@ export function buildServer(
     });
   });
 
-  server.get("/memory/conversations/:id/window", async (request) => {
+  server.get("/memory/conversations/:id/window", localOnly, async (request) => {
     const { id } = request.params as { id: string };
     const q = (request.query ?? {}) as { maxChars?: string; maxMessages?: string };
     const maxChars = Math.max(500, Math.min(20000, Number(q.maxChars ?? 8000)));
@@ -1565,7 +1627,7 @@ export function buildServer(
     });
   });
 
-  server.get("/memory/episodic", async (request) => {
+  server.get("/memory/episodic", localOnly, async (request) => {
     const q = (request.query ?? {}) as { taskId?: string; query?: string; limit?: string };
     const limit = Math.max(1, Math.min(100, Number(q.limit ?? 25)));
     const events = q.taskId
@@ -1576,7 +1638,7 @@ export function buildServer(
     return sanitizeFacadePayload({ events, limit });
   });
 
-  server.get("/memory/long-term", async (request) => {
+  server.get("/memory/long-term", localOnly, async (request) => {
     const q = (request.query ?? {}) as { namespace?: string; query?: string; limit?: string; offset?: string };
     const namespace = (q.namespace ?? "default").trim() || "default";
     const limit = Math.max(1, Math.min(100, Number(q.limit ?? 25)));
@@ -1599,7 +1661,7 @@ export function buildServer(
     return sanitizeFacadePayload({ rewrite });
   });
 
-  server.get("/policy/summary", async () => {
+  server.get("/policy/summary", localOnly, async () => {
     const networkProfiles = (["none", "npm", "python", "github", "web-basic"] as const)
       .map((profile) => networkPolicy.resolve(profile));
     const hostScopedSecrets = secretPolicy.getHostScopedSecrets();
@@ -1627,11 +1689,11 @@ export function buildServer(
     });
   });
 
-  server.get("/policy/rules", async () => {
+  server.get("/policy/rules", localOnly, async () => {
     return sanitizeFacadePayload({ rules: adminPolicy.list() });
   });
 
-  server.post("/policy/rules", async (request) => {
+  server.post("/policy/rules", localOnly, async (request) => {
     const body = parseBody(PolicyRuleSchema, request.body ?? {});
     const rule = adminPolicy.upsert(body);
     appendAuditEvent({
@@ -1642,7 +1704,7 @@ export function buildServer(
     return sanitizeFacadePayload({ rule });
   });
 
-  server.put("/policy/rules/:id", async (request) => {
+  server.put("/policy/rules/:id", localOnly, async (request) => {
     const { id } = request.params as { id: string };
     const body = parseBody(PolicyRuleSchema, { ...(request.body as object), id });
     const rule = adminPolicy.upsert(body);
@@ -1654,7 +1716,7 @@ export function buildServer(
     return sanitizeFacadePayload({ rule });
   });
 
-  server.delete("/policy/rules/:id", async (request, reply) => {
+  server.delete("/policy/rules/:id", localOnly, async (request, reply) => {
     const { id } = request.params as { id: string };
     const ok = adminPolicy.delete(id);
     if (!ok) return reply.status(404).send({ error: "Policy rule not found" });
@@ -1666,19 +1728,19 @@ export function buildServer(
     return { ok: true };
   });
 
-  server.post("/policy/evaluate", async (request) => {
+  server.post("/policy/evaluate", localOnly, async (request) => {
     const body = parseBody(PolicyEvaluateSchema, request.body ?? {});
     return sanitizeFacadePayload({ evaluation: adminPolicy.evaluate(body) });
   });
 
-  server.get("/policy/export.csv", async (_request, reply) => {
+  server.get("/policy/export.csv", localOnly, async (_request, reply) => {
     return reply
       .type("text/csv; charset=utf-8")
       .header("Content-Disposition", "attachment; filename=\"oracle-amigo-policy-rules.csv\"")
       .send(adminPolicy.exportCsv());
   });
 
-  server.post("/policy/command/evaluate", async (request) => {
+  server.post("/policy/command/evaluate", localOnly, async (request) => {
     const { command, timeoutMs } = parseBody(PolicyCommandEvaluateSchema, request.body);
     const redactedCommand = secretPolicy.redactText(command);
     const decision = commandPolicy.evaluate(redactedCommand);
@@ -1981,10 +2043,13 @@ export function buildServer(
     });
     if (topCandidate) {
       const callbackPort = Number(process.env.SANDBOX_PORT ?? 3399);
+      const callbackAuth = createApprovalCallbackAuth(approval.id, task.id);
       notifyBridge({
         approvalId: approval.id,
         taskId: task.id,
         candidateId: topCandidate.id,
+        callbackNonce: callbackAuth.nonce,
+        callbackSignature: callbackAuth.signature,
         requesterName: protocol.createLocalIdentity().agentId,
         requestedItem: text,
         topCandidateFileName: topCandidate.fileName,
@@ -2138,7 +2203,7 @@ export function buildServer(
     });
   }
 
-  server.post("/chat/messages", async (request) => {
+  server.post("/chat/messages", localOnly, async (request) => {
     const { text, conversationId } = parseBody(ChatMessageSchema, request.body);
     const convId = conversationId ?? `conv-${Date.now()}`;
     const now = new Date().toISOString();
@@ -2186,10 +2251,13 @@ export function buildServer(
     // Fire OS notification (Windows toast) via local bridge; non-blocking on bridge failure.
     if (topCandidate) {
       const callbackPort = Number(process.env.SANDBOX_PORT ?? 3399);
+      const callbackAuth = createApprovalCallbackAuth(approval.id, task.id);
       notifyBridge({
         approvalId: approval.id,
         taskId: task.id,
         candidateId: String(topCandidate.id),
+        callbackNonce: callbackAuth.nonce,
+        callbackSignature: callbackAuth.signature,
         requesterName: protocol.createLocalIdentity().agentId,
         requestedItem: text,
         topCandidateFileName: topCandidate.fileName,
@@ -2224,7 +2292,7 @@ export function buildServer(
     };
   });
 
-  server.post("/chat/conversations", async (request) => {
+  server.post("/chat/conversations", localOnly, async (request) => {
     const body = parseBody(ChatConversationSchema, request.body);
     const cloud = cloudStore.get();
     const conversation = chatRepo.createConversation({
@@ -2248,7 +2316,7 @@ export function buildServer(
     return { conversation: conversationToUi(conversation, chatRepo.getMessages(conversation.id), peer, cloud?.agentInstanceId ?? localIdentity.agentId) };
   });
 
-  server.get("/chat/conversations", async () => {
+  server.get("/chat/conversations", localOnly, async () => {
     const cloud = cloudStore.get();
     chatRepo.getOrCreateLocalConversation(cloud?.agentInstanceId ?? localIdentity.agentId);
     const conversations: ChatConversationRecord[] = [];
@@ -2271,7 +2339,7 @@ export function buildServer(
     };
   });
 
-  server.get("/chat/conversations/:id/messages", async (request) => {
+  server.get("/chat/conversations/:id/messages", localOnly, async (request) => {
     const { id } = request.params as { id: string };
     const cloud = cloudStore.get();
     const conversation = chatRepo.getConversation(id);
@@ -2281,7 +2349,7 @@ export function buildServer(
     return { conversationId: id, messages };
   });
 
-  server.get("/chat/diagnostics", async () => {
+  server.get("/chat/diagnostics", localOnly, async () => {
     const runs = agentRuns.listRuns();
     return {
       backend: "ok",
@@ -2299,7 +2367,7 @@ export function buildServer(
     };
   });
 
-  server.post("/chat/conversations/:id/messages", async (request, reply) => {
+  server.post("/chat/conversations/:id/messages", localOnly, async (request, reply) => {
     const { id } = request.params as { id: string };
     const body = parseBody(ChatConversationSendSchema, request.body);
     const cloud = cloudStore.get();
@@ -2443,30 +2511,32 @@ export function buildServer(
     };
   });
 
-  server.post("/files/index-roots", async (request) => {
+  server.post("/files/index-roots", localOnly, async (request) => {
     const { roots } = parseBody(FileIndexSchema, request.body ?? {});
     const results: Array<{ root: string; indexed: number }> = [];
     for (const root of roots ?? []) {
-      const count = await indexRoot(root);
-      results.push({ root, indexed: count });
+      const allowedRoot = assertAllowedIndexRoot(root, fileSearch.getRoots());
+      const count = await indexRoot(allowedRoot);
+      results.push({ root: allowedRoot, indexed: count });
     }
     return { ok: true, roots: results };
   });
 
-  server.get("/files/index-roots", async () => ({ roots: fileSearch.getRoots() }));
+  server.get("/files/index-roots", localOnly, async () => ({ roots: fileSearch.getRoots() }));
 
-  server.post("/files/reindex", async (request) => {
+  server.post("/files/reindex", localOnly, async (request) => {
     const { roots } = parseBody(FileIndexSchema, request.body ?? {});
     const results: Array<{ root: string; indexed: number }> = [];
     for (const root of roots ?? []) {
-      const count = await reindexAll(root);
-      results.push({ root, indexed: count });
+      const allowedRoot = assertAllowedIndexRoot(root, fileSearch.getRoots());
+      const count = await reindexAll(allowedRoot);
+      results.push({ root: allowedRoot, indexed: count });
     }
     return { ok: true, message: "Incremental reindex completed.", roots: results };
   });
 
   // Vault folder management endpoints
-  server.get("/files/roots", async () => {
+  server.get("/files/roots", localOnly, async () => {
     const db = getDb();
     const roots = db.prepare(`
       SELECT id, root_path, display_name, enabled, last_indexed_at, file_count, created_at, updated_at
@@ -2485,21 +2555,22 @@ export function buildServer(
     }))};
   });
 
-  server.post("/files/roots", async (request, reply) => {
+  server.post("/files/roots", localOnly, async (request, reply) => {
     const schema = z.object({
       rootPath: z.string().trim().min(1),
       displayName: z.string().trim().min(1).optional()
     });
     const body = parseBody(schema, request.body ?? {});
+    const allowedRoot = assertAllowedIndexRoot(body.rootPath, fileSearch.getRoots());
     const db = getDb();
     const now = new Date().toISOString();
-    const displayName = body.displayName || body.rootPath.split(/[\\/]/).pop() || body.rootPath;
+    const displayName = body.displayName || allowedRoot.split(/[\\/]/).pop() || allowedRoot;
     
     try {
       const result = db.prepare(`
         INSERT INTO file_index_roots (root_path, display_name, enabled, file_count, created_at, updated_at)
         VALUES (?, ?, 1, 0, ?, ?)
-      `).run(body.rootPath, displayName, now, now);
+      `).run(allowedRoot, displayName, now, now);
       
       const root = db.prepare("SELECT * FROM file_index_roots WHERE id = ?").get(result.lastInsertRowid) as Record<string, unknown>;
       return {
@@ -2523,7 +2594,7 @@ export function buildServer(
     }
   });
 
-  server.delete("/files/roots/:id", async (request, reply) => {
+  server.delete("/files/roots/:id", localOnly, async (request, reply) => {
     const schema = z.object({ id: z.string().transform(Number) });
     const { id } = parseBody(schema, request.params);
     const db = getDb();
@@ -2544,7 +2615,7 @@ export function buildServer(
     return { ok: true };
   });
 
-  server.get("/files/excludes", async (request) => {
+  server.get("/files/excludes", localOnly, async (request) => {
     const schema = z.object({ rootPath: z.string().optional() });
     const { rootPath } = parseBody(schema, request.query ?? {});
     const db = getDb();
@@ -2567,13 +2638,14 @@ export function buildServer(
     }))};
   });
 
-  server.post("/files/excludes", async (request) => {
+  server.post("/files/excludes", localOnly, async (request) => {
     const schema = z.object({
       rootPath: z.string().trim().min(1),
       excludePath: z.string().trim().min(1),
       excludeType: z.enum(["folder", "pattern"]).default("folder")
     });
     const body = parseBody(schema, request.body ?? {});
+    assertAllowedIndexRoot(body.rootPath, fileSearch.getRoots());
     const db = getDb();
     const now = new Date().toISOString();
     
@@ -2595,7 +2667,7 @@ export function buildServer(
     };
   });
 
-  server.delete("/files/excludes/:id", async (request, reply) => {
+  server.delete("/files/excludes/:id", localOnly, async (request, reply) => {
     const schema = z.object({ id: z.string().transform(Number) });
     const { id } = parseBody(schema, request.params);
     const db = getDb();
@@ -2608,7 +2680,7 @@ export function buildServer(
     return { ok: true };
   });
 
-  server.post("/files/search", async (request) => {
+  server.post("/files/search", localOnly, async (request) => {
     const { query } = parseBody(FileSearchSchema, request.body);
     const queryRewriter = createQueryRewriter();
     const rewritten = queryRewriter.rewrite(query);
@@ -2618,7 +2690,7 @@ export function buildServer(
     return results;
   });
 
-  server.get("/files/indexed", async (request) => {
+  server.get("/files/indexed", localOnly, async (request) => {
     const q = (request.query ?? {}) as { limit?: string; offset?: string; query?: string; extension?: string };
     const limit = Math.max(1, Math.min(500, Number(q.limit ?? 100)));
     const offset = Math.max(0, Number(q.offset ?? 0));
@@ -2657,7 +2729,7 @@ export function buildServer(
     return { items, total, limit, offset };
   });
 
-  server.get("/files/search/debug", async (request) => {
+  server.get("/files/search/debug", localOnly, async (request) => {
     const q = (request.query ?? {}) as { query?: string; limit?: string };
     const query = String(q.query ?? "").trim();
     if (!query) return { error: "query is required" };
@@ -2687,20 +2759,20 @@ export function buildServer(
     };
   });
 
-  server.get("/approvals/pending", async () => ({
+  server.get("/approvals/pending", { preHandler: requireLocalApiToken }, async () => ({
     approvals: protocol.listApprovals()
       .filter((item) => item.status === "pending")
       .map(approvalToSafeResponse)
   }));
 
-  server.get("/approvals/:id", async (request, reply) => {
+  server.get("/approvals/:id", { preHandler: requireLocalApiToken }, async (request, reply) => {
     const { id } = request.params as { id: string };
     const approval = protocol.getApproval(id);
     if (!approval) return reply.status(404).send({ error: "Approval not found" });
     return approvalToSafeResponse(approval);
   });
 
-  server.post("/approvals/:id/approve", async (request, reply) => {
+  server.post("/approvals/:id/approve", { preHandler: requireLocalApiToken }, async (request, reply) => {
     const { id } = request.params as { id: string };
     const body = (request.body ?? {}) as { idempotency_key?: string };
     const current = protocol.getApproval(id);
@@ -2765,7 +2837,7 @@ export function buildServer(
     return { ...approvalToSafeResponse(decision.approval), cloudTransfer };
   });
 
-  server.post("/approvals/:id/rebind-file", async (request, reply) => {
+  server.post("/approvals/:id/rebind-file", { preHandler: requireLocalApiToken }, async (request, reply) => {
     const { id } = request.params as { id: string };
     const body = (request.body ?? {}) as { fileId?: number | string; filePath?: string };
     if (body.fileId == null && !body.filePath) {
@@ -2809,7 +2881,7 @@ export function buildServer(
     return rebound ? approvalToSafeResponse(rebound) : null;
   });
 
-  server.post("/approvals/:id/reject", async (request, reply) => {
+  server.post("/approvals/:id/reject", { preHandler: requireLocalApiToken }, async (request, reply) => {
     const { id } = request.params as { id: string };
     const body = (request.body ?? {}) as { idempotency_key?: string };
     const decision = protocol.applyApprovalDecisionWithResult(id, "reject", { idempotencyKey: body.idempotency_key });
@@ -2831,7 +2903,7 @@ export function buildServer(
     return approvalToSafeResponse(decision.approval);
   });
 
-  server.post("/approvals/:id/feedback", async (request, reply) => {
+  server.post("/approvals/:id/feedback", { preHandler: requireLocalApiToken }, async (request, reply) => {
     const { id } = request.params as { id: string };
     const body = (request.body ?? {}) as { feedback?: string; rejectedFileIds?: number[]; originalQuery?: string };
     const decision = protocol.applyApprovalDecisionWithResult(id, "feedback", {
@@ -2892,15 +2964,26 @@ export function buildServer(
     };
   });
 
-  server.post("/approvals/notification-callback", async (request) => {
-    const body = (request.body ?? {}) as { approvalId?: string; taskId?: string; action?: string; feedback?: string; idempotencyKey?: string; idempotency_key?: string };
-    const action = (body.action ?? "approve") as "approve" | "reject" | "feedback";
-    if (action !== "approve" && action !== "reject" && action !== "feedback") {
-      return { ok: false, status: "invalid", error: `Unknown action: ${body.action}` };
+  server.post("/approvals/notification-callback", async (request, reply) => {
+    const parsedCallback = ApprovalCallbackSchema.safeParse(request.body ?? {});
+    if (!parsedCallback.success) {
+      return reply.code(400).send({ ok: false, status: "invalid", error: "INVALID_CALLBACK" });
     }
-    const current = protocol.getApproval(body.approvalId ?? "");
+    const body = parsedCallback.data;
+    const action = body.action;
+    if (!verifyApprovalCallbackSignature({
+      approvalId: body.approvalId,
+      taskId: body.taskId,
+      action,
+      nonce: body.nonce,
+      signature: body.signature,
+      secret: approvalCallbackSecret
+    })) {
+      return { ok: false, status: "invalid", error: "Invalid approval callback signature" };
+    }
+    const current = protocol.getApproval(body.approvalId);
     if (!current) return { ok: false, status: "not-found" };
-    if (current.taskId !== (body.taskId ?? "")) {
+    if (current.taskId !== body.taskId) {
       return { ok: false, status: "task-mismatch" };
     }
     if (action === "approve" && isUnboundFileTransferApproval(current)) {
@@ -2913,7 +2996,7 @@ export function buildServer(
         error: "APPROVAL_HAS_NO_BOUND_FILE"
       };
     }
-    const decision = protocol.applyApprovalDecisionWithResult(body.approvalId ?? "", action, {
+    const decision = protocol.applyApprovalDecisionWithResult(body.approvalId, action, {
       feedback: body.feedback,
       idempotencyKey: body.idempotency_key ?? body.idempotencyKey ?? `${current.id}|${current.taskId}|${action}`
     });
@@ -2940,18 +3023,18 @@ export function buildServer(
     };
   });
 
-  server.get("/transfers", async () => {
+  server.get("/transfers", localOnly, async () => {
     const db = getDb();
     const rows = db.prepare("SELECT * FROM transfers ORDER BY created_at DESC").all() as Array<Record<string, unknown>>;
     return { transfers: rows };
   });
 
-  server.get("/storage/files", async () => {
+  server.get("/storage/files", localOnly, async () => {
     const files = listStoredFiles();
     return { files };
   });
 
-  server.get("/storage/files/:id/open", async (request, reply) => {
+  server.get("/storage/files/:id/open", localOnly, async (request, reply) => {
     const { id } = request.params as { id: string };
     const stored = getStoredFile(id);
     if (!stored) return reply.status(404).send({ error: "File not found" });
@@ -2960,7 +3043,7 @@ export function buildServer(
     return reply.type("application/octet-stream").header("Content-Disposition", `inline; filename="${stored.originalFileName}"`).send(stream);
   });
 
-  server.get("/storage/files/:id/verify", async (request, reply) => {
+  server.get("/storage/files/:id/verify", localOnly, async (request, reply) => {
     const { id } = request.params as { id: string };
     const stored = getStoredFile(id);
     if (!stored) return reply.status(404).send({ error: "File not found" });
@@ -2986,7 +3069,7 @@ export function buildServer(
     };
   });
 
-  server.get("/storage/files/:id/download", async (request, reply) => {
+  server.get("/storage/files/:id/download", localOnly, async (request, reply) => {
     const { id } = request.params as { id: string };
     const stored = getStoredFile(id);
     if (!stored) return reply.status(404).send({ error: "File not found" });
@@ -2995,7 +3078,7 @@ export function buildServer(
     return reply.type("application/octet-stream").header("Content-Disposition", `attachment; filename="${stored.originalFileName}"`).send(stream);
   });
 
-  server.get("/audit/events", async () => {
+  server.get("/audit/events", localOnly, async () => {
     const events = getEvents(100);
     const chainValid = verifyChain();
     return { events, chainValid };
@@ -3108,16 +3191,16 @@ export function buildServer(
     return response;
   });
 
-  server.post("/anp/handshake/verify-offer", async (request) => {
-    const body = (request.body ?? {}) as { offer?: import("./security/AnpHandshakeAdapter.js").HandshakeOffer; publicKey?: string };
-    if (!body.offer || !body.publicKey) return { ok: false, error: "Missing offer or publicKey" };
-    return { ok: protocol.verifyHandshakeOffer(body.offer, body.publicKey) };
+  server.post("/anp/handshake/verify-offer", localOnly, async (request) => {
+    const body = parseBody(AnpVerifyOfferSchema, request.body ?? {});
+    const result = await verifyHandshakeOffer(body.offer, body.publicKey, anpHandshakeContext);
+    return { ok: result.valid, reason: result.reason };
   });
 
-  server.post("/anp/handshake/verify-response", async (request) => {
-    const body = (request.body ?? {}) as { response?: import("./security/AnpHandshakeAdapter.js").HandshakeResponse; publicKey?: string };
-    if (!body.response || !body.publicKey) return { ok: false, error: "Missing response or publicKey" };
-    return { ok: protocol.verifyHandshakeResponse(body.response, body.publicKey) };
+  server.post("/anp/handshake/verify-response", localOnly, async (request) => {
+    const body = parseBody(AnpVerifyResponseSchema, request.body ?? {});
+    const result = await verifyHandshakeResponse(body.response, body.publicKey, anpHandshakeContext);
+    return { ok: result.valid, reason: result.reason };
   });
 
   // ===== ANP Agent Description Protocol (ADP) =====
@@ -3280,53 +3363,53 @@ export function buildServer(
     return reply.type(contentType(assetPath)).send(asset.content);
   });
 
-  server.get("/sessions", async () => ({
+  server.get("/sessions", { preHandler: requireLocalApiToken }, async () => ({
     sessions: tool.listSandboxSessions()
   }));
 
-  server.post("/sessions", async (request) => {
+  server.post("/sessions", { preHandler: requireLocalApiToken }, async (request) => {
     return tool.createSandboxSession(parseBody(CreateSandboxSessionSchema, request.body));
   });
 
-  server.post("/sessions/:sessionId/shell", async (request) => {
+  server.post("/sessions/:sessionId/shell", { preHandler: requireLocalApiToken }, async (request) => {
     const { sessionId } = request.params as { sessionId: string };
     return tool.runShellCommand(parseBody(RunShellCommandSchema, { ...(request.body as object), sessionId }));
   });
 
-  server.post("/sessions/:sessionId/python", async (request) => {
+  server.post("/sessions/:sessionId/python", { preHandler: requireLocalApiToken }, async (request) => {
     const { sessionId } = request.params as { sessionId: string };
     return tool.runPythonCode(parseBody(RunCodeSchema, { ...(request.body as object), sessionId }));
   });
 
-  server.post("/sessions/:sessionId/node", async (request) => {
+  server.post("/sessions/:sessionId/node", { preHandler: requireLocalApiToken }, async (request) => {
     const { sessionId } = request.params as { sessionId: string };
     return tool.runNodeCode(parseBody(RunCodeSchema, { ...(request.body as object), sessionId }));
   });
 
-  server.post("/sessions/:sessionId/clone-and-test", async (request) => {
+  server.post("/sessions/:sessionId/clone-and-test", { preHandler: requireLocalApiToken }, async (request) => {
     const { sessionId } = request.params as { sessionId: string };
     return tool.cloneRepoAndRunTests(parseBody(CloneRepoAndRunTestsSchema, { ...(request.body as object), sessionId }));
   });
 
-  server.get("/sessions/:sessionId/events", async (request) => {
+  server.get("/sessions/:sessionId/events", { preHandler: requireLocalApiToken }, async (request) => {
     const { sessionId } = request.params as { sessionId: string };
     return { sessionId, events: tool.sessions.getEvents(sessionId) };
   });
 
-  server.post("/agent/file-search", async (request) => {
+  server.post("/agent/file-search", { preHandler: requireLocalApiToken }, async (request) => {
     const { query } = parseBody(FileSearchSchema, request.body);
     return fileSearch.search(query);
   });
 
-  server.post("/agent/runs", async (request) => {
+  server.post("/agent/runs", { preHandler: requireLocalApiToken }, async (request) => {
     return agentRuns.createRun(parseBody(AgentRunSchema, request.body));
   });
 
-  server.get("/agent/runs", async () => ({
+  server.get("/agent/runs", { preHandler: requireLocalApiToken }, async () => ({
     runs: agentRuns.listRuns()
   }));
 
-  server.get("/agent/runs/:runId/events", async (request, reply) => {
+  server.get("/agent/runs/:runId/events", { preHandler: requireLocalApiToken }, async (request, reply) => {
     const { runId } = request.params as { runId: string };
     const run = agentRuns.getRun(runId);
     if (!run) {
@@ -3357,7 +3440,7 @@ export function buildServer(
     return reply;
   });
 
-  server.get("/agent/runs/:runId", async (request, reply) => {
+  server.get("/agent/runs/:runId", { preHandler: requireLocalApiToken }, async (request, reply) => {
     const { runId } = request.params as { runId: string };
     const run = agentRuns.getRun(runId);
     if (!run) {
@@ -3366,7 +3449,7 @@ export function buildServer(
     return run;
   });
 
-  server.get("/agent/files/:fileId", async (request, reply) => {
+  server.get("/agent/files/:fileId", { preHandler: requireLocalApiToken }, async (request, reply) => {
     const { fileId } = request.params as { fileId: string };
     const preview = await fileSearch.createPreviewStream(fileId);
     if (!preview) {
@@ -3379,7 +3462,7 @@ export function buildServer(
       .send(preview.stream);
   });
 
-  server.delete("/sessions/:sessionId", async (request) => {
+  server.delete("/sessions/:sessionId", { preHandler: requireLocalApiToken }, async (request) => {
     const { sessionId } = request.params as { sessionId: string };
     return tool.closeSandboxSession({ sessionId });
   });
@@ -3439,6 +3522,63 @@ function contentType(path: string): string {
 
 function parseBody<T>(schema: z.ZodType<T, z.ZodTypeDef, unknown>, body: unknown): T {
   return schema.parse(body);
+}
+
+function skillPathForId(id: string): string {
+  return join(resolve(process.cwd(), ".agents", "skills"), id);
+}
+
+function isIndexRootValidationError(message: string): boolean {
+  return (
+    message === "Credential directories cannot be indexed" ||
+    message === "Index root is outside configured file-search roots"
+  );
+}
+
+function assertAllowedIndexRoot(input: string, configuredRoots: string[]): string {
+  const resolved = resolveExistingPath(input);
+  if (isSensitiveIndexPath(resolved)) {
+    throw new Error("Credential directories cannot be indexed");
+  }
+
+  const allowedRoots = configuredRoots.map((root) => resolveConfiguredRoot(root));
+  if (!allowedRoots.some((root) => isPathInsideRoot(resolved, root))) {
+    throw new Error("Index root is outside configured file-search roots");
+  }
+
+  return resolved;
+}
+
+function resolveExistingPath(input: string): string {
+  const resolved = resolve(input.trim());
+  return realpathSync(resolved);
+}
+
+function resolveConfiguredRoot(input: string): string {
+  const resolved = resolve(input.trim());
+  try {
+    return realpathSync(resolved);
+  } catch {
+    return resolved;
+  }
+}
+
+function isSensitiveIndexPath(pathValue: string): boolean {
+  return /(^|[\\/])(\.ssh|\.aws|\.azure|\.oci|\.gnupg|\.kube)([\\/]|$)/i.test(pathValue);
+}
+
+function isPathInsideRoot(pathValue: string, rootValue: string): boolean {
+  const normalizedPath = pathValue.toLowerCase();
+  const normalizedRoot = rootValue.toLowerCase();
+  const rootWithSeparator = normalizedRoot.endsWith(sep) ? normalizedRoot : `${normalizedRoot}${sep}`;
+  return normalizedPath === normalizedRoot || normalizedPath.startsWith(rootWithSeparator);
+}
+
+function sanitizePushNotificationConfig(config: PushNotificationConfig): PushNotificationConfig {
+  return {
+    ...config,
+    url: assertPublicHttpsUrl(config.url)
+  };
 }
 
 function redactLocalPaths<T>(input: T): T {

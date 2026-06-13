@@ -30,7 +30,7 @@ export function ReceivedFilesPanel() {
             <div className="flex items-center justify-between gap-2">
               <span className="truncate font-medium text-white/80">{f.originalFileName}</span>
               <a
-                href={`/storage/files/${f.id}/download`}
+                href={`/storage/files/${encodeURIComponent(f.id)}/download`}
                 className="shrink-0 rounded bg-white/10 px-2 py-0.5 text-[10px] text-white/50 transition hover:bg-white/15"
                 download
               >

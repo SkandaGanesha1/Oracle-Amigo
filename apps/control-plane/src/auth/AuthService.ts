@@ -154,28 +154,54 @@ export async function login(input: LoginInput, db?: DB): Promise<TokenBundle> {
 
 export interface RefreshResult {
   access_token: string;
+  refresh_token: string;
   expires_in: number;
 }
 
 export function refreshAccessToken(refreshToken: string, db?: DB): RefreshResult {
   const conn = db ?? getDb();
-  const tokenHash = hashOpaqueToken(refreshToken);
-  const row = conn.prepare("SELECT * FROM refresh_tokens WHERE token_hash = ?").get(tokenHash) as Record<string, unknown> | undefined;
-  if (!row) throw new AuthError("INVALID_REFRESH_TOKEN", "Refresh token not found");
-  if (row.revoked_at) throw new AuthError("REVOKED_REFRESH_TOKEN", "Refresh token has been revoked");
-  const expiresAt = new Date(String(row.expires_at)).getTime();
-  if (Number.isFinite(expiresAt) && expiresAt < Date.now()) {
-    throw new AuthError("EXPIRED_REFRESH_TOKEN", "Refresh token has expired");
-  }
-  const user = conn.prepare("SELECT * FROM users WHERE id = ?").get(row.user_id) as Record<string, unknown> | undefined;
-  if (!user) throw new AuthError("USER_NOT_FOUND", "User not found");
-  const access = issueAccessToken({
-    userId: String(user.id),
-    orgId: String(user.org_id),
-    email: String(user.email),
-    displayName: String(user.display_name)
-  });
-  return { access_token: access.token, expires_in: access.expiresIn };
+  return conn.transaction(() => {
+    const cfg = loadConfig();
+    const tokenHash = hashOpaqueToken(refreshToken);
+    const row = conn.prepare("SELECT * FROM refresh_tokens WHERE token_hash = ?").get(tokenHash) as Record<string, unknown> | undefined;
+    if (!row) throw new AuthError("INVALID_REFRESH_TOKEN", "Refresh token not found");
+    if (row.revoked_at) throw new AuthError("REVOKED_REFRESH_TOKEN", "Refresh token has been revoked");
+    const expiresAt = new Date(String(row.expires_at)).getTime();
+    if (Number.isFinite(expiresAt) && expiresAt < Date.now()) {
+      throw new AuthError("EXPIRED_REFRESH_TOKEN", "Refresh token has expired");
+    }
+    const user = conn.prepare("SELECT * FROM users WHERE id = ?").get(row.user_id) as Record<string, unknown> | undefined;
+    if (!user) throw new AuthError("USER_NOT_FOUND", "User not found");
+    if (user.status !== "active") throw new AuthError("USER_DISABLED", "User is not active");
+
+    const now = new Date().toISOString();
+    const revoked = conn.prepare("UPDATE refresh_tokens SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL")
+      .run(now, row.id);
+    if (Number(revoked.changes) !== 1) {
+      throw new AuthError("REVOKED_REFRESH_TOKEN", "Refresh token has been revoked");
+    }
+
+    const nextRefresh = generateOpaqueToken();
+    conn.prepare(`
+      INSERT INTO refresh_tokens (id, org_id, user_id, token_hash, expires_at, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(
+      `rft_${randomUUID()}`,
+      String(row.org_id),
+      String(row.user_id),
+      nextRefresh.hash,
+      new Date(Date.now() + cfg.REFRESH_TOKEN_TTL_SECONDS * 1000).toISOString(),
+      now
+    );
+
+    const access = issueAccessToken({
+      userId: String(user.id),
+      orgId: String(user.org_id),
+      email: String(user.email),
+      displayName: String(user.display_name)
+    });
+    return { access_token: access.token, refresh_token: nextRefresh.token, expires_in: access.expiresIn };
+  })();
 }
 
 export function logout(refreshToken: string, db?: DB): boolean {

@@ -1,4 +1,7 @@
 import {
+  randomUUID
+} from "node:crypto";
+import {
   CloneRepoAndRunTestsSchema,
   CloseSandboxSessionSchema,
   CreateSandboxSessionSchema,
@@ -49,22 +52,25 @@ export class SandboxTool {
   async runPythonCode(input: RunCodeRequest): Promise<CommandResult> {
     const parsed = RunCodeSchema.parse(input);
     const encoded = Buffer.from(parsed.code, "utf8").toString("base64");
-    const command = `printf %s ${shellQuote(encoded)} | base64 -d > /tmp/agent_task.py && python3 /tmp/agent_task.py`;
+    const scriptPath = `/tmp/agent_task_${randomUUID()}.py`;
+    const command = `printf %s ${shellQuote(encoded)} | base64 -d > ${shellQuote(scriptPath)} && python3 ${shellQuote(scriptPath)}`;
     return this.sessions.runCommand(parsed.sessionId, command, { timeoutMs: parsed.timeoutMs });
   }
 
   async runNodeCode(input: RunCodeRequest): Promise<CommandResult> {
     const parsed = RunCodeSchema.parse(input);
     const encoded = Buffer.from(parsed.code, "utf8").toString("base64");
-    const command = `printf %s ${shellQuote(encoded)} | base64 -d > /tmp/agent_task.mjs && node /tmp/agent_task.mjs`;
+    const scriptPath = `/tmp/agent_task_${randomUUID()}.mjs`;
+    const command = `printf %s ${shellQuote(encoded)} | base64 -d > ${shellQuote(scriptPath)} && node ${shellQuote(scriptPath)}`;
     return this.sessions.runCommand(parsed.sessionId, command, { timeoutMs: parsed.timeoutMs });
   }
 
   async cloneRepoAndRunTests(input: CloneRepoAndRunTestsRequest): Promise<CloneAndTestResult> {
     const parsed = CloneRepoAndRunTestsSchema.parse(input);
+    const repoPath = `/workspace/repo_${randomUUID()}`;
     const clone = await this.sessions.runCommand(
       parsed.sessionId,
-      `mkdir -p /workspace && git clone ${shellQuote(parsed.repoUrl)} /workspace/repo`,
+      `mkdir -p /workspace && git clone ${shellQuote(parsed.repoUrl)} ${shellQuote(repoPath)}`,
       { timeoutMs: parsed.timeoutMs }
     );
 
@@ -74,7 +80,7 @@ export class SandboxTool {
 
     const test = await this.sessions.runCommand(parsed.sessionId, parsed.testCommand, {
       timeoutMs: parsed.timeoutMs,
-      workingDirectory: "/workspace/repo"
+      workingDirectory: repoPath
     });
     return { clone, test };
   }

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApp } from "../src/main.js";
 import { resetConfigForTest } from "../src/config.js";
-import { closeAll } from "../src/db/connection.js";
+import { closeAll, getDb } from "../src/db/connection.js";
 import type { FastifyInstance } from "fastify";
 
 let app: FastifyInstance;
@@ -69,6 +69,7 @@ beforeAll(async () => {
     REFRESH_TOKEN_TTL_SECONDS: "2592000",
     TRANSFER_TTL_SECONDS: "3600",
     TRANSFER_MAX_FILE_SIZE_BYTES: "104857600",
+    TRANSFER_KEK: "test-transfer-kek-please-make-it-thirtytwochars-or-more!!",
     RELAY_POLL_MAX_BATCH: "50",
     ARGON2_MEMORY_COST: "19456",
     ARGON2_TIME_COST: "2",
@@ -114,6 +115,10 @@ describe("file transfer relay", () => {
     const { transfer_id, upload_url } = init.json();
     expect(transfer_id).toBeTruthy();
     expect(upload_url).toContain(transfer_id);
+    const keyRow = getDb().prepare("SELECT wrapped_key FROM transfer_encryption_keys WHERE transfer_id = ?")
+      .get(transfer_id) as { wrapped_key: string };
+    expect(keyRow.wrapped_key).toMatch(/^v2\./);
+    expect(keyRow.wrapped_key).not.toMatch(/^[a-f0-9]{64}$/i);
 
     const put = await app.inject({
       method: "PUT",
@@ -171,6 +176,32 @@ describe("file transfer relay", () => {
     expect(receipt.json().status).toBe("completed");
   });
 
+  it("rejects receipts before a transfer has been uploaded", async () => {
+    const plaintext = randomBytes(512);
+    const sha = createHash("sha256").update(plaintext).digest("hex");
+    const init = await app.inject({
+      method: "POST",
+      url: "/v1/transfers/init",
+      headers: { authorization: `Bearer ${aliceDeviceToken}` },
+      payload: {
+        to_agent_instance_id: bobAgentInstanceId,
+        file_name: "premature-receipt.bin",
+        file_size: plaintext.length,
+        sha256: sha
+      }
+    });
+    const { transfer_id } = init.json();
+    const receipt = await app.inject({
+      method: "POST",
+      url: `/v1/transfers/${transfer_id}/receipt`,
+      headers: { authorization: `Bearer ${bobDeviceToken}` },
+      payload: { stored_path: "/mnt/agent-storage/receipts/premature.bin", verified_sha256: sha }
+    });
+
+    expect(receipt.statusCode).toBe(400);
+    expect(receipt.body).toContain("cannot record receipt");
+  });
+
   it("rejects uploads with mismatched hash", async () => {
     const plaintext = randomBytes(256);
     const claimedSha = "0000000000000000000000000000000000000000000000000000000000000000";
@@ -193,5 +224,14 @@ describe("file transfer relay", () => {
       payload: plaintext
     });
     expect(put.statusCode).toBe(400);
+  });
+
+  it("does not allow a device token on user-authenticated routes", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: "/v1/auth/me",
+      headers: { authorization: `Bearer ${aliceDeviceToken}` }
+    });
+    expect(res.statusCode).toBe(401);
   });
 });

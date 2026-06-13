@@ -470,7 +470,7 @@ export function VaultBrowser() {
                       <Eye className="h-3.5 w-3.5" />
                     </button>
                     <a
-                      href={`/storage/files/${file.id}/download`}
+                      href={`/storage/files/${encodeURIComponent(file.id)}/download`}
                       className="flex h-7 w-7 items-center justify-center rounded text-oa-text-muted hover:bg-oa-surface-2"
                       download
                       aria-label="Download"

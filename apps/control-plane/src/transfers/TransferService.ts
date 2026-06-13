@@ -4,7 +4,7 @@ import { getDb } from "./../db/connection.js";
 import { appendAuditEvent } from "./../audit/CloudAuditService.js";
 import {
   createEncryptionParams, deleteTransferFiles, readDecryptedTransfer,
-  transferStorePath, writeEncryptedTransfer
+  transferStorePath, unwrapTransferKey, wrapTransferKey, writeEncryptedTransfer
 } from "./TransferStorage.js";
 import { loadConfig } from "./../config.js";
 import type { AgentInstanceId, OrgId, TransferId } from "./../types/cloud.js";
@@ -78,7 +78,7 @@ export function initTransfer(
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     `tek_${randomUUID()}`, transferId, input.orgId,
-    params.key.toString("hex"), params.iv.toString("hex"), aadHex, params.algo, now
+    wrapTransferKey(params.key, transferId), params.iv.toString("hex"), aadHex, params.algo, now
   );
   appendAuditEvent({
     orgId: input.orgId,
@@ -107,43 +107,54 @@ export function uploadTransfer(
   data: Buffer
 ): { ok: true; status: "ready" } {
   const db = getDb();
-  const row = db.prepare(`
-    SELECT * FROM file_transfers WHERE org_id = ? AND id = ?
-  `).get(orgId, transferId) as Record<string, unknown> | undefined;
-  if (!row) throw new Error("Transfer not found");
-  if (String(row.from_agent_instance_id) !== fromAgentInstanceId) {
-    throw new Error("Not authorized to upload this transfer");
-  }
-  if (String(row.status) !== "initialized") {
-    throw new Error(`Transfer is in state ${row.status}, cannot upload`);
-  }
-  const expiresAt = new Date(String(row.expires_at)).getTime();
-  if (expiresAt < Date.now()) throw new Error("Transfer has expired");
-  // Compute hash
-  const actualSha = createHash("sha256").update(data).digest("hex");
-  if (actualSha !== String(row.sha256)) {
-    throw new Error(`SHA-256 mismatch: expected ${row.sha256}, got ${actualSha}`);
-  }
-  if (data.length !== Number(row.file_size)) {
-    throw new Error(`Size mismatch: expected ${row.file_size}, got ${data.length}`);
-  }
-  // Get encryption params
-  const keyRow = db.prepare("SELECT * FROM transfer_encryption_keys WHERE transfer_id = ?").get(transferId) as
-    Record<string, unknown> | undefined;
-  if (!keyRow) throw new Error("Encryption key not found for transfer");
-  const params: TransferEncryptionParams = {
-    key: Buffer.from(String(keyRow.wrapped_key), "hex"),
-    iv: Buffer.from(String(keyRow.iv), "hex"),
-    aad: Buffer.from(String(keyRow.aad), "hex"),
-    algo: "AES-256-GCM"
-  };
-  writeEncryptedTransfer(transferId, data, params);
-  db.prepare("UPDATE file_transfers SET status = 'ready' WHERE id = ?").run(transferId);
-  appendAuditEvent({
-    orgId, actorAgentInstanceId: fromAgentInstanceId, eventType: "TRANSFER_UPLOADED",
-    details: { transfer_id: transferId, file_size: data.length, sha256: actualSha }
-  }, db);
-  return { ok: true, status: "ready" };
+  return db.transaction(() => {
+    const claimed = db.prepare(`
+      UPDATE file_transfers
+      SET status = 'uploading'
+      WHERE org_id = ? AND id = ? AND from_agent_instance_id = ? AND status = 'initialized'
+    `).run(orgId, transferId, fromAgentInstanceId);
+    if (Number(claimed.changes) !== 1) {
+      const current = db.prepare("SELECT status, from_agent_instance_id FROM file_transfers WHERE org_id = ? AND id = ?")
+        .get(orgId, transferId) as { status: string; from_agent_instance_id: string } | undefined;
+      if (!current) throw new Error("Transfer not found");
+      if (current.from_agent_instance_id !== fromAgentInstanceId) throw new Error("Not authorized to upload this transfer");
+      throw new Error(`Transfer is in state ${current.status}, cannot upload`);
+    }
+
+    const row = db.prepare(`
+      SELECT * FROM file_transfers WHERE org_id = ? AND id = ?
+    `).get(orgId, transferId) as Record<string, unknown> | undefined;
+    if (!row) throw new Error("Transfer not found");
+    const expiresAt = new Date(String(row.expires_at)).getTime();
+    if (expiresAt < Date.now()) throw new Error("Transfer has expired");
+    const actualSha = createHash("sha256").update(data).digest("hex");
+    if (actualSha !== String(row.sha256)) {
+      throw new Error(`SHA-256 mismatch: expected ${row.sha256}, got ${actualSha}`);
+    }
+    if (data.length !== Number(row.file_size)) {
+      throw new Error(`Size mismatch: expected ${row.file_size}, got ${data.length}`);
+    }
+    const keyRow = db.prepare("SELECT * FROM transfer_encryption_keys WHERE transfer_id = ?").get(transferId) as
+      Record<string, unknown> | undefined;
+    if (!keyRow) throw new Error("Encryption key not found for transfer");
+    const params: TransferEncryptionParams = {
+      key: unwrapTransferKey(String(keyRow.wrapped_key), transferId),
+      iv: Buffer.from(String(keyRow.iv), "hex"),
+      aad: Buffer.from(String(keyRow.aad), "hex"),
+      algo: "AES-256-GCM"
+    };
+    writeEncryptedTransfer(transferId, data, params);
+    const ready = db.prepare(`
+      UPDATE file_transfers SET status = 'ready'
+      WHERE org_id = ? AND id = ? AND status = 'uploading'
+    `).run(orgId, transferId);
+    if (Number(ready.changes) !== 1) throw new Error("Transfer upload state changed unexpectedly");
+    appendAuditEvent({
+      orgId, actorAgentInstanceId: fromAgentInstanceId, eventType: "TRANSFER_UPLOADED",
+      details: { transfer_id: transferId, file_size: data.length, sha256: actualSha }
+    }, db);
+    return { ok: true as const, status: "ready" as const };
+  })();
 }
 
 export function downloadTransfer(
@@ -167,7 +178,8 @@ export function downloadTransfer(
   const { data } = readDecryptedTransfer(
     transferId,
     String(row.file_name),
-    String(row.sha256)
+    String(row.sha256),
+    getTransferDecryptionKey(db, orgId, transferId)
   );
   // Verify hash on download
   const actualSha = createHash("sha256").update(data).digest("hex");
@@ -183,6 +195,13 @@ export function downloadTransfer(
   };
 }
 
+function getTransferDecryptionKey(db: ReturnType<typeof getDb>, orgId: OrgId, transferId: TransferId): Buffer {
+  const keyRow = db.prepare("SELECT * FROM transfer_encryption_keys WHERE org_id = ? AND transfer_id = ?")
+    .get(orgId, transferId) as Record<string, unknown> | undefined;
+  if (!keyRow) throw new Error("Encryption key not found for transfer");
+  return unwrapTransferKey(String(keyRow.wrapped_key), transferId);
+}
+
 export function recordTransferReceipt(
   orgId: OrgId,
   transferId: TransferId,
@@ -190,26 +209,34 @@ export function recordTransferReceipt(
   receipt: { stored_path: string; verified_sha256: string }
 ): { ok: true; status: "completed" } {
   const db = getDb();
-  const row = db.prepare(`
-    SELECT * FROM file_transfers WHERE org_id = ? AND id = ?
-  `).get(orgId, transferId) as Record<string, unknown> | undefined;
-  if (!row) throw new Error("Transfer not found");
-  if (String(row.to_agent_instance_id) !== toAgentInstanceId) {
-    throw new Error("Not authorized to record receipt for this transfer");
-  }
-  if (String(row.sha256) !== receipt.verified_sha256.toLowerCase()) {
-    throw new Error("Receipt SHA-256 does not match transfer hash");
-  }
-  const now = new Date().toISOString();
-  db.prepare("UPDATE file_transfers SET status = 'completed', completed_at = ? WHERE id = ?").run(now, transferId);
-  appendAuditEvent({
-    orgId, actorAgentInstanceId: toAgentInstanceId, eventType: "TRANSFER_RECEIPT",
-    details: {
-      transfer_id: transferId, stored_path: receipt.stored_path,
-      verified_sha256: receipt.verified_sha256
+  return db.transaction(() => {
+    const row = db.prepare(`
+      SELECT * FROM file_transfers WHERE org_id = ? AND id = ?
+    `).get(orgId, transferId) as Record<string, unknown> | undefined;
+    if (!row) throw new Error("Transfer not found");
+    if (String(row.to_agent_instance_id) !== toAgentInstanceId) {
+      throw new Error("Not authorized to record receipt for this transfer");
     }
-  }, db);
-  return { ok: true, status: "completed" };
+    if (String(row.sha256) !== receipt.verified_sha256.toLowerCase()) {
+      throw new Error("Receipt SHA-256 does not match transfer hash");
+    }
+    const now = new Date().toISOString();
+    const completed = db.prepare(`
+      UPDATE file_transfers SET status = 'completed', completed_at = ?
+      WHERE org_id = ? AND id = ? AND to_agent_instance_id = ? AND status IN ('ready', 'downloading')
+    `).run(now, orgId, transferId, toAgentInstanceId);
+    if (Number(completed.changes) !== 1) {
+      throw new Error(`Transfer is in state ${row.status}, cannot record receipt`);
+    }
+    appendAuditEvent({
+      orgId, actorAgentInstanceId: toAgentInstanceId, eventType: "TRANSFER_RECEIPT",
+      details: {
+        transfer_id: transferId, stored_path: receipt.stored_path,
+        verified_sha256: receipt.verified_sha256
+      }
+    }, db);
+    return { ok: true as const, status: "completed" as const };
+  })();
 }
 
 export function expireOldTransfers(db: DB = getDb()): number {

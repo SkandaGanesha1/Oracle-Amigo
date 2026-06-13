@@ -4,6 +4,7 @@
   "description": "Quick Voice can show the launcher, register the configured shortcut, and start only the local Oracle Amigo agent command.",
   "windows": ["main"],
   "permissions": [
+    "core:default",
     "global-shortcut:allow-is-registered",
     "global-shortcut:allow-register",
     "global-shortcut:allow-unregister",

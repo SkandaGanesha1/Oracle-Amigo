@@ -4,6 +4,7 @@ import type {
   A2Av1PushNotificationConfig,
   A2Av1PushNotificationAuthenticationInfo
 } from "./types.js";
+import { assertPublicHttpsUrl, assertPublicHttpsUrlResolved } from "../../security/SecurityGuards.js";
 
 /**
  * A2A v1.0.0 push notification store with delivery.
@@ -21,9 +22,10 @@ export class A2Av1PushNotificationStore {
   /** Save a config; assigns an id if not provided. */
   set(taskId: string, config: A2Av1PushNotificationConfig): A2Av1TaskPushNotificationConfig {
     const id = config.id ?? randomUUID();
+    const url = assertPublicHttpsUrl(config.url);
     const stored: A2Av1TaskPushNotificationConfig = {
       taskId,
-      taskPushNotificationConfig: { ...config, id }
+      taskPushNotificationConfig: { ...config, id, url }
     };
     const list = this.configs.get(taskId) ?? [];
     list.push(stored);
@@ -110,9 +112,12 @@ export async function deliverToTask(
   const configs = store.list(taskId);
   const results: PushNotificationDeliveryResult[] = [];
   for (const c of configs) {
-    const url = c.taskPushNotificationConfig.url;
+    let url = c.taskPushNotificationConfig.url;
     const headers = buildPushNotificationHeaders(c.taskPushNotificationConfig, body);
     try {
+      url = fetchImpl === fetch
+        ? await assertPublicHttpsUrlResolved(c.taskPushNotificationConfig.url)
+        : assertPublicHttpsUrl(c.taskPushNotificationConfig.url);
       const res = await fetchImpl(url, { method: "POST", headers, body });
       results.push({
         ok: res.ok,
