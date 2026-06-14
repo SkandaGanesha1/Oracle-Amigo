@@ -142,7 +142,6 @@ export function MainChatLayout() {
   const createThreadReply = useCreateThreadReply(conversationId ?? null, threadSubject?.messageId ?? null);
   const navigate = useNavigate();
 
-  const localConversationId = conversationsData?.conversations?.find((conversation) => conversation.id === "local-agent")?.id;
   const activeConversation = conversationsData?.conversations?.find((c) => c.id === conversationId) ?? messagesData?.conversation ?? null;
   const messages = messagesData?.messages ?? [];
   const readState = messagesData?.readState ?? activeConversation?.readState ?? null;
@@ -193,11 +192,6 @@ export function MainChatLayout() {
       window.dispatchEvent(new Event("oa-focus-directory-search"));
     }, 0);
   }, [navigate]);
-
-  useEffect(() => {
-    if (conversationId || conversationsData === undefined) return;
-    navigate(`/chats/${localConversationId ?? "local-agent"}`, { replace: true });
-  }, [conversationId, conversationsData, localConversationId, navigate]);
 
   return (
     <div className="chat-canvas flex h-full w-full">

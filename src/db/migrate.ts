@@ -170,6 +170,14 @@ function ensureApprovalTransferTables(db: DatabaseSync): void {
       completed_at TEXT,
       FOREIGN KEY (approval_id) REFERENCES approval_requests(id) ON DELETE CASCADE
     );
+
+    CREATE TABLE IF NOT EXISTS inbox_item_state (
+      item_id TEXT PRIMARY KEY,
+      read_at TEXT,
+      archived_at TEXT,
+      snoozed_until TEXT,
+      updated_at TEXT NOT NULL
+    );
   `);
 }
 

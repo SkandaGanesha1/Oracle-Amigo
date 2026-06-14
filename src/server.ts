@@ -128,6 +128,35 @@ const ChatReadStateSchema = z.object({
   lastReadMessageId: z.string().trim().min(1).max(200)
 });
 
+const InboxBucketSchema = z.enum([
+  "needs_my_approval",
+  "agent_working",
+  "waiting_on_others",
+  "risky_sensitive",
+  "mentions",
+  "completed",
+  "failed_blocked",
+  "archived"
+]);
+
+const InboxItemsQuerySchema = z.object({
+  bucket: InboxBucketSchema.optional(),
+  status: z.string().trim().min(1).max(40).optional(),
+  q: z.string().trim().max(200).optional(),
+  cursor: z.string().trim().min(1).max(20).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50)
+});
+
+const InboxSnoozeSchema = z.object({
+  snoozedUntil: z.string().datetime().optional()
+});
+
+const InboxBulkSchema = z.object({
+  itemIds: z.array(z.string().trim().min(1).max(240)).min(1).max(100),
+  action: z.enum(["read", "archive", "snooze"]),
+  snoozedUntil: z.string().datetime().optional()
+});
+
 const SkillIdSchema = z.string().trim().regex(/^[a-z0-9][a-z0-9-]{1,63}$/);
 
 const SkillWriteSchema = z.object({
@@ -732,6 +761,122 @@ export function buildServer(
     const body = parseBody(NotificationEventSchema, request.body ?? {});
     const event = notificationEvents.record(body);
     return sanitizeFacadePayload({ event });
+  });
+
+  server.get("/api/inbox/items", localOnly, async (request) => {
+    const query = parseBody(InboxItemsQuerySchema, request.query ?? {});
+    const { allItems: _allItems, ...result } = buildInboxItemsResult({
+      query,
+      chatRepo,
+      protocol,
+      agentRuns: agentRuns.listRuns()
+    });
+    return sanitizeFacadePayload(result);
+  });
+
+  server.get("/api/inbox/items/:itemId", localOnly, async (request, reply) => {
+    const { itemId } = request.params as { itemId: string };
+    const result = buildInboxItemsResult({
+      query: { limit: 100 },
+      chatRepo,
+      protocol,
+      agentRuns: agentRuns.listRuns()
+    });
+    const item = result.allItems.find((entry) => entry.id === itemId);
+    if (!item) return reply.status(404).send({ error: "INBOX_ITEM_NOT_FOUND", message: "Inbox item not found." });
+    return sanitizeFacadePayload({ item });
+  });
+
+  server.post("/api/inbox/items/:itemId/read", localOnly, async (request) => {
+    const { itemId } = request.params as { itemId: string };
+    updateInboxItemState(itemId, { readAt: new Date().toISOString() });
+    return sanitizeFacadePayload({ ok: true, itemId });
+  });
+
+  server.post("/api/inbox/items/:itemId/archive", localOnly, async (request) => {
+    const { itemId } = request.params as { itemId: string };
+    const now = new Date().toISOString();
+    updateInboxItemState(itemId, { readAt: now, archivedAt: now, snoozedUntil: null });
+    return sanitizeFacadePayload({ ok: true, itemId });
+  });
+
+  server.post("/api/inbox/items/:itemId/snooze", localOnly, async (request) => {
+    const { itemId } = request.params as { itemId: string };
+    const body = parseBody(InboxSnoozeSchema, request.body ?? {});
+    const snoozedUntil = body.snoozedUntil ?? new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    updateInboxItemState(itemId, { snoozedUntil });
+    return sanitizeFacadePayload({ ok: true, itemId, snoozedUntil });
+  });
+
+  server.post("/api/inbox/items/:itemId/approve", localOnly, async (request, reply) => {
+    const { itemId } = request.params as { itemId: string };
+    const item = findInboxItem(itemId, chatRepo, protocol, agentRuns.listRuns());
+    if (!item?.approvalId) {
+      return reply.status(409).send({ error: "UNSUPPORTED_INBOX_ACTION", message: "This inbox item cannot be approved." });
+    }
+    const decision = protocol.applyApprovalDecisionWithResult(item.approvalId, "approve", {
+      idempotencyKey: `${item.approvalId}|inbox|approve`
+    });
+    if (!decision.approval) return reply.status(404).send({ error: "Approval not found" });
+    if (decision.outcome === "denied") return reply.status(409).send({ error: decision.error, approval: approvalToSafeResponse(decision.approval) });
+    const cloudTransfer = await approvalTransfers.scheduleForApproval(decision.approval);
+    updateInboxItemState(itemId, { readAt: new Date().toISOString() });
+    if (decision.outcome === "applied") {
+      appendApprovalDecisionTimeline(chatRepo, decision.approval.taskId, "approved", {
+        approvalId: decision.approval.id,
+        fileName: decision.approval.boundFilePath ? decision.approval.boundFilePath.split(/[\\/]/).pop() : "Selected file",
+        sha256: decision.approval.boundSha256,
+        sizeBytes: decision.approval.boundSizeBytes,
+        transferId: cloudTransfer.transferId ?? undefined
+      });
+    }
+    return sanitizeFacadePayload({ ok: true, itemId, approval: approvalToSafeResponse(decision.approval), cloudTransfer });
+  });
+
+  server.post("/api/inbox/items/:itemId/deny", localOnly, async (request, reply) => {
+    const { itemId } = request.params as { itemId: string };
+    const item = findInboxItem(itemId, chatRepo, protocol, agentRuns.listRuns());
+    if (!item?.approvalId) {
+      return reply.status(409).send({ error: "UNSUPPORTED_INBOX_ACTION", message: "This inbox item cannot be denied." });
+    }
+    const decision = protocol.applyApprovalDecisionWithResult(item.approvalId, "reject", {
+      idempotencyKey: `${item.approvalId}|inbox|deny`
+    });
+    if (!decision.approval) return reply.status(404).send({ error: "Approval not found" });
+    if (decision.outcome === "denied") return reply.status(409).send({ error: decision.error, approval: approvalToSafeResponse(decision.approval) });
+    updateInboxItemState(itemId, { readAt: new Date().toISOString() });
+    if (decision.outcome === "applied") {
+      appendApprovalDecisionTimeline(chatRepo, decision.approval.taskId, "rejected", { approvalId: decision.approval.id });
+    }
+    return sanitizeFacadePayload({ ok: true, itemId, approval: approvalToSafeResponse(decision.approval) });
+  });
+
+  server.post("/api/inbox/items/:itemId/ask-why", localOnly, async (request, reply) => {
+    const { itemId } = request.params as { itemId: string };
+    const item = findInboxItem(itemId, chatRepo, protocol, agentRuns.listRuns());
+    if (!item?.approvalId) {
+      return reply.status(409).send({ error: "UNSUPPORTED_INBOX_ACTION", message: "This inbox item cannot receive an ask-why request." });
+    }
+    const decision = protocol.applyApprovalDecisionWithResult(item.approvalId, "feedback", {
+      feedback: "Please explain why this access or transfer is needed.",
+      idempotencyKey: `${item.approvalId}|inbox|ask-why`
+    });
+    if (!decision.approval) return reply.status(404).send({ error: "Approval not found" });
+    if (decision.outcome === "denied") return reply.status(409).send({ error: decision.error, approval: approvalToSafeResponse(decision.approval) });
+    updateInboxItemState(itemId, { readAt: new Date().toISOString() });
+    appendApprovalDecisionTimeline(chatRepo, decision.approval.taskId, "feedback", { approvalId: item.approvalId, feedback: "Please explain why this access or transfer is needed." });
+    return sanitizeFacadePayload({ ok: true, itemId, approval: approvalToSafeResponse(decision.approval) });
+  });
+
+  server.post("/api/inbox/bulk", localOnly, async (request) => {
+    const body = parseBody(InboxBulkSchema, request.body ?? {});
+    const now = new Date().toISOString();
+    for (const itemId of body.itemIds) {
+      if (body.action === "read") updateInboxItemState(itemId, { readAt: now });
+      if (body.action === "archive") updateInboxItemState(itemId, { readAt: now, archivedAt: now, snoozedUntil: null });
+      if (body.action === "snooze") updateInboxItemState(itemId, { snoozedUntil: body.snoozedUntil ?? new Date(Date.now() + 60 * 60 * 1000).toISOString() });
+    }
+    return sanitizeFacadePayload({ ok: true, itemIds: body.itemIds, action: body.action });
   });
 
   server.get("/biometric/capability", async () => ({
@@ -3674,6 +3819,358 @@ function contentType(path: string): string {
     default:
       return "application/octet-stream";
   }
+}
+
+type InboxBucket =
+  | "needs_my_approval"
+  | "agent_working"
+  | "waiting_on_others"
+  | "risky_sensitive"
+  | "mentions"
+  | "completed"
+  | "failed_blocked"
+  | "archived";
+
+type InboxItemKind =
+  | "approval"
+  | "file_request"
+  | "file_transfer"
+  | "agent_run"
+  | "mission"
+  | "chat_message"
+  | "security_alert"
+  | "audit_event"
+  | "system";
+
+type InboxPriority = "critical" | "high" | "medium" | "low";
+type InboxStatus = "unread" | "pending" | "running" | "waiting" | "approved" | "denied" | "completed" | "failed" | "expired" | "archived";
+
+interface InboxItem {
+  id: string;
+  kind: InboxItemKind;
+  bucket: InboxBucket;
+  priority: InboxPriority;
+  title: string;
+  summary: string;
+  status: InboxStatus;
+  requester?: {
+    id: string;
+    label: string;
+    type: "user" | "local_agent" | "remote_agent" | "system";
+    trustLabel?: string;
+    verified?: boolean;
+  };
+  target?: {
+    id: string;
+    label: string;
+    type: "user" | "local_agent" | "remote_agent" | "file" | "mission";
+  };
+  conversationId?: string;
+  messageId?: string;
+  approvalId?: string;
+  missionId?: string;
+  transferId?: string;
+  auditId?: string;
+  risk: { level: "low" | "medium" | "high" | "critical"; reasons: string[] };
+  privacy: { sensitivity: "low" | "medium" | "high" | "critical"; leavesDevice: boolean; masked: boolean; expiresAt?: string; revocable: boolean };
+  file?: { name: string; path?: string; sizeBytes?: number; mimeType?: string; sha256?: string; matchScore?: number };
+  actions: Array<{
+    id: "preview" | "approve" | "deny" | "ask_why" | "snooze" | "archive" | "open_chat" | "view_audit";
+    label: string;
+    destructive?: boolean;
+    primary?: boolean;
+    disabledReason?: string;
+  }>;
+  createdAt: string;
+  updatedAt: string;
+  dueAt?: string;
+  unread: boolean;
+}
+
+interface InboxItemState {
+  itemId: string;
+  readAt: string | null;
+  archivedAt: string | null;
+  snoozedUntil: string | null;
+  updatedAt: string;
+}
+
+const INBOX_BUCKETS: InboxBucket[] = [
+  "needs_my_approval",
+  "agent_working",
+  "waiting_on_others",
+  "risky_sensitive",
+  "mentions",
+  "completed",
+  "failed_blocked",
+  "archived"
+];
+
+function buildInboxItemsResult(input: {
+  query: z.infer<typeof InboxItemsQuerySchema> | { limit: number };
+  chatRepo: ChatRepository;
+  protocol: PersonalAgentProtocol;
+  agentRuns: AgentRunResult[];
+}): { items: InboxItem[]; pageInfo: { nextCursor?: string; hasMore: boolean }; counts: Record<InboxBucket, number>; allItems: InboxItem[] } {
+  const query = input.query as z.infer<typeof InboxItemsQuerySchema>;
+  const limit = query.limit ?? 50;
+  const offset = Number(query.cursor ?? 0);
+  const now = new Date();
+  const states = loadInboxItemStates();
+  const baseItems = deriveInboxItems(input.chatRepo, input.protocol, input.agentRuns);
+  const allItems = baseItems
+    .map((item) => applyInboxState(item, states.get(item.id), now))
+    .filter((item) => !isSnoozed(item.id, states, now))
+    .sort(compareInboxItems);
+  const counts = countInboxBuckets(allItems);
+  const q = query.q?.trim().toLowerCase() ?? "";
+  const filtered = allItems.filter((item) => {
+    if (query.bucket && item.bucket !== query.bucket) return false;
+    if (query.status && item.status !== query.status) return false;
+    if (q && !`${item.title} ${item.summary} ${item.requester?.label ?? ""} ${item.file?.name ?? ""}`.toLowerCase().includes(q)) return false;
+    return true;
+  });
+  const items = filtered.slice(offset, offset + limit);
+  const nextOffset = offset + items.length;
+  return {
+    items,
+    pageInfo: { nextCursor: nextOffset < filtered.length ? String(nextOffset) : undefined, hasMore: nextOffset < filtered.length },
+    counts,
+    allItems
+  };
+}
+
+function deriveInboxItems(chatRepo: ChatRepository, protocol: PersonalAgentProtocol, agentRuns: AgentRunResult[]): InboxItem[] {
+  const conversations = chatRepo.listConversations();
+  const messagesByConversation = new Map(conversations.map((conversation) => [conversation.id, chatRepo.getMessages(conversation.id)]));
+  const items: InboxItem[] = [];
+
+  for (const approval of protocol.listApprovals()) {
+    const fileName = approval.boundFilePath ? basename(approval.boundFilePath) : approval.approvalType === "file.search.refinement" ? "Search refinement" : "Selected local file";
+    const pending = approval.status === "pending" && new Date(approval.expiresAt).getTime() > Date.now();
+    const expired = approval.status === "expired" || (approval.status === "pending" && !pending);
+    const conversation = findConversationByTask(conversations, messagesByConversation, approval.taskId);
+    items.push({
+      id: `approval:${approval.id}`,
+      kind: "approval",
+      bucket: pending ? "needs_my_approval" : expired ? "failed_blocked" : "completed",
+      priority: pending ? "high" : expired ? "medium" : "low",
+      title: pending ? `Approval needed: ${fileName}` : `Approval ${approval.status}: ${fileName}`,
+      summary: `${approvalRequesterDisplayName(approval.id, approval.requesterAgentId)} requested ${approval.approvalType.replaceAll(".", " ")}.`,
+      status: pending ? "pending" : approval.status === "approved" ? "approved" : approval.status === "rejected" ? "denied" : expired ? "expired" : "completed",
+      requester: { id: approval.requesterAgentId, label: approvalRequesterDisplayName(approval.id, approval.requesterAgentId), type: "remote_agent", trustLabel: "Verified", verified: true },
+      target: { id: approval.ownerAgentId, label: "My local agent", type: "local_agent" },
+      conversationId: conversation?.id,
+      approvalId: approval.id,
+      missionId: approval.taskId,
+      risk: { level: pending ? "high" : "medium", reasons: ["Human approval required", approval.boundFilePath ? "Local file selected" : "No bound file selected"] },
+      privacy: { sensitivity: pending ? "high" : "medium", leavesDevice: true, masked: true, expiresAt: approval.expiresAt, revocable: approval.status === "approved" },
+      file: { name: fileName, path: approval.boundFilePath ?? undefined, sizeBytes: approval.boundSizeBytes ?? undefined, mimeType: "application/octet-stream", sha256: approval.boundSha256 ?? undefined, matchScore: approval.boundFilePath ? 1 : 0 },
+      actions: pending
+        ? [
+            { id: "preview", label: "Preview" },
+            { id: "approve", label: "Approve", primary: true },
+            { id: "deny", label: "Deny", destructive: true },
+            { id: "ask_why", label: "Ask why" },
+            { id: "snooze", label: "Snooze" },
+            { id: "archive", label: "Archive" },
+            ...(conversation ? [{ id: "open_chat" as const, label: "Open chat" }] : [])
+          ]
+        : [
+            { id: "view_audit", label: "View audit" },
+            { id: "archive", label: "Archive" },
+            ...(conversation ? [{ id: "open_chat" as const, label: "Open chat" }] : [])
+          ],
+      createdAt: approval.createdAt,
+      updatedAt: approval.decidedAt ?? approval.createdAt,
+      dueAt: approval.expiresAt,
+      unread: pending
+    });
+  }
+
+  for (const row of getDb().prepare("SELECT * FROM transfers ORDER BY created_at DESC LIMIT 100").all() as Array<Record<string, unknown>>) {
+    const status = String(row.status ?? "created");
+    const failed = status.toLowerCase().includes("fail");
+    const completed = Boolean(row.completed_at) || status === "completed" || status === "stored";
+    const fileName = String(row.file_name ?? "Transferred file");
+    items.push({
+      id: `transfer:${String(row.id)}`,
+      kind: "file_transfer",
+      bucket: failed ? "failed_blocked" : completed ? "completed" : "risky_sensitive",
+      priority: failed ? "high" : completed ? "low" : "medium",
+      title: `Transfer activity: ${fileName}`,
+      summary: `${formatBytes(Number(row.size_bytes ?? 0))} transfer ${status}.`,
+      status: failed ? "failed" : completed ? "completed" : "running",
+      requester: { id: String(row.from_agent_id ?? "system"), label: shortInboxLabel(String(row.from_agent_id ?? "Transfer service")), type: "remote_agent", trustLabel: "Tracked", verified: true },
+      target: { id: String(row.to_agent_id ?? "local-agent"), label: shortInboxLabel(String(row.to_agent_id ?? "My local agent")), type: "local_agent" },
+      missionId: String(row.task_id ?? ""),
+      transferId: String(row.id),
+      risk: { level: failed ? "high" : "medium", reasons: ["File transfer tracked", "Data movement event"] },
+      privacy: { sensitivity: "high", leavesDevice: true, masked: true, revocable: !completed },
+      file: { name: fileName, path: String(row.storage_path ?? ""), sizeBytes: Number(row.size_bytes ?? 0), mimeType: String(row.mime_type ?? "application/octet-stream"), sha256: String(row.sha256 ?? "") },
+      actions: [{ id: "view_audit", label: "View audit" }, { id: "archive", label: "Archive" }],
+      createdAt: String(row.created_at ?? new Date().toISOString()),
+      updatedAt: String(row.completed_at ?? row.created_at ?? new Date().toISOString()),
+      unread: !completed
+    });
+  }
+
+  for (const run of agentRuns.slice(0, 50)) {
+    items.push({
+      id: `run:${run.runId}`,
+      kind: "agent_run",
+      bucket: run.status === "running" ? "agent_working" : run.status === "failed" ? "failed_blocked" : "completed",
+      priority: run.status === "failed" ? "high" : run.status === "running" ? "medium" : "low",
+      title: run.status === "running" ? "Agent is working" : `Agent run ${run.status}`,
+      summary: run.finalAnswer?.message ?? run.query,
+      status: run.status === "running" ? "running" : run.status === "failed" ? "failed" : "completed",
+      requester: { id: "local-agent", label: "My local agent", type: "local_agent", trustLabel: "Local", verified: true },
+      risk: { level: run.status === "failed" ? "medium" : "low", reasons: run.status === "failed" ? ["Agent run failed"] : ["Local agent activity"] },
+      privacy: { sensitivity: "medium", leavesDevice: false, masked: false, revocable: false },
+      actions: [{ id: "archive", label: "Archive" }],
+      createdAt: run.createdAt,
+      updatedAt: run.updatedAt,
+      unread: run.status === "running" || run.status === "failed"
+    });
+  }
+
+  for (const conversation of conversations) {
+    const messages = messagesByConversation.get(conversation.id) ?? [];
+    if (conversation.unread_count <= 0 && conversation.mention_count <= 0) continue;
+    const last = messages.at(-1);
+    items.push({
+      id: `conversation:${conversation.id}`,
+      kind: "chat_message",
+      bucket: conversation.mention_count > 0 ? "mentions" : "waiting_on_others",
+      priority: conversation.mention_count > 0 ? "high" : "medium",
+      title: conversation.mention_count > 0 ? `Mention in ${conversation.title}` : `Unread in ${conversation.title}`,
+      summary: last ? summarizeChatMessage(last) : `${conversation.unread_count} unread message${conversation.unread_count === 1 ? "" : "s"}.`,
+      status: "unread",
+      requester: { id: conversation.peer_user_id ?? conversation.peer_agent_instance_id ?? "peer", label: conversation.title, type: conversation.peer_agent_instance_id ? "remote_agent" : "user" },
+      conversationId: conversation.id,
+      messageId: last?.id,
+      risk: { level: "low", reasons: ["Unread conversation activity"] },
+      privacy: { sensitivity: "low", leavesDevice: false, masked: false, revocable: false },
+      actions: [{ id: "open_chat", label: "Open chat", primary: true }, { id: "archive", label: "Archive" }],
+      createdAt: conversation.created_at,
+      updatedAt: conversation.last_message_at ?? conversation.updated_at,
+      unread: true
+    });
+  }
+
+  for (const event of getEvents(50)) {
+    const risky = /denied|failed|blocked|policy|security/i.test(event.eventType);
+    items.push({
+      id: `audit:${event.id}`,
+      kind: risky ? "security_alert" : "audit_event",
+      bucket: risky ? "risky_sensitive" : "completed",
+      priority: risky ? "high" : "low",
+      title: event.eventType.replaceAll("_", " "),
+      summary: event.taskId ? `Task ${shortId(event.taskId)} audit event.` : "Audit event recorded.",
+      status: risky ? "pending" : "completed",
+      requester: { id: event.actorAgentId, label: shortInboxLabel(event.actorAgentId), type: "system", trustLabel: "Audit chain", verified: true },
+      approvalId: event.approvalId ?? undefined,
+      missionId: event.taskId ?? undefined,
+      auditId: String(event.id),
+      risk: { level: risky ? "high" : "low", reasons: risky ? ["Policy or failure event"] : ["Audit event"] },
+      privacy: { sensitivity: risky ? "high" : "medium", leavesDevice: false, masked: true, revocable: false },
+      actions: [{ id: "view_audit", label: "View audit" }, { id: "archive", label: "Archive" }],
+      createdAt: event.createdAt,
+      updatedAt: event.createdAt,
+      unread: risky
+    });
+  }
+
+  return dedupeInboxItems(items);
+}
+
+function findInboxItem(itemId: string, chatRepo: ChatRepository, protocol: PersonalAgentProtocol, agentRuns: AgentRunResult[]): InboxItem | null {
+  return deriveInboxItems(chatRepo, protocol, agentRuns).find((item) => item.id === itemId) ?? null;
+}
+
+function loadInboxItemStates(): Map<string, InboxItemState> {
+  const rows = getDb().prepare("SELECT * FROM inbox_item_state").all() as Array<Record<string, unknown>>;
+  return new Map(rows.map((row) => [String(row.item_id), {
+    itemId: String(row.item_id),
+    readAt: typeof row.read_at === "string" ? row.read_at : null,
+    archivedAt: typeof row.archived_at === "string" ? row.archived_at : null,
+    snoozedUntil: typeof row.snoozed_until === "string" ? row.snoozed_until : null,
+    updatedAt: String(row.updated_at ?? new Date().toISOString())
+  }]));
+}
+
+function updateInboxItemState(itemId: string, patch: { readAt?: string | null; archivedAt?: string | null; snoozedUntil?: string | null }): void {
+  const current = loadInboxItemStates().get(itemId);
+  const now = new Date().toISOString();
+  getDb().prepare(`
+    INSERT INTO inbox_item_state (item_id, read_at, archived_at, snoozed_until, updated_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(item_id) DO UPDATE SET
+      read_at=excluded.read_at,
+      archived_at=excluded.archived_at,
+      snoozed_until=excluded.snoozed_until,
+      updated_at=excluded.updated_at
+  `).run(
+    itemId,
+    patch.readAt !== undefined ? patch.readAt : current?.readAt ?? null,
+    patch.archivedAt !== undefined ? patch.archivedAt : current?.archivedAt ?? null,
+    patch.snoozedUntil !== undefined ? patch.snoozedUntil : current?.snoozedUntil ?? null,
+    now
+  );
+}
+
+function applyInboxState(item: InboxItem, state: InboxItemState | undefined, now: Date): InboxItem {
+  const unread = state?.readAt ? false : item.unread;
+  if (state?.archivedAt) return { ...item, bucket: "archived", status: "archived", unread: false };
+  if (state?.snoozedUntil && new Date(state.snoozedUntil).getTime() > now.getTime()) return { ...item, unread: false };
+  return { ...item, unread };
+}
+
+function isSnoozed(itemId: string, states: Map<string, InboxItemState>, now: Date): boolean {
+  const state = states.get(itemId);
+  return Boolean(state?.snoozedUntil && new Date(state.snoozedUntil).getTime() > now.getTime() && !state.archivedAt);
+}
+
+function countInboxBuckets(items: InboxItem[]): Record<InboxBucket, number> {
+  const counts = Object.fromEntries(INBOX_BUCKETS.map((bucket) => [bucket, 0])) as Record<InboxBucket, number>;
+  for (const item of items) counts[item.bucket] += 1;
+  return counts;
+}
+
+function compareInboxItems(a: InboxItem, b: InboxItem): number {
+  const priority = { critical: 4, high: 3, medium: 2, low: 1 };
+  const bucket = { needs_my_approval: 8, risky_sensitive: 7, failed_blocked: 6, mentions: 5, agent_working: 4, waiting_on_others: 3, completed: 2, archived: 1 };
+  return bucket[b.bucket] - bucket[a.bucket] || priority[b.priority] - priority[a.priority] || new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+}
+
+function dedupeInboxItems(items: InboxItem[]): InboxItem[] {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    if (seen.has(item.id)) return false;
+    seen.add(item.id);
+    return true;
+  });
+}
+
+function findConversationByTask(
+  conversations: ChatConversationRecord[],
+  messagesByConversation: Map<string, ChatMessageRecord[]>,
+  taskId: string
+): ChatConversationRecord | null {
+  return conversations.find((conversation) => (messagesByConversation.get(conversation.id) ?? []).some((message) => message.task_id === taskId)) ?? null;
+}
+
+function shortInboxLabel(value: string): string {
+  if (/^ag[ei]?[_-]/i.test(value)) return "Remote agent";
+  if (value.length > 32) return shortId(value);
+  return value || "System";
+}
+
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function parseBody<T>(schema: z.ZodType<T, z.ZodTypeDef, unknown>, body: unknown): T {

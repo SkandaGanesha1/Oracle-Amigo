@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type Key, type ReactNode } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { Badge, Button, Drawer, Dropdown } from "@heroui/react";
-import { Inbox, LoaderCircle, LogOut, Search, Settings, User as UserIcon, X } from "lucide-react";
+import { Cpu, FileText, Inbox, ListChecks, LoaderCircle, LogOut, ScrollText, Search, Settings, ShieldCheck, User as UserIcon, X } from "lucide-react";
 import oracleLogoUrl from "../../../UI_images/oracle_logo.png";
 import { OracleAvatar } from "../components/primitives/OracleAvatar";
 import { useCloudStatus, useContacts, useConversations, useDirectorySearch, useLogout, usePendingApprovals, useStartConversation } from "../hooks/queries";
@@ -19,6 +19,7 @@ export function UserRail() {
   const { approvalCards } = usePendingApprovals();
   const createConversation = useStartConversation();
   const [searchOpen, setSearchOpen] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
   const conversations = conversationsData?.conversations ?? [];
   const users = useMemo(
     () => buildRailUsers(conversations, cloudStatus, contactsData?.contacts ?? [], directorySnapshot?.users ?? []),
@@ -27,6 +28,8 @@ export function UserRail() {
   const unread = conversations.reduce((sum, conversation) => sum + (conversation.unread ?? 0), 0);
   const pendingApprovals = approvalCards.filter((card) => card.status === "pending").length;
   const inboxBadge = unread + pendingApprovals;
+  const profileDisplayName = cloudStatus?.cloud?.displayName ?? cloudStatus?.cloud?.userEmail ?? "Account";
+  const profileAvatarSeed = cloudStatus?.cloud?.userEmail ?? profileDisplayName;
 
   useEffect(() => {
     function openSearch() {
@@ -107,7 +110,7 @@ export function UserRail() {
 
       <div className="flex w-full shrink-0 flex-col items-center gap-2 pt-2">
         <RailSeparator />
-        <RailProfileButton cloudStatus={cloudStatus} />
+        <RailProfileButton cloudStatus={cloudStatus} onOpenProfile={() => setProfileOpen(true)} />
       </div>
 
       {searchOpen && (
@@ -117,6 +120,13 @@ export function UserRail() {
           onSelectUser={(user) => void openUser(user)}
         />
       )}
+
+      <AccountProfileDrawer
+        avatarSeed={profileAvatarSeed}
+        displayName={profileDisplayName}
+        isOpen={profileOpen}
+        onOpenChange={setProfileOpen}
+      />
     </aside>
   );
 }
@@ -179,10 +189,15 @@ function RailUserButton({ active, onClick, user }: { active: boolean; onClick: (
   );
 }
 
-function RailProfileButton({ cloudStatus }: { cloudStatus: ReturnType<typeof useCloudStatus>["data"] }) {
+function RailProfileButton({
+  cloudStatus,
+  onOpenProfile
+}: {
+  cloudStatus: ReturnType<typeof useCloudStatus>["data"];
+  onOpenProfile: () => void;
+}) {
   const navigate = useNavigate();
   const logout = useLogout();
-  const [profileOpen, setProfileOpen] = useState(false);
   const displayName = cloudStatus?.cloud?.displayName ?? cloudStatus?.cloud?.userEmail ?? "Account";
   const avatarSeed = cloudStatus?.cloud?.userEmail ?? displayName;
   const presence: PeerPresence = {
@@ -203,7 +218,27 @@ function RailProfileButton({ cloudStatus }: { cloudStatus: ReturnType<typeof use
 
   function handleAction(key: Key) {
     if (key === "profile") {
-      setProfileOpen(true);
+      onOpenProfile();
+      return;
+    }
+    if (key === "agents") {
+      navigate("/agents");
+      return;
+    }
+    if (key === "approvals") {
+      navigate("/approvals");
+      return;
+    }
+    if (key === "files") {
+      navigate("/files");
+      return;
+    }
+    if (key === "tasks") {
+      navigate("/tasks");
+      return;
+    }
+    if (key === "audit") {
+      navigate("/audit");
       return;
     }
     if (key === "settings") {
@@ -218,44 +253,55 @@ function RailProfileButton({ cloudStatus }: { cloudStatus: ReturnType<typeof use
   const LogoutIcon = logout.isPending ? LoaderCircle : LogOut;
 
   return (
-    <>
-      <Dropdown>
-        <Button
-          className="group relative flex min-h-[54px] w-full items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oa-blue focus-visible:ring-offset-2"
-          aria-label={`Account profile: ${displayName}`}
-          variant="ghost"
-        >
-          <StatusAvatar
-            avatarSeed={avatarSeed}
-            displayName={displayName}
-            presence={presence}
-          />
-        </Button>
-        <Dropdown.Popover className="oa-account-dropdown min-w-44 rounded-xl border border-white/10 bg-[#2F2F2F] p-1.5 shadow-2xl">
-          <Dropdown.Menu aria-label="Account actions" className="oa-account-dropdown-menu" onAction={handleAction}>
-            <Dropdown.Item id="profile" textValue="Profile" className="oa-account-dropdown-item">
-              <UserIcon className="h-4 w-4 shrink-0 text-oa-text-muted" />
-              <span>Profile</span>
-            </Dropdown.Item>
-            <Dropdown.Item id="settings" textValue="Settings" className="oa-account-dropdown-item">
-              <Settings className="h-4 w-4 shrink-0 text-oa-text-muted" />
-              <span>Settings</span>
-            </Dropdown.Item>
-            <Dropdown.Item id="logout" textValue="Log out" variant="danger" className="oa-account-dropdown-item oa-account-dropdown-item-danger">
-              <LogoutIcon className={`h-4 w-4 shrink-0 text-oa-red ${logout.isPending ? "animate-spin" : ""}`} />
-              <span>Log out</span>
-            </Dropdown.Item>
-          </Dropdown.Menu>
-        </Dropdown.Popover>
-      </Dropdown>
-
-      <AccountProfileDrawer
-        avatarSeed={avatarSeed}
-        displayName={displayName}
-        isOpen={profileOpen}
-        onOpenChange={setProfileOpen}
-      />
-    </>
+    <Dropdown>
+      <Button
+        className="group relative flex min-h-[54px] w-full items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oa-blue focus-visible:ring-offset-2"
+        aria-label={`Account profile: ${displayName}`}
+        variant="ghost"
+      >
+        <StatusAvatar
+          avatarSeed={avatarSeed}
+          displayName={displayName}
+          presence={presence}
+        />
+      </Button>
+      <Dropdown.Popover className="oa-account-dropdown min-w-44 rounded-xl border border-white/10 bg-[#2F2F2F] p-1.5 shadow-2xl">
+        <Dropdown.Menu aria-label="Account actions" className="oa-account-dropdown-menu" onAction={handleAction}>
+          <Dropdown.Item id="profile" textValue="Profile" className="oa-account-dropdown-item">
+            <UserIcon className="h-4 w-4 shrink-0 text-oa-text-muted" />
+            <span>Profile</span>
+          </Dropdown.Item>
+          <Dropdown.Item id="agents" textValue="Agents" className="oa-account-dropdown-item">
+            <Cpu className="h-4 w-4 shrink-0 text-oa-text-muted" />
+            <span>Agents</span>
+          </Dropdown.Item>
+          <Dropdown.Item id="approvals" textValue="Approvals" className="oa-account-dropdown-item">
+            <ShieldCheck className="h-4 w-4 shrink-0 text-oa-text-muted" />
+            <span>Approvals</span>
+          </Dropdown.Item>
+          <Dropdown.Item id="files" textValue="Vault" className="oa-account-dropdown-item">
+            <FileText className="h-4 w-4 shrink-0 text-oa-text-muted" />
+            <span>Vault</span>
+          </Dropdown.Item>
+          <Dropdown.Item id="tasks" textValue="Missions" className="oa-account-dropdown-item">
+            <ListChecks className="h-4 w-4 shrink-0 text-oa-text-muted" />
+            <span>Missions</span>
+          </Dropdown.Item>
+          <Dropdown.Item id="audit" textValue="Audit" className="oa-account-dropdown-item">
+            <ScrollText className="h-4 w-4 shrink-0 text-oa-text-muted" />
+            <span>Audit</span>
+          </Dropdown.Item>
+          <Dropdown.Item id="settings" textValue="Settings" className="oa-account-dropdown-item">
+            <Settings className="h-4 w-4 shrink-0 text-oa-text-muted" />
+            <span>Settings</span>
+          </Dropdown.Item>
+          <Dropdown.Item id="logout" textValue="Log out" variant="danger" className="oa-account-dropdown-item oa-account-dropdown-item-danger">
+            <LogoutIcon className={`h-4 w-4 shrink-0 text-oa-red ${logout.isPending ? "animate-spin" : ""}`} />
+            <span>Log out</span>
+          </Dropdown.Item>
+        </Dropdown.Menu>
+      </Dropdown.Popover>
+    </Dropdown>
   );
 }
 

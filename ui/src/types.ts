@@ -439,6 +439,31 @@ export interface MessageReaction {
   emoji: string;
   count: number;
   users: string[];
+  me?: boolean;
+}
+
+export interface MessageAttachment {
+  id: string;
+  file_name: string;
+  mime_type: string;
+  size_bytes: number;
+  url: string;
+  thumbnail_url?: string | null;
+  width?: number | null;
+  height?: number | null;
+  duration_ms?: number | null;
+  scan_state: "pending" | "clean" | "blocked" | "unknown";
+}
+
+export interface MessageEmbed {
+  id: string;
+  url: string;
+  title?: string;
+  description?: string;
+  provider?: string;
+  thumbnail_url?: string;
+  image_url?: string;
+  safety_state: "safe" | "blocked" | "unknown";
 }
 
 export type MessageOriginSide = "local" | "remote" | "system";
@@ -480,8 +505,8 @@ export interface TimelineMessageMeta {
   thread_summary?: ThreadSummary | null;
   pinned?: boolean;
   reactions?: MessageReaction[];
-  attachments?: Array<Record<string, unknown>>;
-  embeds?: Array<Record<string, unknown>>;
+  attachments?: MessageAttachment[];
+  embeds?: MessageEmbed[];
   moderation?: {
     state: "visible" | "hidden" | "deleted" | "quarantined" | "redacted";
     reason?: string;

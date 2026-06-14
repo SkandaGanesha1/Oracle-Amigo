@@ -301,7 +301,7 @@ function VirtualList({
       )}
       <div
         ref={parentRef}
-        className="absolute inset-0 overflow-y-auto"
+        className="oa-chat-scroll absolute inset-0"
         style={{
           overscrollBehavior: "contain",
           contain: "strict",
@@ -314,9 +314,9 @@ function VirtualList({
         aria-relevant="additions"
       >
         <div
+          className="oa-chat-lane"
           style={{
             height: `${virtualizer.getTotalSize()}px`,
-            width: "100%",
             position: "relative",
           }}
         >

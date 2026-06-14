@@ -36,6 +36,67 @@ afterEach(() => {
 });
 
 describe("persisted chat API", () => {
+  it("returns derived inbox items with counts and persisted read/archive state", async () => {
+    const filePath = join(tmpRoot, "report.pdf");
+    writeFileSync(filePath, "approval contents");
+    const protocol = new PersonalAgentProtocol();
+    const approval = await protocol.createApproval("task-inbox-1", {
+      requesterAgentId: "remote-agent",
+      ownerAgentId: "local-agent",
+      selectedFileId: "file-1",
+      boundFilePath: filePath
+    });
+    const server = buildServer();
+
+    const initial = await server.inject({ method: "GET", url: "/api/inbox/items?bucket=needs_my_approval" });
+    expect(initial.statusCode).toBe(200);
+    expect(initial.json()).toMatchObject({
+      pageInfo: { hasMore: false },
+      counts: { needs_my_approval: 1 }
+    });
+    expect(initial.json().items[0]).toMatchObject({
+      id: `approval:${approval.id}`,
+      bucket: "needs_my_approval",
+      status: "pending",
+      approvalId: approval.id
+    });
+
+    const read = await server.inject({ method: "POST", url: `/api/inbox/items/approval:${approval.id}/read` });
+    expect(read.statusCode).toBe(200);
+    const afterRead = await server.inject({ method: "GET", url: `/api/inbox/items/approval:${approval.id}` });
+    expect(afterRead.json().item.unread).toBe(false);
+
+    const archived = await server.inject({ method: "POST", url: `/api/inbox/items/approval:${approval.id}/archive` });
+    expect(archived.statusCode).toBe(200);
+    const archiveBucket = await server.inject({ method: "GET", url: "/api/inbox/items?bucket=archived" });
+    expect(archiveBucket.json().items[0]).toMatchObject({ id: `approval:${approval.id}`, bucket: "archived", status: "archived" });
+    await server.close();
+  });
+
+  it("updates approval status from inbox approve and rejects unsupported actions", async () => {
+    const filePath = join(tmpRoot, "transfer.pdf");
+    writeFileSync(filePath, "approval contents");
+    const protocol = new PersonalAgentProtocol();
+    const approval = await protocol.createApproval("task-inbox-approve", {
+      requesterAgentId: "remote-agent",
+      ownerAgentId: "local-agent",
+      selectedFileId: "file-2",
+      boundFilePath: filePath
+    });
+    const server = buildServer();
+
+    const unsupported = await server.inject({ method: "POST", url: "/api/inbox/items/run:missing/approve" });
+    expect(unsupported.statusCode).toBe(409);
+
+    const approved = await server.inject({ method: "POST", url: `/api/inbox/items/approval:${approval.id}/approve` });
+    expect(approved.statusCode).toBe(200);
+    expect(protocol.getApproval(approval.id)?.status).toBe("approved");
+
+    const completed = await server.inject({ method: "GET", url: "/api/inbox/items?bucket=completed" });
+    expect(completed.json().items.some((item: { id: string; status: string }) => item.id === `approval:${approval.id}` && item.status === "approved")).toBe(true);
+    await server.close();
+  });
+
   it("always exposes and opens the local-agent conversation", async () => {
     const server = buildServer();
 

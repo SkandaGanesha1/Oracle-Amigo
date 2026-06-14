@@ -232,6 +232,14 @@ CREATE TABLE IF NOT EXISTS transfers (
   completed_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS inbox_item_state (
+  item_id TEXT PRIMARY KEY,
+  read_at TEXT,
+  archived_at TEXT,
+  snoozed_until TEXT,
+  updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS received_files (
   id TEXT PRIMARY KEY,
   transfer_id TEXT NOT NULL,

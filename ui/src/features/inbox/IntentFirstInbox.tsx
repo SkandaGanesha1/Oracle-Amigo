@@ -1,46 +1,132 @@
-import { useState } from "react";
-import { useInboxTriage } from "../../hooks/queries";
-import { ActionableCard } from "../../components/inbox/ActionableCard";
-import { PrivacyModeToggle } from "../../components/inbox/PrivacyModeToggle";
-import { TriageRail } from "../../components/inbox/TriageRail";
-import { UniversalCommandBar } from "../../components/inbox/UniversalCommandBar";
-import { RightConsentPanel } from "../../components/inbox/RightConsentPanel";
-import type { ActionableInboxItem, TriageGroup } from "../../types/agentic";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { InboxBucketRail } from "../../components/inbox/InboxBucketRail";
+import { InboxDetailPanel } from "../../components/inbox/InboxDetailPanel";
+import { InboxItemList } from "../../components/inbox/InboxItemList";
+import { InboxShell } from "../../components/inbox/InboxShell";
+import { InboxToolbar } from "../../components/inbox/InboxToolbar";
+import { useInboxItemAction, useInboxItems } from "../../hooks/queries";
+import type { InboxActionId, InboxBucket, InboxItem } from "../../api/types";
+import type { InboxServerAction } from "../../api/inboxApi";
+
+const DEFAULT_BUCKET: InboxBucket = "needs_my_approval";
+const SERVER_ACTIONS = new Set<InboxActionId>(["approve", "deny", "ask_why", "snooze", "archive"]);
 
 export function IntentFirstInbox() {
-  const groups = useInboxTriage();
-  const [selected, setSelected] = useState<ActionableInboxItem | null>(null);
-  const [activeGroup, setActiveGroup] = useState<TriageGroup | null>(groups[0] ?? null);
+  const navigate = useNavigate();
+  const [bucket, setBucket] = useState<InboxBucket>(DEFAULT_BUCKET);
+  const [query, setQuery] = useState("");
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [privacyMode, setPrivacyMode] = useState(() => window.localStorage.getItem("oa-privacy-mode") === "true");
+  const searchRef = useRef<HTMLInputElement>(null);
+  const params = useMemo(() => ({ bucket, q: query, limit: 50 }), [bucket, query]);
+  const itemsQuery = useInboxItems(params);
+  const inboxAction = useInboxItemAction();
+  const items = itemsQuery.data?.items ?? [];
+  const counts = itemsQuery.data?.counts ?? emptyCounts();
+  const selectedItem = items.find((item) => item.id === selectedId) ?? items[0] ?? null;
 
-  const items = (activeGroup?.items ?? groups.flatMap((g) => g.items)).slice(0, 8);
+  useEffect(() => {
+    window.localStorage.setItem("oa-privacy-mode", String(privacyMode));
+  }, [privacyMode]);
+
+  useEffect(() => {
+    if (selectedItem && selectedItem.id !== selectedId) setSelectedId(selectedItem.id);
+    if (!selectedItem && selectedId) setSelectedId(null);
+  }, [selectedId, selectedItem]);
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      const target = event.target as HTMLElement | null;
+      const editing = target?.tagName === "INPUT" || target?.tagName === "TEXTAREA" || target?.isContentEditable;
+      if (event.key === "/" && !editing) {
+        event.preventDefault();
+        searchRef.current?.focus();
+        return;
+      }
+      if (editing && event.key !== "Escape") return;
+      if (event.key === "Escape") {
+        if (query) {
+          event.preventDefault();
+          setQuery("");
+        }
+        return;
+      }
+      if (!selectedItem) return;
+      if (event.key === "j" || event.key === "k") {
+        event.preventDefault();
+        const current = items.findIndex((item) => item.id === selectedItem.id);
+        const next = event.key === "j" ? Math.min(items.length - 1, current + 1) : Math.max(0, current - 1);
+        setSelectedId(items[next]?.id ?? selectedItem.id);
+        return;
+      }
+      const actionByKey: Record<string, InboxActionId> = {
+        Enter: "preview",
+        a: "approve",
+        d: "deny",
+        s: "snooze",
+        e: "archive",
+        o: "open_chat",
+        p: "preview"
+      };
+      const action = actionByKey[event.key];
+      if (action) {
+        event.preventDefault();
+        void handleAction(action, selectedItem);
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [items, query, selectedItem]);
+
+  async function handleAction(action: InboxActionId | string, item: InboxItem) {
+    if (action === "open_chat") {
+      if (item.conversationId) navigate(`/chats/${item.conversationId}`);
+      return;
+    }
+    if (action === "preview" || action === "view_audit") {
+      await inboxAction.mutateAsync({ itemId: item.id, action: "read" });
+      return;
+    }
+    if (!SERVER_ACTIONS.has(action as InboxActionId)) return;
+    const body = action === "snooze" ? { snoozedUntil: new Date(Date.now() + 60 * 60 * 1000).toISOString() } : undefined;
+    await inboxAction.mutateAsync({ itemId: item.id, action: action as InboxServerAction, body });
+  }
 
   return (
-    <div className="grid flex-1 gap-4 xl:grid-cols-[280px_1fr_320px]">
-      <div className="space-y-4">
-        <TriageRail groups={groups} onSelect={(group) => setActiveGroup(group)} />
-        <PrivacyModeToggle />
-      </div>
-      <div className="space-y-4">
-        <UniversalCommandBar />
-        <div className="rounded-2xl border border-oa-border bg-oa-surface p-4 shadow-sm">
-          <div className="mb-3 flex items-center justify-between">
-            <div>
-              <p className="text-[11px] uppercase tracking-[0.2em] text-oa-text-muted">Intent-first inbox</p>
-              <h2 className="text-lg font-semibold text-oa-text">{activeGroup?.label ?? "Inbox"}</h2>
-            </div>
-            <span className="rounded-full bg-oa-blue/10 px-2 py-1 text-[10px] font-semibold text-oa-blue">{items.length} ready</span>
-          </div>
-          <div className="space-y-3">
-            {items.map((item) => (
-              <button key={item.id} type="button" className="w-full text-left" onClick={() => setSelected(item)}>
-                <ActionableCard item={item} onAction={(_action, id) => setSelected(items.find((entry) => entry.id === id) ?? null)} />
-              </button>
-            ))}
-            {items.length === 0 && <p className="rounded-xl border border-dashed border-oa-border bg-oa-bg-elevated p-6 text-sm text-oa-text-muted">No items in this triage group yet.</p>}
-          </div>
-        </div>
-      </div>
-      <RightConsentPanel selectedItem={selected} />
-    </div>
+    <InboxShell>
+      <InboxBucketRail activeBucket={bucket} counts={counts} onBucketChange={(next) => { setBucket(next); setSelectedId(null); }} />
+      <main className="oa-inbox-list min-h-0 min-w-0 overflow-y-auto border-r border-oa-border">
+        <InboxToolbar
+          activeBucket={bucket}
+          privacyMode={privacyMode}
+          query={query}
+          searchRef={searchRef}
+          onPrivacyModeChange={setPrivacyMode}
+          onQueryChange={setQuery}
+        />
+        <InboxItemList
+          isLoading={itemsQuery.isLoading}
+          items={items}
+          selectedId={selectedItem?.id ?? null}
+          onSelect={setSelectedId}
+          onQuickAction={(action, item) => void handleAction(action, item)}
+        />
+      </main>
+      <InboxDetailPanel item={selectedItem} privacyMode={privacyMode} onAction={(action, item) => void handleAction(action, item)} />
+    </InboxShell>
   );
+}
+
+function emptyCounts(): Record<InboxBucket, number> {
+  return {
+    needs_my_approval: 0,
+    agent_working: 0,
+    waiting_on_others: 0,
+    risky_sensitive: 0,
+    mentions: 0,
+    completed: 0,
+    failed_blocked: 0,
+    archived: 0
+  };
 }

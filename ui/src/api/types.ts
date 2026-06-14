@@ -97,6 +97,76 @@ export interface AgentDiagnostics {
   };
 }
 
+export type InboxBucket =
+  | "needs_my_approval"
+  | "agent_working"
+  | "waiting_on_others"
+  | "risky_sensitive"
+  | "mentions"
+  | "completed"
+  | "failed_blocked"
+  | "archived";
+
+export type InboxItemKind =
+  | "approval"
+  | "file_request"
+  | "file_transfer"
+  | "agent_run"
+  | "mission"
+  | "chat_message"
+  | "security_alert"
+  | "audit_event"
+  | "system";
+
+export type InboxPriority = "critical" | "high" | "medium" | "low";
+export type InboxItemStatus = "unread" | "pending" | "running" | "waiting" | "approved" | "denied" | "completed" | "failed" | "expired" | "archived";
+export type InboxActionId = "preview" | "approve" | "deny" | "ask_why" | "snooze" | "archive" | "open_chat" | "view_audit";
+
+export interface InboxItem {
+  id: string;
+  kind: InboxItemKind;
+  bucket: InboxBucket;
+  priority: InboxPriority;
+  title: string;
+  summary: string;
+  status: InboxItemStatus;
+  requester?: {
+    id: string;
+    label: string;
+    type: "user" | "local_agent" | "remote_agent" | "system";
+    trustLabel?: string;
+    verified?: boolean;
+  };
+  target?: {
+    id: string;
+    label: string;
+    type: "user" | "local_agent" | "remote_agent" | "file" | "mission";
+  };
+  conversationId?: string;
+  messageId?: string;
+  approvalId?: string;
+  missionId?: string;
+  transferId?: string;
+  auditId?: string;
+  risk: { level: "low" | "medium" | "high" | "critical"; reasons: string[] };
+  privacy: { sensitivity: "low" | "medium" | "high" | "critical"; leavesDevice: boolean; masked: boolean; expiresAt?: string; revocable: boolean };
+  file?: { name: string; path?: string; sizeBytes?: number; mimeType?: string; sha256?: string; matchScore?: number };
+  actions: Array<{ id: InboxActionId; label: string; destructive?: boolean; primary?: boolean; disabledReason?: string }>;
+  createdAt: string;
+  updatedAt: string;
+  dueAt?: string;
+  unread: boolean;
+}
+
+export interface InboxItemsResult {
+  items: InboxItem[];
+  pageInfo: {
+    nextCursor?: string;
+    hasMore: boolean;
+  };
+  counts: Record<InboxBucket, number>;
+}
+
 export type UniversalSearchResultType =
   | "conversation"
   | "agent"

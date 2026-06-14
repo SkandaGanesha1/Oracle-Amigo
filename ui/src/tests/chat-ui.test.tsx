@@ -37,12 +37,21 @@ describe("MainChatLayout", () => {
   it("renders the global UserRail via AppShell", () => {
     const source = read("ui/src/app/AppShell.tsx");
     expect(source).toContain("UserRail");
+    expect(source).not.toContain("NavBar");
   });
 
   it("persists inspector state to localStorage", () => {
     const source = read("ui/src/features/chat/MainChatLayout.tsx");
     expect(source).toContain("localStorage");
     expect(source).toContain("oa-inspector-open");
+  });
+
+  it("keeps bare /chats as the neutral chat landing route", () => {
+    const source = read("ui/src/features/chat/MainChatLayout.tsx");
+    expect(source).not.toContain('navigate(`/chats/${localConversationId ?? "local-agent"}`');
+    expect(source).not.toContain('const localConversationId');
+    expect(source).toContain('conversationId && (activeConversation || isLoading || messagesIsError)');
+    expect(source).toContain('onOpenLocalAgent={() => navigate("/chats/local-agent", { replace: true })}');
   });
 });
 
@@ -64,14 +73,17 @@ describe("ConversationSidebar", () => {
 });
 
 describe("NavBar", () => {
-  it("keeps Chats out of the top header while the rail logo opens chats", () => {
+  it("keeps the routed shell free of the top header while the rail logo opens chats", () => {
     const source = read("ui/src/app/NavBar.tsx");
+    const shell = read("ui/src/app/AppShell.tsx");
     const rail = read("ui/src/app/UserRail.tsx");
+    expect(shell).not.toContain("NavBar");
     expect(source).not.toContain('id: "chats"');
     expect(source).not.toContain('label: "Chats"');
     expect(source).not.toContain("MessageSquareText");
     expect(rail).toContain('label="Oracle Amigo"');
     expect(rail).toContain('navigate("/chats")');
+    expect(rail).toContain('active={location.pathname === "/chats"}');
   });
 });
 
@@ -87,7 +99,7 @@ describe("UserRail", () => {
     expect(source).toContain("StatusAvatar");
     expect(source).toContain("../../../UI_images/oracle_logo.png");
     expect(source).toContain("alt=\"Oracle\"");
-    expect(source).not.toContain("Bot,");
+    expect(source).not.toContain("<Bot");
     expect(source).not.toContain("<Bot");
     expect(source).toContain("from \"@heroui/react\"");
     expect(source).toContain("Dropdown");
@@ -100,12 +112,25 @@ describe("UserRail", () => {
     expect(css).toContain("background: #2F2F2F");
     expect(css).toContain("backdrop-filter: none");
     expect(source).toContain("id=\"profile\"");
+    expect(source).toContain("id=\"agents\"");
+    expect(source).toContain("id=\"approvals\"");
+    expect(source).toContain("id=\"files\"");
+    expect(source).toContain("id=\"tasks\"");
+    expect(source).toContain("id=\"audit\"");
     expect(source).toContain("id=\"settings\"");
     expect(source).toContain("id=\"logout\"");
-    expect(source.indexOf("id=\"profile\"")).toBeLessThan(source.indexOf("id=\"settings\""));
-    expect(source.indexOf("id=\"settings\"")).toBeLessThan(source.indexOf("id=\"logout\""));
+    const expectedMenuOrder = ["profile", "agents", "approvals", "files", "tasks", "audit", "settings", "logout"];
+    for (let index = 0; index < expectedMenuOrder.length - 1; index += 1) {
+      expect(source.indexOf(`id="${expectedMenuOrder[index]}"`)).toBeLessThan(source.indexOf(`id="${expectedMenuOrder[index + 1]}"`));
+    }
+    expect(source).toContain('navigate("/agents")');
+    expect(source).toContain('navigate("/approvals")');
+    expect(source).toContain('navigate("/files")');
+    expect(source).toContain('navigate("/tasks")');
+    expect(source).toContain('navigate("/audit")');
     expect(source).toContain("placement=\"right\"");
     expect(source).toContain("aria-label=\"Account profile drawer\"");
+    expect(source.indexOf("<AccountProfileDrawer")).toBeLessThan(source.indexOf("function RailProfileButton"));
     expect(source).not.toContain("label=\"Settings\"");
     expect(source).toContain("w-16");
     expect(source).toContain("md:w-[72px]");

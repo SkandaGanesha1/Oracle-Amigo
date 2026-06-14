@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useCallback, useSyncExternalStore } from "react";
 import { AlertTriangle, Bot, CheckCircle2, Clock3, ShieldAlert } from "lucide-react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, mapApproval } from "../api/client";
 import { fileIndexApi } from "../api/client";
 import type { ChatSendRequest, ChatSendResult, Conversation, ConversationMessagesResult, CreateConversationRequest, FileCandidateApprovalCard, RegistryTrustLevel, TimelineMessage, ConsentRecord, WorkflowEvent, CloudStatus, MissionThreadMessage, PolicyRule } from "../api/types";
+import type { InboxItemsParams, InboxServerAction } from "../api/inboxApi";
 import type { ActionableInboxItem, TriageGroup, UniversalSearchResult } from "../types/agentic";
 import { generateHumanReadableTitle } from "../lib/agentic-utils";
 import { RealtimeLifecycle, SseTransport } from "../realtime/RealtimeTransport";
@@ -166,7 +167,9 @@ export const queryKeys = {
   biometricCapability: ["biometric", "capability"] as const,
   missions: ["missions"] as const,
   consent: (id: string) => ["consent", id] as const,
-  trustGraph: ["trust", "graph"] as const
+  trustGraph: ["trust", "graph"] as const,
+  inboxItems: (params: InboxItemsParams) => ["inbox", "items", params] as const,
+  inboxItem: (itemId: string) => ["inbox", "items", itemId] as const
 };
 
 function normalizeWorkflowEvent(data: unknown): WorkflowEvent | null {
@@ -1022,6 +1025,39 @@ export function useBiometricCapability() {
   });
 }
 
+export function useInboxItems(params: InboxItemsParams) {
+  return useQuery({
+    queryKey: queryKeys.inboxItems(params),
+    queryFn: () => api.inboxItems(params),
+    placeholderData: keepPreviousData,
+    refetchInterval: 5000
+  });
+}
+
+export function useInboxItem(itemId: string | null) {
+  return useQuery({
+    queryKey: queryKeys.inboxItem(itemId ?? "none"),
+    queryFn: () => api.inboxItem(itemId ?? ""),
+    enabled: Boolean(itemId)
+  });
+}
+
+export function useInboxItemAction() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ itemId, action, body }: { itemId: string; action: InboxServerAction; body?: Record<string, unknown> }) =>
+      api.inboxAction(itemId, action, body),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["inbox"] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.pendingApprovals });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.conversations });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.transfers });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.auditEvents });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agentRuns });
+    }
+  });
+}
+
 export function useClassifyIntent() {
   return useMutation({ mutationFn: (text: string) => api.classifyIntent(text) });
 }
@@ -1081,7 +1117,8 @@ const logoutProtectedQueryRoots = new Set([
   "policy",
   "missions",
   "consent",
-  "trust"
+  "trust",
+  "inbox"
 ]);
 
 function disconnectedCloudStatus(current: CloudStatus | undefined): CloudStatus | undefined {

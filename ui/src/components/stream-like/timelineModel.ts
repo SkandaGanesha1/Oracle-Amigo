@@ -55,12 +55,20 @@ export function messageSide(message: TimelineMessage): TimelineSide {
 }
 
 export function isStructuredCardMessage(message: TimelineMessage): boolean {
+  const complexAgentStatus =
+    message.kind === "agent_status" &&
+    (message.phase !== "completed" ||
+      Boolean(message.details?.reasoning_steps) ||
+      Boolean(message.details?.tool_calls));
+
   return (
     message.kind === "a2a_task" ||
     message.kind === "approval" ||
     message.kind === "transfer" ||
     message.kind === "receipt" ||
-    message.kind === "file_request"
+    message.kind === "file_request" ||
+    message.kind === "thinking_bar" ||
+    complexAgentStatus
   );
 }
 

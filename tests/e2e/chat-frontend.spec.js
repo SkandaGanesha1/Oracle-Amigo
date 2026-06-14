@@ -37,13 +37,10 @@ test.describe("Oracle Amigo routed chat frontend", () => {
 
     await expect(page).toHaveURL(/\/inbox$/);
     await expect(page.getByRole("button", { name: "Oracle Amigo" })).toBeVisible();
-    await expect(page.getByRole("banner")).not.toContainText("Inbox");
-    await expect(page.getByRole("banner")).not.toContainText("Chats");
-    await expect(page.getByRole("banner")).not.toContainText("Settings");
-    await expect(page.getByRole("banner")).not.toContainText("Log out");
+    await expect(page.getByRole("banner")).toHaveCount(0);
     await expect(page.getByRole("navigation", { name: "Intent Inbox" })).toBeVisible();
     await expect(page.getByRole("main", { name: "Main content" })).toBeVisible();
-    await expect(page.getByRole("main", { name: "Main content" })).toContainText("Intent Inbox");
+    await expect(page.getByRole("main", { name: "Main content" })).toContainText("Action Center");
 
     const rail = page.getByLabel("People and inbox rail");
     await expect(rail).toBeVisible();
@@ -134,15 +131,14 @@ test.describe("Oracle Amigo routed chat frontend", () => {
     ];
 
     for (const tab of tabs) {
-      await page.getByRole("button", { name: tab.name }).first().click();
+      await clickAccountAction(page, tab.name);
       await expect(page).toHaveURL(tab.url);
       const main = page.getByRole("main", { name: "Main content" });
       await expect(main).toContainText(tab.text);
       await expect(main).not.toContainText(/coming soon/i);
     }
 
-    await openAccountDropdown(page);
-    await page.getByRole("menuitem", { name: "Settings" }).click();
+    await clickAccountAction(page, "Settings");
     await expect(page).toHaveURL(/\/settings$/);
     await expect(page.getByRole("main", { name: "Main content" })).toContainText("Account");
   });
@@ -188,21 +184,34 @@ test.describe("Oracle Amigo routed chat frontend", () => {
     await page.getByRole("button", { name: "Send message" }).click();
     await page.getByRole("button", { name: "Approve" }).click();
 
-    await page.getByRole("button", { name: "Approvals" }).click();
+    await clickAccountAction(page, "Approvals");
     await expect(page.getByRole("button", { name: /release-checklist\.pdf Local/ })).toBeVisible();
     await page.getByRole("button", { name: /Approve/i }).click();
 
-    await page.getByRole("button", { name: "Vault" }).click();
+    await clickAccountAction(page, "Vault");
     await expect(page.getByRole("main", { name: "Main content" }).getByText("release-checklist.pdf")).toBeVisible();
   });
 });
 
 async function openAccountDropdown(page) {
   const rail = page.getByLabel("People and inbox rail");
-  await rail.getByRole("button", { name: /Account profile:/ }).click();
-  await expect(page.getByRole("menuitem", { name: "Profile" })).toBeVisible();
-  await expect(page.getByRole("menuitem", { name: "Settings" })).toBeVisible();
-  await expect(page.getByRole("menuitem", { name: "Log out" })).toBeVisible();
+  const trigger = rail.getByRole("button", { name: /Account profile:/ });
+  await trigger.click();
+  const profileItem = page.getByRole("menuitem", { name: "Profile" });
+  try {
+    await profileItem.waitFor({ state: "visible", timeout: 1000 });
+  } catch {
+    await trigger.click({ force: true });
+    await profileItem.waitFor({ state: "visible", timeout: 3000 });
+  }
+  for (const item of ["Profile", "Agents", "Approvals", "Vault", "Missions", "Audit", "Settings", "Log out"]) {
+    await expect(page.getByRole("menuitem", { name: item })).toBeVisible();
+  }
+}
+
+async function clickAccountAction(page, name) {
+  await openAccountDropdown(page);
+  await page.getByRole("menuitem", { name }).click();
 }
 
 async function mockCloudStatus(page, status) {

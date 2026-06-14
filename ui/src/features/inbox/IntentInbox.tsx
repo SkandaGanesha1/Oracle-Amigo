@@ -5,7 +5,6 @@ import { useConversations, usePendingApprovals, useAgentRuns, useContacts } from
 import { SidebarToggle } from "../../components/SidebarToggle";
 import { OracleAvatar } from "../../components/primitives/OracleAvatar";
 import { useSidebar } from "../../components/SidebarContext";
-import { motion } from "framer-motion";
 
 const emptyPlaceholders = ["No messages yet", "Conversation starting", "Starting conversation"];
 
@@ -191,19 +190,16 @@ export function IntentInbox() {
                 )}
               </div>
               <div className="mt-0.5 space-y-0.5">
-                {group.conversations.slice(0, 5).map((conv, i) => (
-                  <motion.button
+                {group.conversations.slice(0, 5).map((conv) => (
+                  <button
                     key={conv.id}
-                    initial={{ opacity: 0, x: -8 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    transition={{ duration: 0.15, delay: i * 0.02 }}
                     type="button"
                     onClick={() => navigate(`/chats/${conv.id}`)}
                     aria-current={conv.id === conversationId ? "true" : undefined}
-                    className={`flex min-h-[48px] w-full items-center gap-3 rounded-lg px-3 py-2 text-left transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oa-blue focus-visible:ring-offset-2 ${
+                    className={`flex min-h-[44px] w-full items-center gap-3 rounded-lg px-3 py-2 text-left transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oa-blue focus-visible:ring-offset-2 ${
                       conv.id === conversationId
-                        ? "bg-oa-bubble-bg ring-1 ring-oa-border"
-                        : "hover:bg-oa-surface hover:scale-[1.01]"
+                        ? "bg-oa-blue/10 text-oa-text ring-1 ring-oa-blue/25"
+                        : "hover:bg-oa-surface"
                     }`}
                   >
                     <OracleAvatar
@@ -221,7 +217,7 @@ export function IntentInbox() {
                         {conv.unread > 99 ? "99+" : conv.unread}
                       </span>
                     )}
-                  </motion.button>
+                  </button>
                 ))}
                 {group.conversations.length > 5 && (
                   <button

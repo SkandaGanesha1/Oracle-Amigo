@@ -1,7 +1,6 @@
 import { useLocation } from "react-router-dom";
 import { Outlet } from "react-router-dom";
 import { SidebarProvider } from "../components/SidebarContext";
-import { NavBar } from "./NavBar";
 import { SectionSidebar } from "./SectionSidebar";
 import { SectionContext, inferSection } from "./SectionContext";
 import { CommandPalette } from "../components/CommandPalette";
@@ -25,7 +24,6 @@ export function AppShell() {
         <div className={`flex h-full w-full bg-oa-bg density-${density}`} data-density={density}>
           <UserRail />
           <div className="flex min-w-0 flex-1 flex-col">
-            <NavBar />
             <div className="flex min-h-0 flex-1 overflow-hidden">
               <SectionSidebar />
               <main id="main-content" className="flex min-h-0 flex-1" role="main" aria-label="Main content">

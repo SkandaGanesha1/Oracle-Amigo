@@ -243,6 +243,36 @@ function ThreadSummaryPill({ summary }: { summary: NonNullable<TimelineMessage["
   );
 }
 
+function moderationText(message: TimelineMessage): string | null {
+  const state = message.moderation?.state;
+  if (!state || state === "visible" || state === "deleted") return null;
+  if (state === "hidden") return "This message is hidden by moderation.";
+  if (state === "quarantined") return "This message is quarantined for review.";
+  if (state === "redacted") return "This message was redacted.";
+  return "This message is unavailable.";
+}
+
+function ReactionPills({ reactions }: { reactions?: TimelineMessage["reactions"] }) {
+  if (!reactions?.length) return null;
+  return (
+    <div className="mt-1 flex flex-wrap gap-1" aria-label="Message reactions">
+      {reactions.map((reaction) => (
+        <span
+          key={reaction.emoji}
+          className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] ${
+            reaction.me
+              ? "border-oa-blue/40 bg-oa-blue/10 text-oa-blue"
+              : "border-oa-border bg-oa-surface/50 text-oa-text-muted"
+          }`}
+        >
+          <span aria-hidden="true">{reaction.emoji}</span>
+          <span>{reaction.count}</span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
 export function MessageBubble({ message, onRetry, grouped = false, meta }: MessageBubbleProps) {
   const [linkCopied, setLinkCopied] = useState(false);
   const [showAgentThinking, setShowAgentThinking] = useState(false);
@@ -255,6 +285,8 @@ export function MessageBubble({ message, onRetry, grouped = false, meta }: Messa
   const isStructuredCard = meta?.structuredCard ?? isStructuredCardMessage(message);
   const isDeleted = meta?.deleted ?? isDeletedMessage(message);
   const isEdited = meta?.edited ?? isEditedMessage(message);
+  const moderationPlaceholder = moderationText(message);
+  const isUnavailable = isDeleted || Boolean(moderationPlaceholder);
   const groupedWithPrevious = meta?.groupedWithPrevious ?? grouped;
   const isOutgoingHuman = isHuman && isOutgoing;
   const conversationId = typeof (message as { conversation_id?: unknown }).conversation_id === "string"
@@ -286,12 +318,6 @@ export function MessageBubble({ message, onRetry, grouped = false, meta }: Messa
 
   const isAgentPhase = isThinking || isSearching;
   const isThinkingBar = message.kind === "thinking_bar";
-  const containerClass = isCentered
-    ? "justify-center"
-    : isOutgoing
-      ? "flex-row-reverse"
-      : "flex-row";
-
   useEffect(() => {
     return () => {
       if (linkCopiedTimerRef.current !== null) {
@@ -345,17 +371,17 @@ export function MessageBubble({ message, onRetry, grouped = false, meta }: Messa
   return (
     <ContextMenu.Root>
       <ContextMenu.Trigger asChild>
-        <motion.div
+        <motion.article
           id={`message-${message.id}`}
+          data-side={side}
+          data-card={isStructuredCard ? "true" : "false"}
           layout
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.2, ease: "easeOut" }}
           className={[
-            "density-message group/message flex gap-3 px-4 py-1.5 transition-colors",
-            "hover:bg-white/[0.035]",
+            "oa-message-row density-message group/message",
             groupedWithPrevious ? "pt-0.5" : "",
-            containerClass,
           ].join(" ")}
         >
           {!isOutgoing && !isCentered && !groupedWithPrevious && !isAgentPhase && !isThinkingBar && (
@@ -372,14 +398,7 @@ export function MessageBubble({ message, onRetry, grouped = false, meta }: Messa
 
           <div
             className={[
-              "flex flex-col gap-1",
-              isThinkingBar
-                ? "w-full max-w-[860px]"
-                : isCentered
-                  ? "max-w-[860px] items-center"
-                  : isStructuredCard
-                    ? "max-w-[760px]"
-                    : "max-w-[min(760px,calc(100%-96px))]",
+              "oa-message-main",
               isOutgoing ? "items-end" : isCentered ? "items-center" : "items-start",
             ].join(" ")}
           >
@@ -395,10 +414,8 @@ export function MessageBubble({ message, onRetry, grouped = false, meta }: Messa
 
             <div
               className={[
-                "oa-message-content text-sm leading-relaxed",
-                isStructuredCard
-                  ? "rounded-xl border border-oa-border bg-oa-surface/80 p-3 shadow-sm shadow-black/10"
-                  : "bg-transparent p-0 text-oa-text shadow-none",
+                "oa-message-content",
+                isStructuredCard ? "oa-message-surface-card" : "oa-message-surface-text",
                 isCentered ? "text-center text-xs text-oa-text-muted" : "",
                 isDeleted ? "italic text-oa-text-muted" : "",
               ].join(" ")}
@@ -406,14 +423,17 @@ export function MessageBubble({ message, onRetry, grouped = false, meta }: Messa
               {isDeleted && (
                 <span className="text-oa-text-muted">This message was deleted.</span>
               )}
-              {message.kind === "system_event" && (
+              {moderationPlaceholder && !isDeleted && (
+                <span className="text-oa-text-muted">{moderationPlaceholder}</span>
+              )}
+              {!isUnavailable && message.kind === "system_event" && (
                 <div className="mb-1 flex items-center gap-1.5">
                   <SeverityIcon severity={(message as TimelineMessage & { severity: string }).severity} />
                 </div>
               )}
 
-              {!isDeleted && message.kind === "a2a_task" && <AgentRunMessage message={message as A2ATaskMessage} />}
-              {!isDeleted && message.kind === "approval" && (
+              {!isUnavailable && message.kind === "a2a_task" && <AgentRunMessage message={message as A2ATaskMessage} />}
+              {!isUnavailable && message.kind === "approval" && (
                 <>
                   <ApprovalCardMessage message={message as FileCandidateApprovalMessage} />
                   {((message as FileCandidateApprovalMessage).card.status === "approved" || (message as FileCandidateApprovalMessage).card.status === "rejected") && (
@@ -423,12 +443,12 @@ export function MessageBubble({ message, onRetry, grouped = false, meta }: Messa
                   )}
                 </>
               )}
-              {!isDeleted && message.kind === "transfer" && <TransferProgressCard message={message as TransferProgressMessage} />}
-              {!isDeleted && message.kind === "receipt" && <FileReceiptCard message={message as FileReceiptMessage} />}
-              {!isDeleted && message.kind === "file_request" && <FileRequestCard message={message as FileRequestMessageType} />}
-              {!isDeleted && isThinkingBar && <ThinkingBar state={message.state} privacyMasked />}
-              {!isDeleted && isAgentPhase && <AgentPhaseThinkingBar text={text} />}
-              {!isDeleted && (message.kind === "human" || (message.kind === "agent_status" && !isAgentPhase) || message.kind === "system_event") ? (
+              {!isUnavailable && message.kind === "transfer" && <TransferProgressCard message={message as TransferProgressMessage} />}
+              {!isUnavailable && message.kind === "receipt" && <FileReceiptCard message={message as FileReceiptMessage} />}
+              {!isUnavailable && message.kind === "file_request" && <FileRequestCard message={message as FileRequestMessageType} />}
+              {!isUnavailable && isThinkingBar && <ThinkingBar state={message.state} privacyMasked />}
+              {!isUnavailable && isAgentPhase && <AgentPhaseThinkingBar text={text} />}
+              {!isUnavailable && (message.kind === "human" || (message.kind === "agent_status" && !isAgentPhase) || message.kind === "system_event") ? (
                 <>
                   {(message.kind === "human" || message.kind === "system_event") && (
                     <>
@@ -473,7 +493,7 @@ export function MessageBubble({ message, onRetry, grouped = false, meta }: Messa
                   )}
                 </>
               ) : null}
-              {!isDeleted && (
+              {!isUnavailable && (
                 <>
                   <MessageAttachments attachments={message.attachments} />
                   <MessageEmbeds embeds={message.embeds} />
@@ -481,7 +501,7 @@ export function MessageBubble({ message, onRetry, grouped = false, meta }: Messa
               )}
             </div>
 
-            {isOutgoingHuman && (
+            {isOutgoingHuman && !isUnavailable && (
               <MessageDeliveryState
                 status={deliveryStatus as DeliveryStatus}
                 failureReason={failureReason}
@@ -489,9 +509,10 @@ export function MessageBubble({ message, onRetry, grouped = false, meta }: Messa
               />
             )}
 
-            {message.thread_summary && <ThreadSummaryPill summary={message.thread_summary} />}
+            {!isUnavailable && message.thread_summary && <ThreadSummaryPill summary={message.thread_summary} />}
+            {!isUnavailable && <ReactionPills reactions={message.reactions} />}
 
-            {!isCentered && !isAgentPhase && !isThinkingBar && (
+            {!isCentered && !isAgentPhase && !isThinkingBar && !isUnavailable && (
               <MessageActions
                 text={text}
                 onRetry={onRetry ? () => onRetry(message.id) : undefined}
@@ -503,10 +524,10 @@ export function MessageBubble({ message, onRetry, grouped = false, meta }: Messa
               />
             )}
           </div>
-        </motion.div>
+        </motion.article>
       </ContextMenu.Trigger>
 
-      {!isAgentPhase && !isThinkingBar && (
+      {!isAgentPhase && !isThinkingBar && !isUnavailable && (
         <ContextMenu.Portal>
           <ContextMenu.Content className="context-menu-surface z-[80] min-w-48 rounded-lg p-1">
             <ContextMenu.Item className="context-menu-item" onSelect={handleCopy}>

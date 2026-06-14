@@ -21,6 +21,7 @@ import { redactionsApi } from "./redactionsApi";
 import { policyRulesApi } from "./policyRulesApi";
 import { notificationsApi } from "./notificationsApi";
 import { biometricApi } from "./biometricApi";
+import { inboxApi } from "./inboxApi";
 
 function buildMissionsFromConversations(data: { conversations: Conversation[] }): Mission[] {
   return (data.conversations ?? []).flatMap((conv) => {
@@ -157,6 +158,10 @@ export const api = {
   evaluatePolicyRule: policyRulesApi.evaluate,
   notifications: notificationsApi.list,
   createNotification: notificationsApi.create,
+  inboxItems: inboxApi.items,
+  inboxItem: inboxApi.item,
+  inboxAction: inboxApi.action,
+  inboxBulk: inboxApi.bulk,
   biometricCapability: biometricApi.capability,
   relayInboxStatus: relayApi.inboxStatus,
   relayTaskStatus: relayApi.taskStatus,

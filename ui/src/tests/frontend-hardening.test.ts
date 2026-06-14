@@ -265,9 +265,17 @@ describe("frontend hardening source contracts", () => {
     const server = read("src/server.ts");
     const types = read("ui/src/types.ts");
     const chat = read("ui/src/features/chat/ChatWindow.tsx");
+    const attachments = read("ui/src/components/stream-like/MessageAttachments.tsx");
+    const embeds = read("ui/src/components/stream-like/MessageEmbeds.tsx");
+    const media = read("ui/src/components/stream-like/SafeMediaPreview.tsx");
+    const rich = read("ui/src/components/stream-like/RichMessageContent.tsx");
 
     expect(types).toContain("export interface TimelineMessageMeta");
     expect(types).toContain("origin_side?: MessageOriginSide");
+    expect(types).toContain("export interface MessageAttachment");
+    expect(types).toContain("scan_state: \"pending\" | \"clean\" | \"blocked\" | \"unknown\"");
+    expect(types).toContain("export interface MessageEmbed");
+    expect(types).toContain("safety_state: \"safe\" | \"blocked\" | \"unknown\"");
     expect(server).toContain("function timelineMeta");
     expect(server).toContain("pageInfo:");
     expect(server).toContain("readState:");
@@ -278,14 +286,34 @@ describe("frontend hardening source contracts", () => {
     expect(timelineModel).toContain("export function shouldGroupWithPrevious");
     expect(timelineModel).toContain("export function getUnreadMessageId");
     expect(timelineModel).toContain("export function messageSide");
+    expect(timelineModel).toContain("message.kind === \"thinking_bar\"");
     expect(bubble).toContain("isStructuredCard");
+    expect(bubble).toContain("data-side={side}");
+    expect(bubble).toContain("data-card={isStructuredCard ? \"true\" : \"false\"}");
+    expect(bubble).toContain("oa-message-row");
+    expect(bubble).toContain("oa-message-main");
+    expect(bubble).toContain("oa-message-surface-text");
+    expect(bubble).toContain("oa-message-surface-card");
     expect(bubble).toContain("This message was deleted.");
-    expect(bubble).toContain("hover:bg-white/[0.035]");
+    expect(bubble).toContain("moderationPlaceholder");
+    expect(bubble).toContain("ReactionPills");
     expect(bubble).toContain("<ApprovalCardMessage");
     expect(bubble).toContain("<TransferProgressCard");
     expect(bubble).toContain("<FileRequestCard");
     expect(bubble).toContain("oa-message-content");
+    expect(virtualized).toContain("className=\"oa-chat-scroll absolute inset-0\"");
+    expect(virtualized).toContain("className=\"oa-chat-lane\"");
+    expect(attachments).toContain("scanState={attachment.scan_state}");
+    expect(embeds).toContain("embed.safety_state === \"safe\"");
+    expect(media).toContain("Scanning attachment...");
+    expect(media).toContain("blocked by safety scan");
+    expect(rich).toContain("renderInlineTokens");
+    expect(rich).toContain("oa-message-token");
     expect(styles).toContain(".oa-message-content");
+    expect(styles).toContain(".oa-chat-lane");
+    expect(styles).toContain(".oa-message-row[data-side=\"right\"]");
+    expect(styles).toContain(".oa-message-surface-text");
+    expect(styles).toContain(".oa-message-surface-card");
     expect(chat).toContain("sendAs === \"normal\"");
     expect(chat).toContain("clientMessageId: crypto.randomUUID()");
     expect(chat).toContain("setPendingSend({ text, sendAs })");
@@ -310,7 +338,7 @@ describe("frontend hardening source contracts", () => {
       "ui/src/app/NavBar.tsx",
     ].map(read).join("\n");
     expect(routedSources).not.toMatch(/coming soon/i);
-    expect(routedSources).toContain("Intent Inbox");
+    expect(routedSources).toContain("<IntentFirstInbox />");
     expect(routedSources).toContain("<AgentDirectory");
     expect(routedSources).toContain("<VaultBrowser />");
     expect(routedSources).toContain("<MissionsPage />");
@@ -322,12 +350,41 @@ describe("frontend hardening source contracts", () => {
     const routes = read("ui/src/app/routes.tsx");
     const nav = read("ui/src/app/NavBar.tsx");
     const rail = read("ui/src/app/UserRail.tsx");
+    const shell = read("ui/src/app/AppShell.tsx");
     const section = read("ui/src/app/SectionContext.tsx");
     expect(routes).toContain("path=\"/inbox\"");
     expect(routes).toContain("to=\"/inbox\"");
+    expect(shell).not.toContain("NavBar");
     expect(nav).not.toContain("{ id: \"inbox\"");
     expect(rail).toContain("navigate(\"/inbox\")");
     expect(section).toContain("inbox: \"Inbox\"");
+  });
+
+  it("renders inbox as an action center backed by the inbox API", () => {
+    const page = read("ui/src/pages/InboxPage.tsx");
+    const actionCenter = read("ui/src/features/inbox/IntentFirstInbox.tsx");
+    const inboxApi = read("ui/src/api/inboxApi.ts");
+    const hooks = read("ui/src/hooks/queries.ts");
+    const detail = read("ui/src/components/inbox/InboxDetailPanel.tsx");
+    const empty = read("ui/src/components/inbox/InboxEmptyState.tsx");
+    const row = read("ui/src/components/inbox/InboxItemRow.tsx");
+
+    expect(page).toContain("<IntentFirstInbox />");
+    expect(page).not.toContain("MemoryInspector");
+    expect(page).not.toContain("A2AOrchestrationGraph");
+    expect(page).not.toContain("ArtifactRenderer");
+    expect(actionCenter).toContain("useInboxItems(params)");
+    expect(actionCenter).toContain("const selectedItem = items.find((item) => item.id === selectedId) ?? items[0] ?? null");
+    expect(actionCenter).toContain("window.addEventListener(\"keydown\"");
+    expect(actionCenter).toContain("searchRef.current?.focus()");
+    expect(actionCenter).toContain("navigate(`/chats/${item.conversationId}`)");
+    expect(actionCenter).not.toContain("Intent-first inbox");
+    expect(inboxApi).toContain("/api/inbox/items");
+    expect(hooks).toContain("export function useInboxItemAction");
+    expect(empty).toContain("All clear");
+    expect(detail).toContain("Masked by privacy mode");
+    expect(row).toContain("oa-inbox-row");
+    expect(row).not.toContain("<ActionableCard");
   });
 
   it("defines V1 typed API modules and query hooks for backend integrations", () => {
@@ -375,9 +432,10 @@ describe("frontend hardening source contracts", () => {
     const memory = read("ui/src/components/agentic-ai/MemoryInspector.tsx");
     const graph = read("ui/src/components/agentic-ai/A2AOrchestrationGraph.tsx");
     const inbox = read("ui/src/pages/InboxPage.tsx");
-    expect(inbox).toContain("<MemoryInspector />");
-    expect(inbox).toContain("<ArtifactRenderer");
-    expect(inbox).toContain("<A2AOrchestrationGraph");
+    expect(inbox).toContain("<IntentFirstInbox />");
+    expect(inbox).not.toContain("<MemoryInspector />");
+    expect(inbox).not.toContain("<ArtifactRenderer");
+    expect(inbox).not.toContain("<A2AOrchestrationGraph");
     expect(memory).toContain("useMemoryConversations");
     expect(graph).toContain("WorkflowEvent");
     expect(artifact).toContain("/storage/files/");
@@ -453,10 +511,31 @@ describe("frontend hardening source contracts", () => {
     expect(rail).toContain("AccountProfileDrawer");
     expect(rail).toContain("<ProfileDetails");
     expect(rail).toContain("id=\"profile\"");
+    expect(rail).toContain("id=\"agents\"");
+    expect(rail).toContain("id=\"approvals\"");
+    expect(rail).toContain("id=\"files\"");
+    expect(rail).toContain("id=\"tasks\"");
+    expect(rail).toContain("id=\"audit\"");
     expect(rail).toContain("id=\"settings\"");
     expect(rail).toContain("id=\"logout\"");
-    expect(rail.indexOf("id=\"profile\"")).toBeLessThan(rail.indexOf("id=\"settings\""));
-    expect(rail.indexOf("id=\"settings\"")).toBeLessThan(rail.indexOf("id=\"logout\""));
+    for (const [before, after] of [
+      ["profile", "agents"],
+      ["agents", "approvals"],
+      ["approvals", "files"],
+      ["files", "tasks"],
+      ["tasks", "audit"],
+      ["audit", "settings"],
+      ["settings", "logout"],
+    ] as const) {
+      expect(rail.indexOf(`id="${before}"`)).toBeLessThan(rail.indexOf(`id="${after}"`));
+    }
+    expect(rail).toContain("onOpenProfile");
+    expect(rail.indexOf("<AccountProfileDrawer")).toBeLessThan(rail.indexOf("function RailProfileButton"));
+    expect(rail).toContain("navigate(\"/agents\")");
+    expect(rail).toContain("navigate(\"/approvals\")");
+    expect(rail).toContain("navigate(\"/files\")");
+    expect(rail).toContain("navigate(\"/tasks\")");
+    expect(rail).toContain("navigate(\"/audit\")");
     expect(rail).toContain("placement=\"right\"");
     expect(rail).toContain("aria-label=\"Account profile drawer\"");
     expect(rail).not.toContain("label=\"Settings\"");
@@ -473,7 +552,9 @@ describe("frontend hardening source contracts", () => {
     expect(main).toContain("messagesData?.conversation");
     expect(main).toContain("messagesIsError");
     expect(main).toContain("<ConversationLoadErrorPanel");
-    expect(main).toContain("navigate(`/chats/${localConversationId ?? \"local-agent\"}`");
+    expect(main).not.toContain("navigate(`/chats/${localConversationId ?? \"local-agent\"}`");
+    expect(main).not.toContain("const localConversationId");
+    expect(main).toContain('onOpenLocalAgent={() => navigate("/chats/local-agent", { replace: true })}');
     expect(server).toContain("conversation: conversationToUi");
     expect(server).toContain("getOrCreateLocalConversation");
   });
@@ -588,6 +669,7 @@ describe("frontend hardening source contracts", () => {
     const api = read("ui/src/api/cloudAuthApi.ts");
     const hooks = read("ui/src/hooks/queries.ts");
     const nav = read("ui/src/app/NavBar.tsx");
+    const shell = read("ui/src/app/AppShell.tsx");
     const button = read("ui/src/features/auth/LogoutButton.tsx");
     const service = read("src/enrollment/DeviceEnrollmentService.ts");
     expect(api).toContain("request<{ ok: boolean; remoteRevoked: boolean }>(\"/cloud/logout\", { method: \"POST\" })");
@@ -596,8 +678,8 @@ describe("frontend hardening source contracts", () => {
     expect(hooks).toContain("queryClient.setQueryData<CloudStatus | undefined>(queryKeys.cloudStatus, disconnectedCloudStatus)");
     expect(button).toContain("aria-label=\"Log out\"");
     expect(button).toContain("navigate(\"/login\"");
+    expect(shell).not.toContain("NavBar");
     expect(nav).not.toContain("<LogoutButton />");
-    expect(nav).toContain("<NotificationCenter />");
     expect(service).toContain("remoteRevoked");
     expect(service).toContain("this.store.clearTokens(profileId)");
   });
