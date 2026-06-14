@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Brain, ChevronDown, ChevronRight, Copy, Check } from "lucide-react";
 
@@ -29,13 +29,28 @@ export function AgenticReasoning({ steps, className }: AgenticReasoningProps) {
   const [expandedChain, setExpandedChain] = useState(false);
   const summary = summarizeSteps(steps);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const copyTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (copyTimerRef.current !== null) {
+        window.clearTimeout(copyTimerRef.current);
+      }
+    };
+  }, []);
 
   if (steps.length === 0) return null;
 
   const handleCopy = async (content: string, id: string) => {
     await navigator.clipboard.writeText(content);
     setCopiedId(id);
-    setTimeout(() => setCopiedId(null), 2000);
+    if (copyTimerRef.current !== null) {
+      window.clearTimeout(copyTimerRef.current);
+    }
+    copyTimerRef.current = window.setTimeout(() => {
+      copyTimerRef.current = null;
+      setCopiedId(null);
+    }, 2000);
   };
 
   return (

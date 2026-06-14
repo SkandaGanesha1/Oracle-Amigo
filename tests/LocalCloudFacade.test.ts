@@ -21,6 +21,8 @@ let controlPlane: FastifyInstance;
 let localAgent: FastifyInstance;
 let dataDir: string;
 let controlPlaneUrl: string;
+const localAgentToken = "local-cloud-facade-token-12345678901234567890";
+const localAuthHeaders = { "x-local-agent-token": localAgentToken };
 
 beforeAll(async () => {
   dataDir = mkdtempSync(join(tmpdir(), "local-cloud-facade-"));
@@ -51,6 +53,7 @@ beforeAll(async () => {
   process.env.CONTROL_PLANE_URL = controlPlaneUrl;
   process.env.AGENTIC_PROFILE_ID = "test-profile";
   process.env.AGENTIC_DISABLE_RUNTIME_AUTOSTART = "true";
+  process.env.LOCAL_AGENT_API_TOKEN = localAgentToken;
   _resetDb();
   controlPlane = await buildApp();
   await controlPlane.listen({ port, host: "127.0.0.1" });
@@ -67,6 +70,7 @@ afterAll(async () => {
   delete process.env.CONTROL_PLANE_URL;
   delete process.env.AGENTIC_PROFILE_ID;
   delete process.env.AGENTIC_DISABLE_RUNTIME_AUTOSTART;
+  delete process.env.LOCAL_AGENT_API_TOKEN;
   try { rmSync(dataDir, { recursive: true, force: true }); } catch { /* ignore */ }
 });
 
@@ -76,6 +80,7 @@ describe("local cloud facade", () => {
     const signup = await localAgent.inject({
       method: "POST",
       url: "/cloud/signup",
+      headers: localAuthHeaders,
       payload: {
         email: `facade-alice-${ts}@example.com`,
         password: "securePass123!",
@@ -92,6 +97,7 @@ describe("local cloud facade", () => {
     const enroll = await localAgent.inject({
       method: "POST",
       url: "/cloud/enroll",
+      headers: localAuthHeaders,
       payload: {
         device_name: "Facade Alice Laptop",
         agent_display_name: "Facade Alice Agent"
@@ -134,6 +140,7 @@ describe("local cloud facade", () => {
       const signup = await localAgent.inject({
         method: "POST",
         url: "/cloud/signup",
+        headers: localAuthHeaders,
         payload: {
           email: `facade-fresh-${Date.now()}@example.com`,
           password: "securePass123!",
@@ -218,6 +225,7 @@ describe("local cloud facade", () => {
     const signup = await localAgent.inject({
       method: "POST",
       url: "/cloud/signup",
+      headers: localAuthHeaders,
       payload: {
         email: `facade-wrong-org-${Date.now()}@example.com`,
         password: "securePass123!",
@@ -233,10 +241,11 @@ describe("local cloud facade", () => {
     });
   }, 60_000);
 
-  it("returns a clear 502 when the selected control plane cannot be reached", async () => {
+  it("rejects an unallowlisted selected control plane before making a request", async () => {
     const signup = await localAgent.inject({
       method: "POST",
       url: "/cloud/signup",
+      headers: localAuthHeaders,
       payload: {
         email: `facade-offline-${Date.now()}@example.com`,
         password: "securePass123!",
@@ -244,10 +253,10 @@ describe("local cloud facade", () => {
         control_plane_url: "http://127.0.0.1:9"
       }
     });
-    expect(signup.statusCode).toBe(502);
+    expect(signup.statusCode).toBe(400);
     expect(signup.json()).toMatchObject({
-      error: "CONTROL_PLANE_UNAVAILABLE",
-      message: expect.stringContaining("http://127.0.0.1:9")
+      error: "INVALID_CONTROL_PLANE_URL",
+      message: "Control plane URL is not allowlisted"
     });
   }, 60_000);
 
@@ -256,6 +265,7 @@ describe("local cloud facade", () => {
     const firstSignup = await localAgent.inject({
       method: "POST",
       url: "/cloud/signup",
+      headers: localAuthHeaders,
       payload: {
         email: `facade-owner-${ts}@example.com`,
         password: "securePass123!",
@@ -264,11 +274,12 @@ describe("local cloud facade", () => {
       }
     });
     expect(firstSignup.statusCode).toBe(200);
-    const ownerReset = await localAgent.inject({ method: "POST", url: "/cloud/device-identity/reset" });
+    const ownerReset = await localAgent.inject({ method: "POST", url: "/cloud/device-identity/reset", headers: localAuthHeaders });
     expect(ownerReset.statusCode).toBe(200);
     const firstEnroll = await localAgent.inject({
       method: "POST",
       url: "/cloud/enroll",
+      headers: localAuthHeaders,
       payload: {
         device_name: "Shared Laptop",
         agent_display_name: "Original Agent"
@@ -279,6 +290,7 @@ describe("local cloud facade", () => {
     const secondSignup = await localAgent.inject({
       method: "POST",
       url: "/cloud/signup",
+      headers: localAuthHeaders,
       payload: {
         email: `facade-new-owner-${ts}@example.com`,
         password: "securePass123!",
@@ -290,6 +302,7 @@ describe("local cloud facade", () => {
     const conflict = await localAgent.inject({
       method: "POST",
       url: "/cloud/enroll",
+      headers: localAuthHeaders,
       payload: {
         device_name: "Shared Laptop",
         agent_display_name: "New Owner Agent"
@@ -303,7 +316,7 @@ describe("local cloud facade", () => {
     expect(conflict.body).not.toContain("BEGIN PRIVATE KEY");
     expect(conflict.body).not.toContain("deviceAccessToken");
 
-    const reset = await localAgent.inject({ method: "POST", url: "/cloud/device-identity/reset" });
+    const reset = await localAgent.inject({ method: "POST", url: "/cloud/device-identity/reset", headers: localAuthHeaders });
     expect(reset.statusCode).toBe(200);
     expect(reset.json()).toMatchObject({ ok: true });
     expect(reset.json().localPublicKeyFingerprint).toMatch(/^[a-f0-9]{16}$/);
@@ -311,6 +324,7 @@ describe("local cloud facade", () => {
     const recoveredEnroll = await localAgent.inject({
       method: "POST",
       url: "/cloud/enroll",
+      headers: localAuthHeaders,
       payload: {
         device_name: "Shared Laptop",
         agent_display_name: "New Owner Agent"

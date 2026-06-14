@@ -1,8 +1,31 @@
 export type * from "../types";
 
-import type { CloudStatus, Mission, ConsentRecord, TrustRelationship, MissionStatus, ConsentStatus } from "../types";
+import type { CloudStatus, Conversation, Mission, ConsentRecord, TrustRelationship, MissionStatus, ConsentStatus, TimelineMessage } from "../types";
 import type { DeliveryStatus } from "../types";
 export type { Conversation } from "../types";
+
+export interface ChatMessagesResult {
+  conversationId: string;
+  conversation?: Conversation;
+  messages: TimelineMessage[];
+  pageInfo?: {
+    hasMoreBefore: boolean;
+    hasMoreAfter: boolean;
+    oldestMessageId?: string;
+    newestMessageId?: string;
+  };
+  readState?: {
+    lastReadMessageId?: string;
+    unreadCount: number;
+    mentionCount: number;
+  };
+}
+
+export interface ChatThreadResult {
+  threadId: string;
+  parent: TimelineMessage;
+  replies: TimelineMessage[];
+}
 
 export interface CreateConversationRequest {
   peer_user_id?: string | null;

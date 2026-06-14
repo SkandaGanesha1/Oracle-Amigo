@@ -40,12 +40,15 @@ describe("ChatWindow source contract", () => {
     expect(typeof mod.ChatWindow).toBe("function");
   });
 
-  it("uses SendConfirmation component", () => {
+  it("sends normal messages immediately and reserves confirmation for file requests", () => {
     const source = require("fs").readFileSync(
       require("path").resolve(__dirname, "../features/chat/ChatWindow.tsx"),
       "utf8"
     );
     expect(source).toContain("SendConfirmation");
     expect(source).toContain("pendingSend");
+    expect(source).toContain("sendAs === \"normal\"");
+    expect(source).toContain("sendMessage.mutateAsync({ text, clientMessageId: crypto.randomUUID() })");
+    expect(source).toContain("setPendingSend({ text, sendAs })");
   });
 });

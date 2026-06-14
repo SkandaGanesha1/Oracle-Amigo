@@ -90,6 +90,23 @@ describe("UserRail", () => {
     expect(source).not.toContain("Bot,");
     expect(source).not.toContain("<Bot");
     expect(source).toContain("from \"@heroui/react\"");
+    expect(source).toContain("Dropdown");
+    expect(source).toContain("Drawer");
+    expect(source).toContain("AccountProfileDrawer");
+    expect(source).toContain("<ProfileDetails");
+    expect(source).toContain("oa-account-dropdown");
+    expect(css).toContain(".oa-profile-drawer");
+    expect(css).toContain(".oa-account-dropdown");
+    expect(css).toContain("background: #2F2F2F");
+    expect(css).toContain("backdrop-filter: none");
+    expect(source).toContain("id=\"profile\"");
+    expect(source).toContain("id=\"settings\"");
+    expect(source).toContain("id=\"logout\"");
+    expect(source.indexOf("id=\"profile\"")).toBeLessThan(source.indexOf("id=\"settings\""));
+    expect(source.indexOf("id=\"settings\"")).toBeLessThan(source.indexOf("id=\"logout\""));
+    expect(source).toContain("placement=\"right\"");
+    expect(source).toContain("aria-label=\"Account profile drawer\"");
+    expect(source).not.toContain("label=\"Settings\"");
     expect(source).toContain("w-16");
     expect(source).toContain("md:w-[72px]");
     expect(source).toContain("size=\"md\"");
@@ -150,6 +167,33 @@ describe("UserRail", () => {
     expect(users.map((user) => user.displayName).join(" ")).not.toMatch(/agi_|Remote agent/i);
   });
 
+  it("keeps agent-instance conversations visible while directory enrichment is unavailable", () => {
+    const users = buildRailUsers(
+      [{
+        id: "conv-docin-agent-only",
+        title: "Docin",
+        subtitle: "Relay peer agi_docin_current",
+        peerUserId: null,
+        agentInstanceId: "agi_docin_current",
+        presence: "unknown",
+        unread: 2,
+        lastMessage: "hello",
+        pendingApprovals: 0,
+        transferCount: 0,
+        messages: []
+      }],
+      cloudStatus(),
+      [],
+      []
+    );
+
+    const docin = users.find((user) => user.conversationId === "conv-docin-agent-only");
+    expect(docin?.id).toBe("agent:agi_docin_current");
+    expect(docin?.displayName).toBe("Docin");
+    expect(docin?.unread).toBe(2);
+    expect(users.map((user) => user.displayName).join(" ")).not.toMatch(/agi_|Remote agent/i);
+  });
+
   it("shows accepted contacts even before a conversation exists", () => {
     const users = buildRailUsers(
       [],
@@ -168,6 +212,28 @@ describe("UserRail", () => {
     expect(docin?.displayName).toBe("Docin");
     expect(docin?.conversationId).toBeNull();
     expect(docin?.presence.status).toBe("online");
+  });
+
+  it("shows accepted contacts without a directory snapshot", () => {
+    const users = buildRailUsers(
+      [],
+      cloudStatus(),
+      [{
+        id: "contact-docin",
+        requester_user_id: "user-me",
+        target_user_id: "user-docin",
+        target_display_name: "Docin",
+        target_email: "docin@example.com",
+        status: "accepted",
+        updated_at: "2026-06-13T00:00:00.000Z"
+      }],
+      []
+    );
+
+    const docin = users.find((user) => user.id === "user-docin");
+    expect(docin?.displayName).toBe("Docin");
+    expect(docin?.email).toBe("docin@example.com");
+    expect(docin?.conversationId).toBeNull();
   });
 
   it("uses incoming messages as a rail badge fallback when unread is stale", () => {

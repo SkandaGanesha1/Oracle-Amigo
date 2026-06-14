@@ -1,106 +1,97 @@
 # Implementation Plan
 
 [Overview]
-Create a comprehensive security remediation for the Oracle Amigo backend codebase addressing OWASP Top 10 issues (primarily injection via command policy bypasses, broken authentication in control-plane, SSRF vectors, insecure crypto), race conditions in sandbox execution, weak secret redaction, and missing validation.
+The goal is to fix the Ctrl+Space PTT flickering on key hold and make the live transcript + waveform visualization perfectly center-aligned in the Oracle Amigo voice interface (matching the provided black rounded screenshot design).
 
-The existing CommandPolicy relies on brittle regex patterns in normalizeCommand() and evaluate() that are easily bypassed via encoding, command chaining, and alternative syntax (as identified in the white-box audit of src/policy/CommandPolicy.ts, src/policy/SecretPolicy.ts, src/security/anp/AnpCrypto.ts, src/sandbox/GondolinSandbox.ts, apps/control-plane/src/auth/TokenService.ts and related files). This plan introduces a layered defense with AST-based parsing for PowerShell/Shell, strict allow-list execution, cryptographic improvements for ANP sessions, constant-time comparison for secrets, transaction isolation for DB ops, and comprehensive input validation using Zod schemas. The changes maintain the existing agent sandbox model while eliminating the primary attack surfaces that could lead to RCE, credential exfiltration, or session hijacking.
+The existing implementation incorrectly treats voice listening as a standard right-aligned user message bubble (using flex justify-end or message variant styling in the chat container and message components). This causes the transcript and yellow waveform to hug the right edge. Additionally, the key event handlers do not filter `e.repeat` or maintain proper pressed-state flags, causing rapid open/close toggling when holding Ctrl+Space due to browser repeat events. This advanced implementation introduces a dedicated centered listening overlay with smooth CSS/JS waveform animation (12 yellow bars with dynamic heights), robust PTT state machine using key flags, real-time transcript streaming, escape-to-cancel, and seamless integration with the existing React UI stack (PromptInput, ChatContainer, message rendering, and src/voice service) while preserving all existing chat, StickToBottom, and A2A functionality.
 
 [Types]
-Introduce strict TypeScript interfaces and Zod schemas for all security boundaries.
+Introduce dedicated types for stable PTT handling, centered voice UI state, and waveform configuration to enable accurate center alignment and advanced visualization.
 
-New types include:
-- `SecureCommandContext`: { command: string; userId: string; sessionId: string; permissions: string[]; timeoutMs: number; traceId: string }
-- `PolicyEvaluationResult`: { allowed: boolean; reason: string; classification: 'safe' | 'review' | 'blocked'; normalizedCommand?: string; riskScore: number; mitigations: string[] }
-- `SanitizedToken`: branded string type with runtime validation (using zod.brand())
-- `AnpCryptoOptions`: { algorithm: 'aes-256-gcm'; keyRotationDays: number; minEntropyBits: 256 }
-- `AuditEvent`: { timestamp: Date; actor: string; action: string; target: string; outcome: 'success' | 'failure'; metadata: Record<string, unknown> }
-Validation rules: All commands must pass both regex + AST validation; JWTs must use RS256 with 15min expiry and audience validation; secrets must never touch logs or unredacted responses.
+```ts
+interface VoiceListeningState {
+  isActive: boolean;
+  transcript: string; // live STT output, max 180 chars with ellipsis truncation
+  audioLevel: number; // normalized 0.0-1.0 from Web Audio API or mock
+  isPTTHeld: boolean; // prevents repeat-induced flicker
+  startTime: Date;
+  waveformBars: WaveformBar[];
+}
+
+interface WaveformBar {
+  height: number; // 4-48px dynamic based on audioLevel with easing
+  delay: number; // staggered animation delay in ms
+}
+
+type MessageVariant = 'user' | 'assistant' | 'system' | 'voice-listening';
+
+interface VoiceUIConfig {
+  barCount: 12;
+  maxWidth: '420px';
+  bgColor: 'bg-zinc-950 border border-zinc-800';
+  accentColor: '#facc15'; // yellow-400 matching screenshot
+  alignment: 'center'; // forces mx-auto + flex justify-center or fixed centered overlay
+  animationDuration: 180; // ms per cycle
+  // Validation rules: audioLevel = Math.max(0, Math.min(1, rawLevel)), transcript sanitized
+}
+```
 
 [Files]
-Modify 9 core security files and create 3 new modules.
+Create 2 new files and modify 6 existing files with precise changes for the centered voice UI and stable PTT.
 
-New files:
-- src/security/CommandASTValidator.ts (new AST-based parser for PowerShell/Bash, purpose: replace fragile regex)
-- src/security/SecureContextValidator.ts (Zod schemas + runtime guards for all agent inputs)
-- src/security/CryptoRotationService.ts (key rotation and constant-time ops)
+- **New files to be created:**
+  - hooks/use-voice-ptt.ts: Custom hook managing key flags, listening state, and audio level simulation (full path: @/hooks/use-voice-ptt.ts)
+  - components/ui/voice-listening.tsx: Self-contained centered black panel component with animated yellow waveform (12 bars), live transcript, and exact visual match to screenshot (full path: @/components/ui/voice-listening.tsx)
 
-Existing files to be modified:
-- src/policy/CommandPolicy.ts (replace evaluate() and normalizeCommand() with layered validation, add AST check)
-- src/policy/SecretPolicy.ts (strengthen redaction patterns, add context-aware scanning)
-- src/security/anp/AnpCrypto.ts (replace weak crypto primitives with AES-GCM + proper IV/nonce handling)
-- src/sandbox/GondolinSandbox.ts (add race-condition guards using mutexes and transaction IDs)
-- src/security/AnpReplayProtection.ts (enhance nonce storage with Redis TTL)
-- apps/control-plane/src/auth/TokenService.ts (fix JWT signing, add audience/issuer checks, implement refresh token rotation)
-- src/redaction/RedactionEngine.ts (make redaction mandatory on all output paths)
-- lib/safeUrl.ts (extend SSRF protection to all HTTP clients)
+- **Existing files to be modified:**
+  - @/components/ui/prompt-input.tsx: Add useVoicePTT integration, extend context with VoiceListeningState, update handleKeyDown to use flags and prevent repeat, expose isListening to parent
+  - @/components/ui/message.tsx: Add 'voice-listening' variant that renders <VoiceListening /> with center alignment (mx-auto, max-w-[420px], remove justify-end)
+  - @/components/ui/chat-container.tsx: Add optional `showVoiceOverlay` prop and conditional rendering of centered VoiceListening outside the normal message flow when active
+  - src/voice/voice-service.ts: Extend to support centered UI events, improve real-time transcript emission to VoiceListeningState, add cancelPTT method
+  - ui/src/App.tsx (main chat orchestrator): Wire useVoicePTT hook, manage global listening state, pass to PromptInput and ChatContainer, handle Escape key globally
+  - docs/frontend-chat-architecture.md: Add section documenting the new centered voice pattern, PTT state machine, and alignment rules
+  - tests/e2e/chat-frontend.spec.js: Add tests for hold stability and center alignment verification
 
-No files will be deleted. Update tsconfig.json and vitest.config.ts for new test coverage thresholds.
+- No files will be deleted or moved. Configuration files (tailwind.config, tsconfig) require no changes.
 
 [Functions]
-Update 12 critical security functions and add 5 new ones.
+All changes focus on robust key handling (using pressed flags + repeat filter) and a new centered rendering path.
 
-New functions:
-- `validateCommandAST(command: string, context: SecureCommandContext): PolicyEvaluationResult` (src/security/CommandASTValidator.ts, purpose: structural validation beyond regex)
-- `sanitizeWithContext(input: string, context: SecureCommandContext): string` (src/security/SecureContextValidator.ts)
-- `rotateKeys(currentKey: Buffer): Promise<Buffer>` (src/security/CryptoRotationService.ts)
-- `verifyWithConstantTime(a: Buffer, b: Buffer): boolean` (added to AnpCrypto.ts)
-- `enforceTransactionIsolation(runId: string)` (src/sandbox/GondolinSandbox.ts)
+- **New functions:**
+  - useVoicePTT(): hooks/use-voice-ptt.ts - (signature: () => VoiceListeningState & { startPTT: () => void, stopPTT: () => void }). Uses useState for isPTTHeld/isActive, useEffect for document.addEventListener('keydown'/'keyup'), filters e.repeat, simulates audioLevel with setInterval during active state.
+  - renderWaveform(state: VoiceListeningState): JSX.Element - components/ui/voice-listening.tsx - Maps 12 bars with CSS transform scaleY and staggered transition-delay for organic pulsing effect.
+  - createVoiceBubble(transcript: string, audioLevel: number): JSX.Element - components/ui/voice-listening.tsx - Returns exact black rounded container (rounded-3xl, shadow-2xl, yellow dots/wave) centered via Tailwind.
 
-Modified functions:
-- `evaluate(command: string)` in src/policy/CommandPolicy.ts (must now accept SecureCommandContext, combine regex+AST, return PolicyEvaluationResult with riskScore)
-- `normalizeCommand(command: string)` in src/policy/CommandPolicy.ts (deprecate in favor of sanitizeWithContext, keep only for backward compat)
-- `encryptPayload()` and `decryptPayload()` in src/security/anp/AnpCrypto.ts (must use AES-GCM with authenticated data and proper key derivation)
-- `executeCommand()` in src/sandbox/GondolinSandbox.ts (add mutex per sessionId to prevent race conditions)
-- `validateToken()` in apps/control-plane/src/auth/TokenService.ts (add audience, issuer, exp+iat validation, reject HS256)
-- `redact()` in src/redaction/RedactionEngine.ts (make it async and context-aware)
+- **Modified functions:**
+  - handleKeyDown in @/components/ui/prompt-input.tsx: Replace existing Ctrl+Space logic with call to useVoicePTT().handleKey(e); add `if (e.repeat && isPTTHeld) return;` to eliminate flicker.
+  - renderMessage or equivalent in @/components/ui/message.tsx: Add case `if (variant === 'voice-listening') return <VoiceListening {...state} />;` with center classes instead of right alignment.
+  - updateListeningUI in src/voice/voice-service.ts: Change from pushing right-aligned message to updating centralized VoiceListeningState and triggering re-render in UI.
+  - adjustHeight in @/components/ui/prompt-input.tsx: Add logic to collapse input area height when voice overlay is active.
 
-Removed functions: None (all deprecated paths will emit deprecation warnings for 2 releases).
+- **Removed functions:** Legacy togglePTT() in prompt-input (migrated entirely to useVoicePTT hook with proper state machine to avoid race conditions).
 
 [Classes]
-Modify 4 core security classes.
-
-New classes:
-- `CommandASTValidator` (src/security/CommandASTValidator.ts, key methods: parseCommand(), isDestructive(), getRiskScore(); no inheritance)
-- `SecureContextValidator` (src/security/SecureContextValidator.ts, key methods: validateInput(), createContext(); extends Zod schema factory)
-
-Modified classes:
-- `CommandPolicy` (src/policy/CommandPolicy.ts - add private astValidator: CommandASTValidator, update constructor to accept SecureContextValidator, modify evaluate() signature and internal classify() logic)
-- `AnpCrypto` (src/security/anp/AnpCrypto.ts - add key rotation support, replace static methods with instance using CryptoRotationService)
-- `GondolinSandbox` (src/sandbox/GondolinSandbox.ts - add mutex map and transaction tracking to prevent TOCTOU races)
-- `TokenService` (apps/control-plane/src/auth/TokenService.ts - replace simple JWT usage with proper claims validation and refresh token handling)
-
-No classes will be removed.
+No structural class changes needed (codebase is hook-based). The existing VoiceService class/instance in src/voice/voice-service.ts will gain two new methods: `enterCenteredListeningMode()` and `updateCenteredTranscript(transcript: string, level: number)` that emit events consumed by the React context. No inheritance or removal of classes.
 
 [Dependencies]
-Add 2 new packages with strict version pinning; update 1 existing.
-
-New packages:
-- `zod@3.23.8` (for runtime schema validation at all security boundaries)
-- `tree-sitter` + `tree-sitter-bash` + `tree-sitter-powershell` (for AST parsing in CommandASTValidator)
-
-Update:
-- `jsonwebtoken` to latest secure version with explicit algorithm enforcement
-
-All changes must be declared in package.json with exact versions. No runtime dependencies on external crypto services.
+No new packages required. Leverages existing Tailwind (flex, mx-auto, fixed inset-0 flex items-center justify-center for overlay), React hooks, and lucide-react (optional Mic icon). If smoother bar animations are desired, framer-motion (already in UI deps) can be used for the waveform; otherwise pure CSS @keyframes with Tailwind arbitrary values. Web Audio API used for real audioLevel if microphone permission granted (fallback to simulated sine wave).
 
 [Testing]
-Expand test coverage to 95%+ for all security modules with adversarial test cases.
+Test both visual centering accuracy and PTT hold stability with zero tolerance for flickering.
 
-Requirements:
-- New test file: tests/SecurityHardening.test.ts (must include bypass attempts for every old regex, race condition simulations, crypto misuse vectors)
-- Update existing: tests/CommandPolicy.test.ts, tests/AnpCrypto.test.ts, tests/SandboxSessionManager.test.ts, tests/NetworkPolicy.test.ts
-- Add property-based testing with fast-check for command fuzzing
-- Validation strategy: All tests must run in dry-run mode by default; include negative tests that would have succeeded under old policy but now fail
+- New test file: tests/voice-ptt-hold.test.ts - Tests holding Ctrl+Space for 10s+ with no state toggling, transcript updates every 300ms, Escape cancels cleanly, and audioLevel drives waveform heights.
+- Update tests/e2e/chat-frontend.spec.js: Add Playwright steps that simulate native Ctrl+Space hold, assert computed style `marginLeft`/`marginRight` are equal (true center), and screenshot comparison against provided image.
+- Snapshot test in tests/Ui.test.ts for VoiceListening component matching exact visual (black bg, yellow bars, font, rounded-3xl, shadow).
+- Edge cases: long transcript wrapping, zero audioLevel (flat waveform), permission denied, rapid key spam, integration with existing StickToBottom scroll behavior (overlay must not break chat history).
 
 [Implementation Order]
-Implement changes in strict dependency order to avoid breaking existing sandbox flows.
+Implement in this strict sequence to avoid conflicts between key handling, state, and rendering layers:
 
-1. Create src/security/CommandASTValidator.ts and src/security/SecureContextValidator.ts with full test coverage.
-2. Update src/policy/CommandPolicy.ts to integrate the new AST validator while preserving the existing evaluate() interface via adapter.
-3. Harden src/policy/SecretPolicy.ts and src/redaction/RedactionEngine.ts.
-4. Fix cryptographic primitives in src/security/anp/AnpCrypto.ts and add CryptoRotationService.ts.
-5. Add race condition protections to src/sandbox/GondolinSandbox.ts and SandboxSessionManager.ts.
-6. Strengthen authentication in apps/control-plane/src/auth/TokenService.ts, AuthMiddleware.ts and related admin routes.
-7. Update all call sites in src/agent-runs/AgentRunService.ts, src/server.ts and src/security/* to pass SecureCommandContext.
-8. Add comprehensive tests and update documentation in docs/security-model.md and docs/anp-hardening.md.
-9. Run full test suite (npm test && npm run test:e2e) and security scan before marking complete.
+1. Create hooks/use-voice-ptt.ts with complete state machine, key flag tracking (isCtrlPressed + isSpacePressed), repeat filtering, and audioLevel simulation.
+2. Create components/ui/voice-listening.tsx implementing the exact screenshot design (black panel, centered yellow animated waveform using 12 bars + CSS transitions, live transcript with ellipsis).
+3. Modify @/components/ui/prompt-input.tsx to integrate useVoicePTT hook, extend context, and update key handlers + input collapse logic.
+4. Modify @/components/ui/message.tsx and @/components/ui/chat-container.tsx to support 'voice-listening' variant and centered overlay rendering (using mx-auto or fixed center positioning).
+5. Update src/voice/voice-service.ts to feed real-time data into the new centered state.
+6. Update main chat orchestrator (ui/src/App.tsx or equivalent) and docs/frontend-chat-architecture.md.
+7. Add all new tests and run full test suite + manual hold verification in browser.
+8. Final visual validation that transcript and waves remain perfectly centered and PTT is stable on hold.

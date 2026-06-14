@@ -33,6 +33,8 @@ export class AgentRegistrationService {
       this.store.save(profileId, {
         controlPlaneUrl: identity.controlPlaneUrl,
         userAccessToken: bundle.access_token,
+        refreshToken: bundle.refresh_token,
+        userRefreshToken: bundle.refresh_token,
         status: identity.status === "disconnected" ? "authenticated" : identity.status
       });
       userAccessToken = bundle.access_token;

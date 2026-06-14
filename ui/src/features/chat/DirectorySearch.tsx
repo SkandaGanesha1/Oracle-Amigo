@@ -3,6 +3,7 @@ import { Search, Plus, X } from "lucide-react";
 import { useDirectorySearch, useStartConversation } from "../../hooks/queries";
 import { useNavigate } from "react-router-dom";
 import { OracleAvatar } from "../../components/primitives/OracleAvatar";
+import type { AgentInstance } from "../../api/types";
 
 export function DirectorySearch() {
   const navigate = useNavigate();
@@ -25,9 +26,12 @@ export function DirectorySearch() {
   }, []);
 
   async function startConversation(userId: string, displayName: string) {
+    const selectedUser = users.find((user) => user.user_id === userId);
+    const agent = bestDirectoryAgent(selectedUser?.agents ?? []);
     const result = await createConversation.mutateAsync({
       title: displayName,
       peer_user_id: userId,
+      peer_agent_instance_id: agent?.agent_instance_id ?? null,
       mode: "cloud_relay",
     });
     const convId = result?.conversation?.id;
@@ -107,4 +111,8 @@ export function DirectorySearch() {
       )}
     </div>
   );
+}
+
+function bestDirectoryAgent(agents: AgentInstance[]): AgentInstance | null {
+  return agents.find((agent) => agent.status === "online") ?? agents.find((agent) => agent.status === "stale") ?? agents[0] ?? null;
 }

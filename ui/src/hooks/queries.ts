@@ -3,7 +3,7 @@ import { AlertTriangle, Bot, CheckCircle2, Clock3, ShieldAlert } from "lucide-re
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, mapApproval } from "../api/client";
 import { fileIndexApi } from "../api/client";
-import type { ChatSendRequest, ChatSendResult, Conversation, CreateConversationRequest, FileCandidateApprovalCard, RegistryTrustLevel, TimelineMessage, ConsentRecord, WorkflowEvent, CloudStatus, MissionThreadMessage, PolicyRule } from "../api/types";
+import type { ChatSendRequest, ChatSendResult, Conversation, ConversationMessagesResult, CreateConversationRequest, FileCandidateApprovalCard, RegistryTrustLevel, TimelineMessage, ConsentRecord, WorkflowEvent, CloudStatus, MissionThreadMessage, PolicyRule } from "../api/types";
 import type { ActionableInboxItem, TriageGroup, UniversalSearchResult } from "../types/agentic";
 import { generateHumanReadableTitle } from "../lib/agentic-utils";
 import { RealtimeLifecycle, SseTransport } from "../realtime/RealtimeTransport";
@@ -134,6 +134,7 @@ export const queryKeys = {
   contacts: ["contacts"] as const,
   conversations: ["chat", "conversations"] as const,
   conversationMessages: (conversationId: string) => ["chat", "conversations", conversationId, "messages"] as const,
+  chatThread: (conversationId: string, threadId: string) => ["chat", "conversations", conversationId, "threads", threadId] as const,
   pendingApprovals: ["approvals", "pending"] as const,
   receivedFiles: ["files", "received"] as const,
   auditEvents: ["audit", "events"] as const,
@@ -187,6 +188,57 @@ function safeJson(input: string): Record<string, unknown> | string {
   } catch {
     return input;
   }
+}
+
+function shallowEqualRecord(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true;
+  if (!a || !b || typeof a !== "object" || typeof b !== "object") return false;
+  const aRecord = a as Record<string, unknown>;
+  const bRecord = b as Record<string, unknown>;
+  const aKeys = Object.keys(aRecord);
+  const bKeys = Object.keys(bRecord);
+  if (aKeys.length !== bKeys.length) return false;
+  for (const key of aKeys) {
+    if (!Object.prototype.hasOwnProperty.call(bRecord, key) || !Object.is(aRecord[key], bRecord[key])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function isConversationMessagesResult(value: unknown): value is ConversationMessagesResult {
+  return Boolean(
+    value &&
+    typeof value === "object" &&
+    typeof (value as ConversationMessagesResult).conversationId === "string" &&
+    Array.isArray((value as ConversationMessagesResult).messages)
+  );
+}
+
+function structurallyShareMessages(oldValue: unknown, newValue: unknown): unknown {
+  if (!isConversationMessagesResult(newValue)) return newValue;
+  const oldData = isConversationMessagesResult(oldValue) ? oldValue : undefined;
+  const newData = newValue;
+  if (!oldData || oldData.conversationId !== newData.conversationId) return newData;
+
+  const previousById = new Map(oldData.messages.map((message) => [message.id, message]));
+  let changed =
+    oldData.messages.length !== newData.messages.length ||
+    !shallowEqualRecord(oldData.conversation, newData.conversation) ||
+    !shallowEqualRecord(oldData.readState, newData.readState) ||
+    !shallowEqualRecord(oldData.pageInfo, newData.pageInfo);
+  const messages = newData.messages.map((message, index) => {
+    const previous = previousById.get(message.id);
+    if (previous && shallowEqualRecord(previous, message)) {
+      if (oldData.messages[index] !== previous) changed = true;
+      return previous;
+    }
+    changed = true;
+    return message;
+  });
+
+  if (!changed) return oldData;
+  return { ...newData, messages };
 }
 
 export function useCloudStatus() {
@@ -255,11 +307,102 @@ export function useConversations() {
 }
 
 export function useConversationMessages(conversationId: string | null) {
-  return useQuery({
+  return useQuery<ConversationMessagesResult>({
     queryKey: queryKeys.conversationMessages(conversationId ?? "none"),
     queryFn: () => api.conversationMessages(conversationId ?? "local-agent"),
     enabled: Boolean(conversationId),
-    refetchInterval: 3000
+    refetchInterval: 3000,
+    structuralSharing: structurallyShareMessages
+  });
+}
+
+export function useUpdateConversationReadState(conversationId: string | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (lastReadMessageId: string) => api.updateConversationReadState(conversationId ?? "", lastReadMessageId),
+    onSuccess: ({ readState }) => {
+      if (!conversationId) return;
+      queryClient.setQueryData<ConversationMessagesResult>(
+        queryKeys.conversationMessages(conversationId),
+        (current) => current ? { ...current, readState } : current
+      );
+      void queryClient.invalidateQueries({ queryKey: queryKeys.conversations });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.conversationMessages(conversationId) });
+    }
+  });
+}
+
+export function useLoadAroundMessage(conversationId: string | null) {
+  const queryClient = useQueryClient();
+  return useCallback(async (messageId: string) => {
+    if (!conversationId) return;
+    const data = await api.conversationMessages(conversationId, { around: messageId, limit: 80 });
+    queryClient.setQueryData(queryKeys.conversationMessages(conversationId), data);
+  }, [conversationId, queryClient]);
+}
+
+export function useLoadBeforeMessages(conversationId: string | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (beforeMessageId: string) => {
+      if (!conversationId) return null;
+      return api.conversationMessages(conversationId, { before: beforeMessageId, limit: 80 });
+    },
+    onSuccess: (data) => {
+      if (!conversationId || !data) return;
+      queryClient.setQueryData<ConversationMessagesResult>(
+        queryKeys.conversationMessages(conversationId),
+        (current) => {
+          if (!current) return data;
+          const existingIds = new Set(current.messages.map((message) => message.id));
+          const prepended = data.messages.filter((message) => !existingIds.has(message.id));
+          return {
+            ...current,
+            messages: [...prepended, ...current.messages],
+            pageInfo: {
+              hasMoreBefore: data.pageInfo?.hasMoreBefore ?? false,
+              hasMoreAfter: current.pageInfo?.hasMoreAfter ?? data.pageInfo?.hasMoreAfter ?? false,
+              oldestMessageId: data.pageInfo?.oldestMessageId ?? prepended[0]?.id ?? current.pageInfo?.oldestMessageId,
+              newestMessageId: current.pageInfo?.newestMessageId ?? current.messages.at(-1)?.id ?? data.pageInfo?.newestMessageId,
+            },
+            readState: data.readState ?? current.readState,
+          };
+        }
+      );
+    }
+  });
+}
+
+export function usePinMessage(conversationId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ messageId, pinned }: { messageId: string; pinned: boolean }) =>
+      api.pinChatMessage(conversationId, messageId, pinned),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.conversationMessages(conversationId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.conversations });
+    }
+  });
+}
+
+export function useThread(conversationId: string | null, threadId: string | null) {
+  return useQuery({
+    queryKey: queryKeys.chatThread(conversationId ?? "none", threadId ?? "none"),
+    queryFn: () => api.chatThread(conversationId ?? "", threadId ?? ""),
+    enabled: Boolean(conversationId && threadId)
+  });
+}
+
+export function useCreateThreadReply(conversationId: string | null, threadId: string | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (text: string) => api.createChatThreadReply(conversationId ?? "", threadId ?? "", text),
+    onSuccess: () => {
+      if (!conversationId || !threadId) return;
+      void queryClient.invalidateQueries({ queryKey: queryKeys.chatThread(conversationId, threadId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.conversationMessages(conversationId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.conversations });
+    }
   });
 }
 
@@ -303,10 +446,31 @@ export function useStartConversation() {
     onError: (_err, _input, context) => {
       if (context?.previous) queryClient.setQueryData(queryKeys.conversations, context.previous);
     },
-    onSettled: () => {
+    onSuccess: ({ conversation }) => {
+      queryClient.setQueryData<{ conversations: Conversation[] }>(queryKeys.conversations, (current) => {
+        const conversations = current?.conversations ?? [];
+        return {
+          conversations: [conversation, ...conversations.filter((item) => item.id !== conversation.id)]
+        };
+      });
+      queryClient.setQueryData<ConversationMessagesResult>(queryKeys.conversationMessages(conversation.id), {
+        conversationId: conversation.id,
+        conversation,
+        messages: conversation.messages ?? [],
+        readState: conversation.readState ?? {
+          conversationId: conversation.id,
+          unreadCount: conversation.unread ?? 0,
+          mentionCount: 0
+        }
+      });
+    },
+    onSettled: (data) => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.conversations });
       void queryClient.invalidateQueries({ queryKey: queryKeys.contacts });
       void queryClient.invalidateQueries({ queryKey: ["directory"] });
+      if (data?.conversation?.id) {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.conversationMessages(data.conversation.id) });
+      }
     }
   });
 }
@@ -358,7 +522,7 @@ function useSendChatMutation(conversationId: string, sendAs: ChatSendRequest["se
       const messageId = input.clientMessageId ?? crypto.randomUUID();
       const queryKey = queryKeys.conversationMessages(conversationId);
       await queryClient.cancelQueries({ queryKey });
-      const previous = queryClient.getQueryData<{ conversationId: string; messages: TimelineMessage[] }>(queryKey);
+      const previous = queryClient.getQueryData<ConversationMessagesResult>(queryKey);
       const optimistic: TimelineMessage = {
         kind: "human",
         id: messageId,
@@ -372,18 +536,24 @@ function useSendChatMutation(conversationId: string, sendAs: ChatSendRequest["se
         created_at: new Date().toISOString(),
         delivery_status: "local_pending"
       };
-      queryClient.setQueryData<{ conversationId: string; messages: TimelineMessage[] }>(queryKey, {
+      queryClient.setQueryData<ConversationMessagesResult>(queryKey, {
         conversationId,
-        messages: [...(previous?.messages ?? []), optimistic]
+        messages: [...(previous?.messages ?? []), optimistic],
+        pageInfo: previous?.pageInfo,
+        readState: previous?.readState ?? {
+          conversationId,
+          unreadCount: 0,
+          mentionCount: 0
+        }
       });
       return { previous, queryKey, messageId };
     },
     onError: (err, input, context) => {
       if (context?.queryKey) {
-        const current = queryClient.getQueryData<{ conversationId: string; messages: TimelineMessage[] }>(context.queryKey);
+        const current = queryClient.getQueryData<ConversationMessagesResult>(context.queryKey);
         if (current) {
-          queryClient.setQueryData<{ conversationId: string; messages: TimelineMessage[] }>(context.queryKey, {
-            conversationId: current.conversationId,
+          queryClient.setQueryData<ConversationMessagesResult>(context.queryKey, {
+            ...current,
             messages: current.messages.map((msg) =>
               msg.id === context.messageId && msg.kind === "human"
                 ? { ...msg, delivery_status: "failed" as const }
@@ -407,10 +577,10 @@ function useSendChatMutation(conversationId: string, sendAs: ChatSendRequest["se
     },
     onSettled: (result, _error, _input, context) => {
       if (result && context?.queryKey && context?.messageId) {
-        const current = queryClient.getQueryData<{ conversationId: string; messages: TimelineMessage[] }>(context.queryKey);
+        const current = queryClient.getQueryData<ConversationMessagesResult>(context.queryKey);
         if (current) {
-          queryClient.setQueryData<{ conversationId: string; messages: TimelineMessage[] }>(context.queryKey, {
-            conversationId: current.conversationId,
+          queryClient.setQueryData<ConversationMessagesResult>(context.queryKey, {
+            ...current,
             messages: current.messages.map((msg) =>
               msg.id === context.messageId && msg.kind === "human"
                 ? { ...msg, delivery_status: result.delivery_status, relay_task_id: result.relay_task_id ?? null }

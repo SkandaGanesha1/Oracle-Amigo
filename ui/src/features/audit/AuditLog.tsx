@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useAuditEvents, useAuditVerify } from "../../hooks/queries";
 import { ScrollText, Search, X, ChevronDown, ChevronRight, ShieldCheck, Download, Filter, Calendar, Copy, Check, RefreshCw, User, FileText, Ban, CheckCircle, XCircle, Clock, ArrowRight, Globe, Lock, Unlock, Settings, LogIn, LogOut } from "lucide-react";
 import type { AuditEvent } from "../../api/types";
@@ -99,6 +99,7 @@ export function AuditLog({ compact = false }: AuditLogProps) {
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [typeFilter, setTypeFilter] = useState("all");
   const [copiedId, setCopiedId] = useState<number | null>(null);
+  const copyTimerRef = useRef<number | null>(null);
 
   const events = data?.events ?? [];
   const chainValid = data?.chainValid?.valid;
@@ -117,6 +118,14 @@ export function AuditLog({ compact = false }: AuditLogProps) {
     });
   }, [events, search, typeFilter]);
 
+  useEffect(() => {
+    return () => {
+      if (copyTimerRef.current !== null) {
+        window.clearTimeout(copyTimerRef.current);
+      }
+    };
+  }, []);
+
   const handleExport = () => {
     const json = JSON.stringify(events, null, 2);
     const blob = new Blob([json], { type: "application/json" });
@@ -131,7 +140,13 @@ export function AuditLog({ compact = false }: AuditLogProps) {
   const handleCopyHash = async (hash: string, id: number) => {
     await navigator.clipboard.writeText(hash);
     setCopiedId(id);
-    setTimeout(() => setCopiedId(null), 2000);
+    if (copyTimerRef.current !== null) {
+      window.clearTimeout(copyTimerRef.current);
+    }
+    copyTimerRef.current = window.setTimeout(() => {
+      copyTimerRef.current = null;
+      setCopiedId(null);
+    }, 2000);
   };
 
   if (isLoading) {

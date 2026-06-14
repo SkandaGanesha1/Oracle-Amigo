@@ -58,9 +58,29 @@ function resolveDidKey(did: string): DidResolution | null {
   // and the multicodec prefix 0xed01 means Ed25519.
   const value = did.slice("did:key:".length);
   if (!value.startsWith("z")) return null;
-  const decoded = base58btcDecode(value.slice(1));
+  const encoded = value.slice(1);
+  const decoded = base58btcDecode(encoded) ?? base64urlDecode(encoded);
   if (!decoded) return null;
+  if (decoded.length === 32) {
+    return {
+      did,
+      publicKeyHex: decoded.toString("hex"),
+      method: "key",
+      resolvedAt: Date.now(),
+      ttlSeconds: DEFAULT_TTL_SECONDS,
+    };
+  }
   // multicodec 0xed (Ed25519 public key) → drop the leading 2 bytes.
+  const legacyRawKey = base64urlDecode(encoded);
+  if (legacyRawKey?.length === 32) {
+    return {
+      did,
+      publicKeyHex: legacyRawKey.toString("hex"),
+      method: "key",
+      resolvedAt: Date.now(),
+      ttlSeconds: DEFAULT_TTL_SECONDS,
+    };
+  }
   if (decoded.length < 2) return null;
   if (decoded[0] !== 0xed || decoded[1] !== 0x01) return null;
   const rawKey = decoded.subarray(2);
@@ -163,6 +183,15 @@ function base58btcDecode(input: string): Buffer | null {
   }
   const result = Buffer.from([...new Array(leadingZeros).fill(0), ...bytes.reverse()]);
   return result;
+}
+
+function base64urlDecode(input: string): Buffer | null {
+  if (!/^[A-Za-z0-9_-]+$/.test(input)) return null;
+  try {
+    return Buffer.from(input, "base64url");
+  } catch {
+    return null;
+  }
 }
 
 /** Cache wrapper to avoid re-resolving the same DID on every handshake. */

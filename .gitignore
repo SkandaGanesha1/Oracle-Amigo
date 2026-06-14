@@ -55,3 +55,8 @@ output/
 UI_images/
 **/*.map
 
+
+# Latest Vite build assets
+public/assets/index-*.css
+public/assets/index-*.js
+

@@ -19,6 +19,7 @@ export function AgentTerminal({ lines, onCommand, title = "Terminal", maxHeight 
   const scrollRef = useRef<HTMLDivElement>(null);
   const [input, setInput] = useState("");
   const [copied, setCopied] = useState(false);
+  const copyTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -26,11 +27,25 @@ export function AgentTerminal({ lines, onCommand, title = "Terminal", maxHeight 
     }
   }, [lines]);
 
+  useEffect(() => {
+    return () => {
+      if (copyTimerRef.current !== null) {
+        window.clearTimeout(copyTimerRef.current);
+      }
+    };
+  }, []);
+
   const handleCopyAll = async () => {
     const text = lines.map((l) => l.text).join("\n");
     await navigator.clipboard.writeText(text);
     setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    if (copyTimerRef.current !== null) {
+      window.clearTimeout(copyTimerRef.current);
+    }
+    copyTimerRef.current = window.setTimeout(() => {
+      copyTimerRef.current = null;
+      setCopied(false);
+    }, 2000);
   };
 
   const handleSubmit = (e: React.FormEvent) => {

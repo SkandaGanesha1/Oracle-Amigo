@@ -1,9 +1,32 @@
 import { createHash, generateKeyPairSync, randomBytes, type KeyObject } from "node:crypto";
 import jwt, { type JwtPayload, type SignOptions } from "jsonwebtoken";
+import { z } from "zod";
 import { loadConfig } from "../config.js";
 import type { AccessTokenClaims, AuthContext, DeviceTokenClaims, DeviceAuthContext } from "../types/cloud.js";
 
 let devKeyPair: { privateKey: KeyObject; publicKey: KeyObject } | null = null;
+
+const baseClaimsSchema = z.object({
+  sub: z.string().min(1),
+  org: z.string().min(1),
+  scope: z.string().min(1),
+  iat: z.number().int().positive(),
+  exp: z.number().int().positive(),
+  iss: z.string().min(1)
+});
+
+const accessTokenClaimsSchema = baseClaimsSchema.extend({
+  scope: z.literal("user"),
+  email: z.string().email().or(z.literal("")),
+  display_name: z.string()
+}).refine((claims) => claims.exp > claims.iat, "Token expiry must be after issued-at");
+
+const deviceTokenClaimsSchema = baseClaimsSchema.extend({
+  scope: z.literal("device"),
+  user: z.string().min(1),
+  device: z.string().min(1),
+  agent: z.string().min(1)
+}).refine((claims) => claims.exp > claims.iat, "Token expiry must be after issued-at");
 
 export function issueAccessToken(input: {
   userId: string;
@@ -63,19 +86,16 @@ export function verifyAccessToken(token: string): AccessTokenClaims {
   if (typeof decoded === "string") {
     throw new Error("Invalid token payload");
   }
-  const payload = decoded as JwtPayload & Partial<AccessTokenClaims>;
-  if (!payload.sub || !payload.org || payload.scope !== "user") {
-    throw new Error("Invalid user token claims");
-  }
+  const payload = accessTokenClaimsSchema.parse(decoded as JwtPayload & Partial<AccessTokenClaims>);
   return {
-    sub: String(payload.sub),
-    org: String(payload.org),
-    email: String(payload.email ?? ""),
-    display_name: String(payload.display_name ?? ""),
-    scope: String(payload.scope),
-    iat: Number(payload.iat ?? 0),
-    exp: Number(payload.exp ?? 0),
-    iss: String(payload.iss ?? cfg.TOKEN_ISSUER)
+    sub: payload.sub,
+    org: payload.org,
+    email: payload.email,
+    display_name: payload.display_name,
+    scope: payload.scope,
+    iat: payload.iat,
+    exp: payload.exp,
+    iss: payload.iss
   };
 }
 
@@ -89,20 +109,17 @@ export function verifyDeviceToken(token: string): DeviceTokenClaims {
   if (typeof decoded === "string") {
     throw new Error("Invalid device token payload");
   }
-  const payload = decoded as JwtPayload & Partial<DeviceTokenClaims>;
-  if (!payload.sub || !payload.org || !payload.user || !payload.device || !payload.agent || payload.scope !== "device") {
-    throw new Error("Invalid device token claims");
-  }
+  const payload = deviceTokenClaimsSchema.parse(decoded as JwtPayload & Partial<DeviceTokenClaims>);
   return {
-    sub: String(payload.sub),
-    org: String(payload.org),
-    user: String(payload.user ?? ""),
-    device: String(payload.device ?? ""),
-    agent: String(payload.agent ?? ""),
+    sub: payload.sub,
+    org: payload.org,
+    user: payload.user,
+    device: payload.device,
+    agent: payload.agent,
     scope: "device",
-    iat: Number(payload.iat ?? 0),
-    exp: Number(payload.exp ?? 0),
-    iss: String(payload.iss ?? cfg.TOKEN_ISSUER)
+    iat: payload.iat,
+    exp: payload.exp,
+    iss: payload.iss
   };
 }
 

@@ -21,6 +21,7 @@ export interface SandboxSessionManagerOptions {
 
 export class SandboxSessionManager {
   private readonly sessions = new Map<string, SessionRecord>();
+  private readonly sessionLocks = new Map<string, Promise<unknown>>();
   private readonly commandPolicy: CommandPolicy;
   private readonly networkPolicy: NetworkPolicy;
   private readonly secretPolicy: SecretPolicy;
@@ -82,6 +83,10 @@ export class SandboxSessionManager {
   }
 
   async runCommand(sessionId: string, command: string, options: { timeoutMs?: number; workingDirectory?: string } = {}): Promise<CommandResult> {
+    return this.withSessionLock(sessionId, async () => this.runCommandUnlocked(sessionId, command, options));
+  }
+
+  private async runCommandUnlocked(sessionId: string, command: string, options: { timeoutMs?: number; workingDirectory?: string } = {}): Promise<CommandResult> {
     const record = this.getRecord(sessionId);
     const commandId = randomUUID();
     const timeoutMs = this.commandPolicy.capTimeout(options.timeoutMs);
@@ -150,6 +155,10 @@ export class SandboxSessionManager {
   }
 
   async closeSession(sessionId: string): Promise<{ sessionId: string; status: "closed" }> {
+    return this.withSessionLock(sessionId, async () => this.closeSessionUnlocked(sessionId));
+  }
+
+  private async closeSessionUnlocked(sessionId: string): Promise<{ sessionId: string; status: "closed" }> {
     const record = this.getRecord(sessionId);
     clearTimeout(record.cleanupTimer);
     await record.sandbox.close();
@@ -161,6 +170,25 @@ export class SandboxSessionManager {
     });
     this.sessions.delete(sessionId);
     return { sessionId, status: "closed" };
+  }
+
+  private async withSessionLock<T>(sessionId: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.sessionLocks.get(sessionId) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const next = previous.then(() => current, () => current);
+    this.sessionLocks.set(sessionId, next);
+    try {
+      await previous.catch(() => undefined);
+      return await operation();
+    } finally {
+      release();
+      if (this.sessionLocks.get(sessionId) === next) {
+        this.sessionLocks.delete(sessionId);
+      }
+    }
   }
 
   private recordPolicyDecision(sessionId: string, commandId: string, decision: PolicyDecision): void {

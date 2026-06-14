@@ -5,6 +5,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
+import { safeMediaSrc } from "@/lib/safeUrl"
 import { cn } from "@/lib/utils"
 import { Markdown } from "./markdown"
 
@@ -34,9 +35,11 @@ const MessageAvatar = ({
   delayMs,
   className,
 }: MessageAvatarProps) => {
+  const safeSrc = safeMediaSrc(src)
+
   return (
     <Avatar className={cn("h-8 w-8 shrink-0", className)}>
-      <AvatarImage src={src} alt={alt} />
+      <AvatarImage src={safeSrc} alt={alt} />
       {fallback && (
         <AvatarFallback delayMs={delayMs}>{fallback}</AvatarFallback>
       )}

@@ -3,7 +3,7 @@
 import { useControllableState } from "@radix-ui/react-use-controllable-state"
 import { AlertTriangleIcon, CheckIcon, ChevronDownIcon, CopyIcon } from "lucide-react"
 import type { ComponentProps } from "react"
-import { createContext, memo, useContext, useMemo, useState } from "react"
+import { createContext, memo, useContext, useEffect, useMemo, useRef, useState } from "react"
 import { Button } from "~/components/ui/button"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "~/components/ui/collapsible"
 import { cn } from "~/lib/utils"
@@ -264,6 +264,15 @@ export const StackTraceCopyButton = memo(
   }: StackTraceCopyButtonProps) => {
     const [isCopied, setIsCopied] = useState(false)
     const { raw } = useStackTrace()
+    const copyTimerRef = useRef<number | null>(null)
+
+    useEffect(() => {
+      return () => {
+        if (copyTimerRef.current !== null) {
+          window.clearTimeout(copyTimerRef.current)
+        }
+      }
+    }, [])
 
     const copyToClipboard = async () => {
       if (typeof window === "undefined" || !navigator?.clipboard?.writeText) {
@@ -275,7 +284,13 @@ export const StackTraceCopyButton = memo(
         await navigator.clipboard.writeText(raw)
         setIsCopied(true)
         onCopy?.()
-        setTimeout(() => setIsCopied(false), timeout)
+        if (copyTimerRef.current !== null) {
+          window.clearTimeout(copyTimerRef.current)
+        }
+        copyTimerRef.current = window.setTimeout(() => {
+          copyTimerRef.current = null
+          setIsCopied(false)
+        }, timeout)
       } catch (error) {
         onError?.(error as Error)
       }

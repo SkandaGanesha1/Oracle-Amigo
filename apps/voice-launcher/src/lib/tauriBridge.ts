@@ -34,7 +34,12 @@ export async function listenToVoiceShortcutEvents(handlers: VoiceShortcutHandler
 
 export async function hideLauncherWindow(): Promise<void> {
   if (!isTauriRuntime()) return;
-  await getCurrentWindow().hide();
+  try {
+    await invoke("hide_voice_window");
+  } catch (err) {
+    console.warn("Native voice launcher hide failed; falling back to window.hide().", err);
+    await getCurrentWindow().hide();
+  }
 }
 
 export async function showLauncherWindow(): Promise<void> {

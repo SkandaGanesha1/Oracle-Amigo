@@ -35,7 +35,16 @@ export interface ChatConversationRecord {
   created_at: string;
   updated_at: string;
   last_message_at: string | null;
+  last_read_message_id: string | null;
   unread_count: number;
+  mention_count: number;
+}
+
+export interface ConversationReadState {
+  conversationId: string;
+  lastReadMessageId?: string;
+  unreadCount: number;
+  mentionCount: number;
 }
 
 export interface ChatMessageRecord {
@@ -78,6 +87,12 @@ export interface AppendMessageInput {
   createdAt?: string;
 }
 
+export interface MessageWindowResult {
+  messages: ChatMessageRecord[];
+  hasMoreBefore: boolean;
+  hasMoreAfter: boolean;
+}
+
 export class ChatRepository {
   constructor(private db: DatabaseSync = getDb()) {}
 
@@ -87,8 +102,9 @@ export class ChatRepository {
     this.db.prepare(`
       INSERT INTO conversations
         (id, local_agent_id, peer_agent_id, mode, org_id, local_user_id, local_agent_instance_id,
-         peer_user_id, peer_agent_instance_id, title, created_at, updated_at, last_message_at, unread_count)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         peer_user_id, peer_agent_instance_id, title, created_at, updated_at, last_message_at,
+         last_read_message_id, unread_count, mention_count)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         org_id=excluded.org_id,
         local_user_id=excluded.local_user_id,
@@ -112,6 +128,8 @@ export class ChatRepository {
       now,
       now,
       null,
+      null,
+      0,
       0
     );
     this.ensureParticipant(id, input.localUserId ?? null, input.localAgentInstanceId ?? null, "local");
@@ -135,7 +153,8 @@ export class ChatRepository {
   getConversation(id: string): ChatConversationRecord | null {
     const row = this.db.prepare(`
       SELECT id, org_id, local_user_id, local_agent_instance_id, peer_user_id, peer_agent_instance_id,
-             mode, title, created_at, updated_at, last_message_at, unread_count
+             mode, title, created_at, updated_at, last_message_at, last_read_message_id,
+             unread_count, mention_count
       FROM conversations WHERE id = ?
     `).get(id) as Record<string, unknown> | undefined;
     return row ? rowToConversation(row) : null;
@@ -144,7 +163,8 @@ export class ChatRepository {
   findCloudRelayConversationByPeerAgent(peerAgentInstanceId: string): ChatConversationRecord | null {
     const row = this.db.prepare(`
       SELECT id, org_id, local_user_id, local_agent_instance_id, peer_user_id, peer_agent_instance_id,
-             mode, title, created_at, updated_at, last_message_at, unread_count
+             mode, title, created_at, updated_at, last_message_at, last_read_message_id,
+             unread_count, mention_count
       FROM conversations
       WHERE mode = 'cloud_relay' AND peer_agent_instance_id = ?
       ORDER BY
@@ -158,7 +178,8 @@ export class ChatRepository {
   findCloudRelayConversationByPeerUser(peerUserId: string): ChatConversationRecord | null {
     const row = this.db.prepare(`
       SELECT id, org_id, local_user_id, local_agent_instance_id, peer_user_id, peer_agent_instance_id,
-             mode, title, created_at, updated_at, last_message_at, unread_count
+             mode, title, created_at, updated_at, last_message_at, last_read_message_id,
+             unread_count, mention_count
       FROM conversations
       WHERE mode = 'cloud_relay' AND peer_user_id = ?
       ORDER BY COALESCE(last_message_at, updated_at, created_at) DESC
@@ -201,7 +222,8 @@ export class ChatRepository {
   listConversations(): ChatConversationRecord[] {
     const rows = this.db.prepare(`
       SELECT id, org_id, local_user_id, local_agent_instance_id, peer_user_id, peer_agent_instance_id,
-             mode, title, created_at, updated_at, last_message_at, unread_count
+             mode, title, created_at, updated_at, last_message_at, last_read_message_id,
+             unread_count, mention_count
       FROM conversations
       ORDER BY COALESCE(last_message_at, updated_at, created_at) DESC
     `).all() as Array<Record<string, unknown>>;
@@ -236,6 +258,7 @@ export class ChatRepository {
       now
     );
     this.db.prepare("UPDATE conversations SET updated_at = ?, last_message_at = ? WHERE id = ?").run(now, now, input.conversationId);
+    this.recomputeUnreadCount(input.conversationId);
     return this.getMessage(id)!;
   }
 
@@ -246,9 +269,86 @@ export class ChatRepository {
     return rows.map(rowToMessage);
   }
 
+  getMessagesAround(conversationId: string, messageId: string, limit = 80): MessageWindowResult | null {
+    const normalizedLimit = Math.max(1, Math.min(200, Math.floor(limit)));
+    const orderedIds = this.db.prepare(`
+      SELECT id FROM chat_messages WHERE conversation_id = ? ORDER BY created_at ASC, id ASC
+    `).all(conversationId).map((row) => String((row as Record<string, unknown>).id));
+    const targetIndex = orderedIds.indexOf(messageId);
+    if (targetIndex < 0) return null;
+
+    const before = Math.floor((normalizedLimit - 1) / 2);
+    const start = Math.max(0, Math.min(targetIndex - before, Math.max(0, orderedIds.length - normalizedLimit)));
+    const ids = orderedIds.slice(start, start + normalizedLimit);
+    if (ids.length === 0) return { messages: [], hasMoreBefore: false, hasMoreAfter: false };
+
+    const rows = this.db.prepare(`
+      SELECT * FROM chat_messages
+      WHERE conversation_id = ? AND id IN (${ids.map(() => "?").join(",")})
+      ORDER BY created_at ASC, id ASC
+    `).all(conversationId, ...ids) as Array<Record<string, unknown>>;
+
+    return {
+      messages: rows.map(rowToMessage),
+      hasMoreBefore: start > 0,
+      hasMoreAfter: start + ids.length < orderedIds.length
+    };
+  }
+
+  getMessagesBefore(conversationId: string, beforeMessageId: string, limit = 80): MessageWindowResult | null {
+    const normalizedLimit = Math.max(1, Math.min(200, Math.floor(limit)));
+    const orderedIds = this.db.prepare(`
+      SELECT id FROM chat_messages WHERE conversation_id = ? ORDER BY created_at ASC, id ASC
+    `).all(conversationId).map((row) => String((row as Record<string, unknown>).id));
+    const beforeIndex = orderedIds.indexOf(beforeMessageId);
+    if (beforeIndex < 0) return null;
+
+    const start = Math.max(0, beforeIndex - normalizedLimit);
+    const ids = orderedIds.slice(start, beforeIndex);
+    if (ids.length === 0) return { messages: [], hasMoreBefore: false, hasMoreAfter: beforeIndex < orderedIds.length };
+
+    const rows = this.db.prepare(`
+      SELECT * FROM chat_messages
+      WHERE conversation_id = ? AND id IN (${ids.map(() => "?").join(",")})
+      ORDER BY created_at ASC, id ASC
+    `).all(conversationId, ...ids) as Array<Record<string, unknown>>;
+
+    return {
+      messages: rows.map(rowToMessage),
+      hasMoreBefore: start > 0,
+      hasMoreAfter: beforeIndex < orderedIds.length
+    };
+  }
+
   getMessage(id: string): ChatMessageRecord | null {
     const row = this.db.prepare("SELECT * FROM chat_messages WHERE id = ?").get(id) as Record<string, unknown> | undefined;
     return row ? rowToMessage(row) : null;
+  }
+
+  getReadState(conversationId: string): ConversationReadState | null {
+    const conversation = this.getConversation(conversationId);
+    if (!conversation) return null;
+    return {
+      conversationId,
+      lastReadMessageId: conversation.last_read_message_id ?? undefined,
+      unreadCount: conversation.unread_count,
+      mentionCount: conversation.mention_count
+    };
+  }
+
+  updateReadState(conversationId: string, lastReadMessageId: string): ConversationReadState | null {
+    const marker = this.getMessage(lastReadMessageId);
+    if (!marker || marker.conversation_id !== conversationId) return null;
+
+    const unread = this.countMessagesAfter(conversationId, marker.created_at, marker.id);
+    const now = new Date().toISOString();
+    this.db.prepare(`
+      UPDATE conversations
+      SET last_read_message_id = ?, unread_count = ?, mention_count = 0, updated_at = ?
+      WHERE id = ?
+    `).run(lastReadMessageId, unread, now, conversationId);
+
+    return this.getReadState(conversationId);
   }
 
   markMessageStatus(id: string, status: DeliveryStatus, error?: string): void {
@@ -256,6 +356,18 @@ export class ChatRepository {
     this.db.prepare("UPDATE chat_messages SET delivery_status = ?, updated_at = ? WHERE id = ?").run(status, now, id);
     const row = this.getMessage(id);
     if (row) this.recordDeliveryAttempt(id, status, error);
+  }
+
+  updateMessagePayload(id: string, patch: Record<string, unknown>): ChatMessageRecord | null {
+    const existing = this.getMessage(id);
+    if (!existing) return null;
+    const now = new Date().toISOString();
+    this.db.prepare(`
+      UPDATE chat_messages
+      SET payload_json = ?, updated_at = ?
+      WHERE id = ?
+    `).run(JSON.stringify({ ...existing.payload_json, ...patch }), now, id);
+    return this.getMessage(id);
   }
 
   updateMessageDeliveryStatus(
@@ -334,6 +446,36 @@ export class ChatRepository {
       ON CONFLICT(conversation_id, role, agent_instance_id) DO NOTHING
     `).run(conversationId, userId, agentInstanceId, role, new Date().toISOString());
   }
+
+  private countMessagesAfter(conversationId: string, createdAt: string, messageId: string): number {
+    const row = this.db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM chat_messages
+      WHERE conversation_id = ?
+        AND (created_at > ? OR (created_at = ? AND id > ?))
+    `).get(conversationId, createdAt, createdAt, messageId) as { count: number } | undefined;
+    return Number(row?.count ?? 0);
+  }
+
+  private recomputeUnreadCount(conversationId: string): void {
+    const conversation = this.getConversation(conversationId);
+    if (!conversation) return;
+
+    let unread = 0;
+    if (conversation.last_read_message_id) {
+      const marker = this.getMessage(conversation.last_read_message_id);
+      unread = marker && marker.conversation_id === conversationId
+        ? this.countMessagesAfter(conversationId, marker.created_at, marker.id)
+        : 0;
+    } else {
+      const row = this.db.prepare("SELECT COUNT(*) AS count FROM chat_messages WHERE conversation_id = ?")
+        .get(conversationId) as { count: number } | undefined;
+      unread = Number(row?.count ?? 0);
+    }
+
+    this.db.prepare("UPDATE conversations SET unread_count = ?, mention_count = 0 WHERE id = ?")
+      .run(unread, conversationId);
+  }
 }
 
 function rowToConversation(row: Record<string, unknown>): ChatConversationRecord {
@@ -349,7 +491,9 @@ function rowToConversation(row: Record<string, unknown>): ChatConversationRecord
     created_at: String(row.created_at),
     updated_at: String(row.updated_at),
     last_message_at: nullableString(row.last_message_at),
-    unread_count: Number(row.unread_count ?? 0)
+    last_read_message_id: nullableString(row.last_read_message_id),
+    unread_count: Number(row.unread_count ?? 0),
+    mention_count: Number(row.mention_count ?? 0)
   };
 }
 

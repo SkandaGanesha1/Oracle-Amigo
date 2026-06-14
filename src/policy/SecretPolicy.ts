@@ -5,13 +5,19 @@ export interface HostScopedSecret {
 }
 
 export class SecretPolicy {
-  private readonly sensitiveNamePattern = /(TOKEN|SECRET|KEY|PASSWORD)/i;
+  private readonly sensitiveNamePattern = /(TOKEN|SECRET|KEY|PASSWORD|AUTHORIZATION|COOKIE|CREDENTIAL|PRIVATE|SESSION|API[_-]?KEY)/i;
   private readonly tokenPatterns = [
     /Bearer\s+[A-Za-z0-9._~+/=-]+/gi,
+    /Basic\s+[A-Za-z0-9._~+/=-]+/gi,
     /gh[pousr]_[A-Za-z0-9_]{20,}/gi,
     /npm_[A-Za-z0-9]{20,}/gi,
+    /sk-[A-Za-z0-9_-]{20,}/gi,
+    /(x-api-key:\s*)[^\r\n]+/gi,
     /(Authorization:\s*)(Basic|Bearer)\s+[A-Za-z0-9._~+/=-]+/gi,
-    /\b(token|secret|password|api[_-]?key)\s*[:=]\s*[^\s,;]+/gi
+    /(Cookie:\s*)[^\r\n]+/gi,
+    /(Set-Cookie:\s*)[^\r\n]+/gi,
+    /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
+    /\b(token|secret|password|api[_-]?key|authorization|cookie|session)\s*[:=]\s*[^\s,;]+/gi
   ];
 
   getHostScopedSecrets(env: NodeJS.ProcessEnv = process.env): Record<string, { hosts: string[]; value: string }> {
@@ -43,7 +49,7 @@ export class SecretPolicy {
 
     for (const pattern of this.tokenPatterns) {
       output = output.replace(pattern, (match, prefix) => {
-        if (typeof prefix === "string" && prefix.startsWith("Authorization")) {
+        if (typeof prefix === "string" && prefix.trim().length > 0) {
           return `${prefix}[REDACTED]`;
         }
         return "[REDACTED]";

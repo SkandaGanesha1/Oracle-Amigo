@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Wrench, ChevronDown, ChevronRight, CheckCircle2, Clock, XCircle, ArrowRight, Copy, Check } from "lucide-react";
 
 interface ToolParam {
@@ -32,12 +32,27 @@ function formatValue(v: unknown): string {
 export function AgenticToolCall({ toolName, description, params, result, className }: AgenticToolCallProps) {
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
+  const copyTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (copyTimerRef.current !== null) {
+        window.clearTimeout(copyTimerRef.current);
+      }
+    };
+  }, []);
 
   const handleCopy = async () => {
     const text = JSON.stringify({ tool: toolName, params, result }, null, 2);
     await navigator.clipboard.writeText(text);
     setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    if (copyTimerRef.current !== null) {
+      window.clearTimeout(copyTimerRef.current);
+    }
+    copyTimerRef.current = window.setTimeout(() => {
+      copyTimerRef.current = null;
+      setCopied(false);
+    }, 2000);
   };
 
   const ResultIcon = result?.status === "success"

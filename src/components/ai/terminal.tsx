@@ -132,6 +132,15 @@ export const TerminalCopyButton = ({
 }: TerminalCopyButtonProps) => {
   const [isCopied, setIsCopied] = useState(false)
   const { output } = useContext(TerminalContext)
+  const copyTimerRef = useRef<number | null>(null)
+
+  useEffect(() => {
+    return () => {
+      if (copyTimerRef.current !== null) {
+        window.clearTimeout(copyTimerRef.current)
+      }
+    }
+  }, [])
 
   const copyToClipboard = async () => {
     if (typeof window === "undefined" || !navigator?.clipboard?.writeText) {
@@ -143,7 +152,13 @@ export const TerminalCopyButton = ({
       await navigator.clipboard.writeText(output)
       setIsCopied(true)
       onCopy?.()
-      setTimeout(() => setIsCopied(false), timeout)
+      if (copyTimerRef.current !== null) {
+        window.clearTimeout(copyTimerRef.current)
+      }
+      copyTimerRef.current = window.setTimeout(() => {
+        copyTimerRef.current = null
+        setIsCopied(false)
+      }, timeout)
     } catch (error) {
       onError?.(error as Error)
     }

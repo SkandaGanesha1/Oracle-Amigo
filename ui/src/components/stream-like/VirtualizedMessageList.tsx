@@ -1,4 +1,4 @@
-import { useRef, useCallback } from "react";
+import { useRef, useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { StickToBottom, useStickToBottomContext } from "use-stick-to-bottom";
 import { ScrollButton } from "~/components/ui/scroll-button";
@@ -6,12 +6,9 @@ import { DateSeparator } from "./DateSeparator";
 import { UnreadDivider } from "./UnreadDivider";
 import { TypingIndicator } from "./TypingIndicator";
 import { MessageBubble } from "./MessageBubble";
-import type { TimelineMessage, FileReceiptMessage } from "../../api/types";
-
-function messageDate(message: TimelineMessage): string {
-  if (message.kind === "receipt") return (message as FileReceiptMessage).received_at;
-  return message.created_at;
-}
+import { buildTimelineMeta, getUnreadMessageId } from "./timelineModel";
+import { getTimelineScroll, saveTimelineScroll, type SavedTimelineScroll } from "./timelineScrollState";
+import type { ConversationReadState, TimelineMessage } from "../../api/types";
 
 function estimateMessageSize(message: TimelineMessage): number {
   switch (message.kind) {
@@ -32,60 +29,284 @@ interface VirtualizedMessageListProps {
   onRetry?: (messageId: string) => void;
   typing?: boolean;
   conversationId?: string;
+  hasMoreBefore?: boolean;
+  loadingBefore?: boolean;
+  loadBefore?: (beforeMessageId: string) => Promise<void>;
+  unreadMessageId?: string | null;
+  readState?: ConversationReadState | null;
+  onMarkRead?: (messageId: string) => void;
+  jumpToMessageId?: string | null;
+  loadAroundMessage?: (messageId: string) => Promise<void>;
+  typingLabel?: string;
 }
 
-function VirtualList({ messages, onRetry, typing, conversationId }: { messages: TimelineMessage[]; onRetry?: (messageId: string) => void; typing?: boolean; conversationId?: string }) {
+interface LocalNewMessageState {
+  firstNewMessageId?: string;
+  count: number;
+}
+
+interface VirtualListProps {
+  messages: TimelineMessage[];
+  onRetry?: (messageId: string) => void;
+  typing?: boolean;
+  conversationId?: string;
+  hasMoreBefore?: boolean;
+  loadingBefore?: boolean;
+  loadBefore?: (beforeMessageId: string) => Promise<void>;
+  unreadMessageId?: string | null;
+  readState?: ConversationReadState | null;
+  onMarkRead?: (messageId: string) => void;
+  jumpToMessageId?: string | null;
+  loadAroundMessage?: (messageId: string) => Promise<void>;
+}
+
+function VirtualList({
+  messages,
+  onRetry,
+  conversationId,
+  hasMoreBefore,
+  loadingBefore,
+  loadBefore,
+  unreadMessageId,
+  readState,
+  onMarkRead,
+  jumpToMessageId,
+  loadAroundMessage,
+}: VirtualListProps) {
   const parentRef = useRef<HTMLDivElement>(null);
   const { isAtBottom, scrollToBottom } = useStickToBottomContext();
-  const lastCountRef = useRef(messages.length);
-  const scrollPositions = useRef<Map<string, number>>(new Map());
-
-  const prevConversationRef = useRef(conversationId);
-  const hasNewWhileScrolled = messages.length > lastCountRef.current && !isAtBottom;
-  if (isAtBottom) lastCountRef.current = messages.length;
-
-  const handleScroll = useCallback(() => {
-    if (conversationId && parentRef.current) {
-      scrollPositions.current.set(conversationId, parentRef.current.scrollTop);
-    }
-  }, [conversationId]);
+  const prevConversationRef = useRef<string | undefined>(undefined);
+  const localStateConversationRef = useRef<string | undefined>(undefined);
+  const previousMessageIdsRef = useRef<string[]>(messages.map((message) => message.id));
+  const lastMarkedReadRef = useRef<string | null>(null);
+  const loadingOlderRef = useRef(false);
+  const pendingRestoreRef = useRef<SavedTimelineScroll | null>(null);
+  const requestedJumpLoadRef = useRef<string | null>(null);
+  const jumpHighlightTimerRef = useRef<number | null>(null);
+  const [localNewMessageState, setLocalNewMessageState] = useState<LocalNewMessageState>({ count: 0 });
+  const timelineMeta = useMemo(() => buildTimelineMeta(messages), [messages]);
+  const persistedUnreadMessageId = useMemo(
+    () => readState && readState.unreadCount > 0
+      ? getUnreadMessageId(messages, readState.lastReadMessageId)
+      : null,
+    [messages, readState]
+  );
+  const effectiveUnreadMessageId = unreadMessageId ?? persistedUnreadMessageId;
+  const newestMessageId = messages.at(-1)?.id;
 
   const virtualizer = useVirtualizer({
     count: messages.length,
     getScrollElement: () => parentRef.current,
     estimateSize: (index) => estimateMessageSize(messages[index]),
-    overscan: 5,
+    getItemKey: (index) => messages[index]?.id ?? index,
+    overscan: 16,
   });
 
-  if (prevConversationRef.current !== conversationId) {
+  const captureAnchor = useCallback((): SavedTimelineScroll | null => {
+    const parent = parentRef.current;
+    const firstVirtual = virtualizer.getVirtualItems()[0];
+    if (!parent || !firstVirtual) return null;
+
+    const message = messages[firstVirtual.index];
+    if (!message) return null;
+
+    return {
+      scrollTop: parent.scrollTop,
+      anchorMessageId: message.id,
+      anchorOffset: parent.scrollTop - firstVirtual.start,
+    };
+  }, [messages, virtualizer]);
+
+  const restoreAnchor = useCallback((anchor: SavedTimelineScroll) => {
+    const parent = parentRef.current;
+    if (!parent) return;
+
+    if (!anchor.anchorMessageId) {
+      parent.scrollTop = anchor.scrollTop;
+      return;
+    }
+
+    const index = messages.findIndex((message) => message.id === anchor.anchorMessageId);
+    if (index < 0) {
+      parent.scrollTop = anchor.scrollTop;
+      return;
+    }
+
+    virtualizer.scrollToIndex(index, { align: "start" });
+    requestAnimationFrame(() => {
+      const currentParent = parentRef.current;
+      const item = virtualizer.getVirtualItems().find((virtualItem) => virtualItem.index === index);
+      if (!item || !currentParent) return;
+      currentParent.scrollTop = item.start + (anchor.anchorOffset ?? 0);
+    });
+  }, [messages, virtualizer]);
+
+  const maybeLoadOlder = useCallback(async () => {
+    if (!hasMoreBefore || loadingBefore || loadingOlderRef.current || !loadBefore) return;
+
+    const firstVirtual = virtualizer.getVirtualItems()[0];
+    if (!firstVirtual || firstVirtual.index > 4) return;
+
+    const firstMessage = messages[firstVirtual.index];
+    if (!firstMessage) return;
+
+    const anchor = captureAnchor();
+    if (!anchor) return;
+
+    loadingOlderRef.current = true;
+    pendingRestoreRef.current = anchor;
+    try {
+      await loadBefore(firstMessage.id);
+    } finally {
+      loadingOlderRef.current = false;
+    }
+  }, [captureAnchor, hasMoreBefore, loadBefore, loadingBefore, messages, virtualizer]);
+
+  const handleScroll = useCallback(() => {
+    if (!conversationId || !parentRef.current) return;
+
+    const anchor = captureAnchor();
+    saveTimelineScroll(conversationId, {
+      scrollTop: parentRef.current.scrollTop,
+      anchorMessageId: anchor?.anchorMessageId,
+      anchorOffset: anchor?.anchorOffset,
+    });
+
+    void maybeLoadOlder();
+  }, [captureAnchor, conversationId, maybeLoadOlder]);
+
+  const markNewestRead = useCallback(() => {
+    if (!newestMessageId || !onMarkRead || lastMarkedReadRef.current === newestMessageId) return;
+    lastMarkedReadRef.current = newestMessageId;
+    onMarkRead(newestMessageId);
+  }, [newestMessageId, onMarkRead]);
+
+  const jumpToLatest = useCallback(() => {
+    setLocalNewMessageState({ count: 0 });
+    scrollToBottom();
+    markNewestRead();
+  }, [markNewestRead, scrollToBottom]);
+
+  useEffect(() => {
+    const ids = messages.map((message) => message.id);
+    if (localStateConversationRef.current !== conversationId) {
+      localStateConversationRef.current = conversationId;
+      previousMessageIdsRef.current = ids;
+      setLocalNewMessageState({ count: 0 });
+      lastMarkedReadRef.current = readState?.lastReadMessageId ?? null;
+      return;
+    }
+
+    const previousIds = previousMessageIdsRef.current;
+    const appended =
+      previousIds.length > 0 &&
+      ids.length > previousIds.length &&
+      previousIds.every((id, index) => ids[index] === id)
+        ? ids.slice(previousIds.length)
+        : [];
+
+    if (appended.length > 0 && !isAtBottom) {
+      setLocalNewMessageState((current) => ({
+        firstNewMessageId: current.firstNewMessageId ?? appended[0],
+        count: current.count + appended.length,
+      }));
+    }
+
+    if (isAtBottom) {
+      setLocalNewMessageState({ count: 0 });
+    }
+
+    previousMessageIdsRef.current = ids;
+  }, [conversationId, isAtBottom, messages, readState?.lastReadMessageId]);
+
+  useEffect(() => {
+    if (!isAtBottom) return;
+    markNewestRead();
+  }, [isAtBottom, markNewestRead]);
+
+  useLayoutEffect(() => {
+    const pending = pendingRestoreRef.current;
+    if (!pending) return;
+
+    pendingRestoreRef.current = null;
+    requestAnimationFrame(() => {
+      restoreAnchor(pending);
+    });
+  }, [messages.length, restoreAnchor]);
+
+  useLayoutEffect(() => {
+    if (prevConversationRef.current === conversationId) return;
     prevConversationRef.current = conversationId;
-    const saved = conversationId ? scrollPositions.current.get(conversationId) : undefined;
-    if (saved !== undefined && parentRef.current) {
+    if (!conversationId || !parentRef.current) return;
+
+    const saved = getTimelineScroll(conversationId);
+    if (!saved) {
       requestAnimationFrame(() => {
-        if (parentRef.current) {
-          parentRef.current.scrollTop = saved;
+        if (messages.length > 0) {
+          virtualizer.scrollToIndex(messages.length - 1, { align: "end" });
         }
       });
+      return;
     }
-  }
 
-  const dateSeparators = useRef<Set<number>>(new Set());
-  dateSeparators.current.clear();
-  let lastDate = "";
-  for (let i = 0; i < messages.length; i++) {
-    const d = new Date(messageDate(messages[i])).toDateString();
-    if (d !== lastDate) {
-      dateSeparators.current.add(i);
-      lastDate = d;
+    requestAnimationFrame(() => {
+      restoreAnchor(saved);
+    });
+  }, [conversationId, messages.length, restoreAnchor, virtualizer]);
+
+  useEffect(() => {
+    if (!jumpToMessageId) return;
+
+    const index = messages.findIndex((message) => message.id === jumpToMessageId);
+    if (index >= 0) {
+      requestedJumpLoadRef.current = null;
+      virtualizer.scrollToIndex(index, { align: "center", behavior: "smooth" });
+
+      requestAnimationFrame(() => {
+        const element = document.getElementById(`message-${jumpToMessageId}`);
+        element?.classList.add("oa-message-jump-highlight");
+        if (jumpHighlightTimerRef.current !== null) {
+          window.clearTimeout(jumpHighlightTimerRef.current);
+        }
+        jumpHighlightTimerRef.current = window.setTimeout(() => {
+          element?.classList.remove("oa-message-jump-highlight");
+          jumpHighlightTimerRef.current = null;
+        }, 1800);
+      });
+      return;
     }
-  }
+
+    if (loadAroundMessage && requestedJumpLoadRef.current !== jumpToMessageId) {
+      requestedJumpLoadRef.current = jumpToMessageId;
+      void loadAroundMessage(jumpToMessageId);
+    }
+  }, [jumpToMessageId, loadAroundMessage, messages, virtualizer]);
+
+  useEffect(() => {
+    return () => {
+      if (jumpHighlightTimerRef.current !== null) {
+        window.clearTimeout(jumpHighlightTimerRef.current);
+      }
+    };
+  }, []);
 
   return (
     <div className="relative flex-1">
+      {loadingBefore && (
+        <div className="pointer-events-none absolute left-0 right-0 top-3 z-10 flex justify-center">
+          <span className="rounded-full border border-oa-border bg-oa-surface/95 px-3 py-1 text-[10px] text-oa-text-muted shadow-sm">
+            Loading older messages...
+          </span>
+        </div>
+      )}
       <div
         ref={parentRef}
         className="absolute inset-0 overflow-y-auto"
-        style={{ overscrollBehavior: "contain" }}
+        style={{
+          overscrollBehavior: "contain",
+          contain: "strict",
+          overflowAnchor: "none",
+        }}
         onScroll={handleScroll}
         role="log"
         aria-live="polite"
@@ -101,7 +322,10 @@ function VirtualList({ messages, onRetry, typing, conversationId }: { messages: 
         >
           {virtualizer.getVirtualItems().map((virtualItem) => {
             const message = messages[virtualItem.index];
-            const isNewDivider = virtualItem.index === lastCountRef.current && hasNewWhileScrolled;
+            if (!message) return null;
+            const rowMeta = timelineMeta.get(message.id);
+            const isNewDivider = localNewMessageState.firstNewMessageId === message.id && localNewMessageState.count > 0;
+            const isUnreadDivider = effectiveUnreadMessageId === message.id;
 
             return (
               <div
@@ -116,16 +340,29 @@ function VirtualList({ messages, onRetry, typing, conversationId }: { messages: 
                   transform: `translateY(${virtualItem.start}px)`,
                 }}
               >
-                {dateSeparators.current.has(virtualItem.index) && (
-                  <DateSeparator date={new Date(messageDate(message))} />
+                {rowMeta?.showDateSeparator && (
+                  <DateSeparator date={new Date(rowMeta.createdAt)} />
+                )}
+                {isUnreadDivider && (
+                  <UnreadDivider
+                    label="Unread messages"
+                    count={readState?.unreadCount ?? messages.length - virtualItem.index}
+                    onJumpToLatest={jumpToLatest}
+                  />
                 )}
                 {isNewDivider && (
                   <UnreadDivider
-                    count={messages.length - lastCountRef.current}
-                    onJumpToLatest={scrollToBottom}
+                    label="New messages"
+                    count={localNewMessageState.count}
+                    onJumpToLatest={jumpToLatest}
                   />
                 )}
-                <MessageBubble message={message} onRetry={onRetry} />
+                <MessageBubble
+                  message={message}
+                  onRetry={onRetry}
+                  grouped={rowMeta?.groupedWithPrevious}
+                  meta={rowMeta}
+                />
               </div>
             );
           })}
@@ -136,11 +373,11 @@ function VirtualList({ messages, onRetry, typing, conversationId }: { messages: 
           <ScrollButton />
         </div>
       )}
-      {hasNewWhileScrolled && (
+      {localNewMessageState.count > 0 && (
         <div className="absolute bottom-16 right-6 z-10">
           <button
             type="button"
-            onClick={() => scrollToBottom()}
+            onClick={jumpToLatest}
             className="flex min-h-[48px] items-center gap-1.5 rounded-full bg-oa-blue px-4 py-2 text-xs font-medium text-white shadow-md transition-colors hover:bg-oa-blue/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oa-blue focus-visible:ring-offset-2"
           >
             Jump to latest
@@ -151,7 +388,22 @@ function VirtualList({ messages, onRetry, typing, conversationId }: { messages: 
   );
 }
 
-export function VirtualizedMessageList({ messages, loading, onRetry, typing, conversationId }: VirtualizedMessageListProps) {
+export function VirtualizedMessageList({
+  messages,
+  loading,
+  onRetry,
+  typing,
+  conversationId,
+  hasMoreBefore,
+  loadingBefore,
+  loadBefore,
+  unreadMessageId,
+  readState,
+  onMarkRead,
+  jumpToMessageId,
+  loadAroundMessage,
+  typingLabel,
+}: VirtualizedMessageListProps) {
   if (loading) {
     return (
       <div className="flex flex-1 items-center justify-center" role="status" aria-live="polite" aria-label="Loading messages">
@@ -192,8 +444,16 @@ export function VirtualizedMessageList({ messages, loading, onRetry, typing, con
         onRetry={onRetry}
         typing={typing}
         conversationId={conversationId}
+        hasMoreBefore={hasMoreBefore}
+        loadingBefore={loadingBefore}
+        loadBefore={loadBefore}
+        unreadMessageId={unreadMessageId}
+        readState={readState}
+        onMarkRead={onMarkRead}
+        jumpToMessageId={jumpToMessageId}
+        loadAroundMessage={loadAroundMessage}
       />
-      {showTyping && <TypingIndicator />}
+      {showTyping && <TypingIndicator label={typingLabel} />}
     </StickToBottom>
   );
 }

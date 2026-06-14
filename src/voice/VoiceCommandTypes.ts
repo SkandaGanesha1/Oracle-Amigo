@@ -31,6 +31,13 @@ export const VoiceCommandRequestSchema = z.object({
   sttConfidence: z.number().min(0).max(1).optional()
 });
 
+export const VoiceTranscribeRequestSchema = z.object({
+  audioBase64: z.string().trim().min(1).max(8_000_000),
+  locale: z.string().trim().max(40).optional(),
+  mimeType: z.string().trim().min(1).max(120),
+  source: z.literal("voice-launcher").default("voice-launcher")
+});
+
 export const VoiceCommandParseResultSchema = z.object({
   intent: VoiceCommandIntentSchema,
   targetPersonQuery: z.string().trim().min(1).optional(),
@@ -60,6 +67,7 @@ export const VoiceCommandPreviewSchema = z.object({
 export type VoiceCommandIntent = z.infer<typeof VoiceCommandIntentSchema>;
 export type VoiceCommandStatus = z.infer<typeof VoiceCommandStatusSchema>;
 export type VoiceCommandRequest = z.infer<typeof VoiceCommandRequestSchema>;
+export type VoiceTranscribeRequest = z.infer<typeof VoiceTranscribeRequestSchema>;
 export type VoiceCommandParseResult = z.infer<typeof VoiceCommandParseResultSchema>;
 export type VoiceCommandPreview = z.infer<typeof VoiceCommandPreviewSchema>;
 

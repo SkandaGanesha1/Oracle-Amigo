@@ -13,4 +13,18 @@ describe("SandboxSessionManager", () => {
     await expect(manager.closeSession(session.id)).resolves.toEqual({ sessionId: session.id, status: "closed" });
     vi.unstubAllEnvs();
   });
+
+  it("serializes command execution and cleanup for a session", async () => {
+    vi.stubEnv("SANDBOX_DRY_RUN", "true");
+    const manager = new SandboxSessionManager();
+    const session = await manager.createSession({ purpose: "race-test", networkProfile: "none", ttlSeconds: 30 });
+
+    const run = manager.runCommand(session.id, "node --version");
+    const close = manager.closeSession(session.id);
+
+    await expect(run).resolves.toMatchObject({ status: "succeeded" });
+    await expect(close).resolves.toEqual({ sessionId: session.id, status: "closed" });
+    expect(() => manager.getEvents(session.id)).toThrow(/Unknown sandbox session/);
+    vi.unstubAllEnvs();
+  });
 });

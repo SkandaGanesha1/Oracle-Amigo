@@ -58,7 +58,7 @@ export function buildRailUsers(
       : conversation.agentInstanceId
         ? directoryByAgentInstanceId.get(conversation.agentInstanceId)
         : undefined;
-    const id = conversation.peerUserId ?? directoryUser?.user_id;
+    const id = conversation.peerUserId ?? directoryUser?.user_id ?? (conversation.agentInstanceId ? `agent:${conversation.agentInstanceId}` : null);
     if (!id || id === currentUserId) continue;
     const existing = remoteUsers.get(id);
     const presence = directoryUser
@@ -71,9 +71,9 @@ export function buildRailUsers(
     const candidate: RailUser = {
       id,
       displayName: safePersonName(directoryUser?.display_name ?? conversation.title, directoryUser?.email ?? conversation.subtitle),
-      email: directoryUser?.email ?? null,
+      email: directoryUser?.email ?? (conversation.subtitle.includes("@") ? conversation.subtitle.split(" ")[0] : null),
       conversationId: conversation.id,
-      avatarSeed: directoryUser?.email ?? `${id}:${conversation.title}`,
+      avatarSeed: directoryUser?.email ?? conversation.agentInstanceId ?? `${id}:${conversation.title}`,
       presence,
       unread: railMessageBadgeCount(conversation),
       isLocalAgent: false

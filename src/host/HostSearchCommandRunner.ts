@@ -65,14 +65,14 @@ export class HostSearchCommandRunner {
   }
 
   evaluate(command: string): { allowed: boolean; reason: string } {
-    const policy = this.commandPolicy.evaluate(command);
-    if (!policy.allowed) return { allowed: false, reason: policy.reason };
     if (SHELL_CONTROL_OPERATORS.test(command)) {
       return { allowed: false, reason: "Host file-search commands must be a single simple read-only command without pipes, ampersands, semicolons, or command substitution." };
     }
     if (BLOCKED_TOKENS.test(command)) {
       return { allowed: false, reason: "Host file-search commands must be read-only and cannot read secrets, write files, or use network/process control." };
     }
+    const policy = this.commandPolicy.evaluate(command);
+    if (!policy.allowed) return { allowed: false, reason: policy.reason };
     if (!SAFE_COMMAND_START.test(command)) {
       return { allowed: false, reason: "Only read-only file-search commands are allowed on the host." };
     }

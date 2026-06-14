@@ -1,12 +1,13 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type Key, type ReactNode } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { Badge } from "@heroui/react";
-import { Inbox, Search, Settings, X } from "lucide-react";
+import { Badge, Button, Drawer, Dropdown } from "@heroui/react";
+import { Inbox, LoaderCircle, LogOut, Search, Settings, User as UserIcon, X } from "lucide-react";
 import oracleLogoUrl from "../../../UI_images/oracle_logo.png";
 import { OracleAvatar } from "../components/primitives/OracleAvatar";
-import { useCloudStatus, useContacts, useConversations, useDirectorySearch, usePendingApprovals, useStartConversation } from "../hooks/queries";
+import { useCloudStatus, useContacts, useConversations, useDirectorySearch, useLogout, usePendingApprovals, useStartConversation } from "../hooks/queries";
 import { buildRailUsers, safePersonName, type RailUser } from "./userRailModel";
-import type { DirectoryUser, PeerPresence } from "../types";
+import type { AgentInstance, DirectoryUser, PeerPresence } from "../types";
+import { ProfileDetails } from "../features/inspector/ProfileDetails";
 
 export function UserRail() {
   const navigate = useNavigate();
@@ -41,19 +42,20 @@ export function UserRail() {
     } else if (!user.isLocalAgent) {
       const result = await createConversation.mutateAsync({
         title: user.displayName,
-        peer_user_id: user.id,
+        peer_user_id: user.id.startsWith("agent:") ? null : user.id,
+        peer_agent_instance_id: user.presence.activeAgentInstanceId ?? (user.id.startsWith("agent:") ? user.id.slice("agent:".length) : null),
         mode: "cloud_relay"
       });
       const conversationId = result?.conversation?.id;
       navigate(conversationId ? `/chats/${conversationId}` : "/chats");
     } else {
-      navigate("/chats");
+      navigate("/chats/local-agent");
     }
     setSearchOpen(false);
   }
 
   return (
-    <aside className="discord-user-rail relative z-40 flex h-full w-16 shrink-0 flex-col items-center gap-1.5 border-r border-black/40 bg-[#111214] px-2 py-3 md:w-[72px]" aria-label="People and inbox rail">
+    <aside className="oa-user-rail relative z-40 flex h-full w-16 shrink-0 flex-col items-center gap-1.5 border-r border-black/40 bg-[#111214] px-2 py-3 md:w-[72px]" aria-label="People and inbox rail">
       <RailIconButton
         label="Oracle Amigo"
         active={location.pathname === "/chats"}
@@ -105,16 +107,7 @@ export function UserRail() {
 
       <div className="flex w-full shrink-0 flex-col items-center gap-2 pt-2">
         <RailSeparator />
-        <RailIconButton
-          label="Settings"
-          active={location.pathname.startsWith("/settings")}
-          onClick={() => navigate("/settings")}
-        >
-          <span className="flex h-12 w-12 items-center justify-center rounded-full bg-[#2b2d31] text-oa-text-muted transition-all duration-150 group-hover:rounded-2xl group-hover:bg-oa-surface group-hover:text-oa-text">
-            <Settings className="h-5 w-5" />
-          </span>
-        </RailIconButton>
-        <RailProfileButton cloudStatus={cloudStatus} onClick={() => navigate("/settings")} />
+        <RailProfileButton cloudStatus={cloudStatus} />
       </div>
 
       {searchOpen && (
@@ -186,28 +179,144 @@ function RailUserButton({ active, onClick, user }: { active: boolean; onClick: (
   );
 }
 
-function RailProfileButton({ cloudStatus, onClick }: { cloudStatus: ReturnType<typeof useCloudStatus>["data"]; onClick: () => void }) {
+function RailProfileButton({ cloudStatus }: { cloudStatus: ReturnType<typeof useCloudStatus>["data"] }) {
+  const navigate = useNavigate();
+  const logout = useLogout();
+  const [profileOpen, setProfileOpen] = useState(false);
   const displayName = cloudStatus?.cloud?.displayName ?? cloudStatus?.cloud?.userEmail ?? "Account";
+  const avatarSeed = cloudStatus?.cloud?.userEmail ?? displayName;
   const presence: PeerPresence = {
     status: cloudStatus?.cloud?.status === "enrolled" ? "online" : "offline",
     reason: cloudStatus?.cloud?.status === "enrolled" ? "heartbeat_recent" : "not_enrolled",
     label: cloudStatus?.cloud?.status === "enrolled" ? "Online" : "Offline",
     activeAgentInstanceId: cloudStatus?.cloud?.agentInstanceId ?? undefined
   };
+
+  async function handleLogout() {
+    try {
+      await logout.mutateAsync();
+      navigate("/login", { replace: true });
+    } catch {
+      // The mutation owns user-facing error reporting.
+    }
+  }
+
+  function handleAction(key: Key) {
+    if (key === "profile") {
+      setProfileOpen(true);
+      return;
+    }
+    if (key === "settings") {
+      navigate("/settings");
+      return;
+    }
+    if (key === "logout" && !logout.isPending) {
+      void handleLogout();
+    }
+  }
+
+  const LogoutIcon = logout.isPending ? LoaderCircle : LogOut;
+
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="group relative flex min-h-[54px] w-full items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oa-blue focus-visible:ring-offset-2"
-      aria-label={`Account profile: ${displayName}`}
-      title={`${displayName} - ${presence.label}`}
-    >
-      <StatusAvatar
-        avatarSeed={cloudStatus?.cloud?.userEmail ?? displayName}
+    <>
+      <Dropdown>
+        <Button
+          className="group relative flex min-h-[54px] w-full items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oa-blue focus-visible:ring-offset-2"
+          aria-label={`Account profile: ${displayName}`}
+          variant="ghost"
+        >
+          <StatusAvatar
+            avatarSeed={avatarSeed}
+            displayName={displayName}
+            presence={presence}
+          />
+        </Button>
+        <Dropdown.Popover className="oa-account-dropdown min-w-44 rounded-xl border border-white/10 bg-[#2F2F2F] p-1.5 shadow-2xl">
+          <Dropdown.Menu aria-label="Account actions" className="oa-account-dropdown-menu" onAction={handleAction}>
+            <Dropdown.Item id="profile" textValue="Profile" className="oa-account-dropdown-item">
+              <UserIcon className="h-4 w-4 shrink-0 text-oa-text-muted" />
+              <span>Profile</span>
+            </Dropdown.Item>
+            <Dropdown.Item id="settings" textValue="Settings" className="oa-account-dropdown-item">
+              <Settings className="h-4 w-4 shrink-0 text-oa-text-muted" />
+              <span>Settings</span>
+            </Dropdown.Item>
+            <Dropdown.Item id="logout" textValue="Log out" variant="danger" className="oa-account-dropdown-item oa-account-dropdown-item-danger">
+              <LogoutIcon className={`h-4 w-4 shrink-0 text-oa-red ${logout.isPending ? "animate-spin" : ""}`} />
+              <span>Log out</span>
+            </Dropdown.Item>
+          </Dropdown.Menu>
+        </Dropdown.Popover>
+      </Dropdown>
+
+      <AccountProfileDrawer
+        avatarSeed={avatarSeed}
         displayName={displayName}
-        presence={presence}
+        isOpen={profileOpen}
+        onOpenChange={setProfileOpen}
       />
-    </button>
+    </>
+  );
+}
+
+function AccountProfileDrawer({
+  avatarSeed,
+  displayName,
+  isOpen,
+  onOpenChange
+}: {
+  avatarSeed: string;
+  displayName: string;
+  isOpen: boolean;
+  onOpenChange: (isOpen: boolean) => void;
+}) {
+  return (
+    <Drawer>
+      <Drawer.Backdrop isOpen={isOpen} onOpenChange={onOpenChange}>
+        <Drawer.Content
+          placement="right"
+          className="oa-profile-drawer w-[360px] max-w-[calc(100vw-1.5rem)] border-l border-oa-border bg-[#1e1f22] text-oa-text shadow-2xl"
+        >
+          <Drawer.Dialog aria-label="Account profile drawer" className="flex h-full flex-col">
+            <Drawer.Header className="flex items-center justify-between border-b border-oa-border px-4 py-3">
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-oa-text-muted">Account</p>
+                <h2 className="text-lg font-semibold text-oa-text">Profile</h2>
+              </div>
+              <Button
+                isIconOnly
+                size="sm"
+                variant="ghost"
+                onPress={() => onOpenChange(false)}
+                aria-label="Close profile drawer"
+                className="text-oa-text-muted"
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            </Drawer.Header>
+            <Drawer.Body className="min-h-0 flex-1 overflow-y-auto p-0">
+              <ProfileDetails
+                className="p-4"
+                header={
+                  <div className="mb-2 flex items-center gap-3 rounded-xl bg-oa-surface px-3 py-3">
+                    <OracleAvatar
+                      seed={avatarSeed}
+                      initials={initialsFor(displayName)}
+                      size="md"
+                      className="h-10 w-10 rounded-full"
+                    />
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-semibold text-oa-text">{displayName}</p>
+                      <p className="text-xs text-oa-text-muted">Oracle Amigo account</p>
+                    </div>
+                  </div>
+                }
+              />
+            </Drawer.Body>
+          </Drawer.Dialog>
+        </Drawer.Content>
+      </Drawer.Backdrop>
+    </Drawer>
   );
 }
 
@@ -274,9 +383,11 @@ function RailSearchPanel({
   }, []);
 
   async function startDirectoryConversation(user: DirectoryUser) {
+    const agent = bestDirectoryAgent(user.agents ?? []);
     const result = await createConversation.mutateAsync({
       title: user.display_name,
       peer_user_id: user.user_id,
+      peer_agent_instance_id: agent?.agent_instance_id ?? null,
       mode: "cloud_relay"
     });
     const conversationId = result?.conversation?.id;
@@ -334,6 +445,10 @@ function RailSearchPanel({
       </div>
     </div>
   );
+}
+
+function bestDirectoryAgent(agents: AgentInstance[]): AgentInstance | null {
+  return agents.find((agent) => agent.status === "online") ?? agents.find((agent) => agent.status === "stale") ?? agents[0] ?? null;
 }
 
 function SearchGroup({ children, label }: { children: ReactNode; label: string }) {

@@ -76,10 +76,10 @@ import { PeerRoutingService } from "./runtime/PeerRoutingService.js";
 import { ApprovalTransferOrchestrator } from "./runtime/ApprovalTransferOrchestrator.js";
 import { resolveFileRequestCandidates, toApprovalCandidatePayload } from "./runtime/FileRequestCandidateResolver.js";
 import { getDeviceTokenRecoveryStatus, structuredEnrollmentError, withRecoveredDeviceToken } from "./runtime/CloudTokenRecovery.js";
-import { ChatRepository, type ChatConversationRecord, type ChatMessageRecord, type DeliveryStatus, type RelayDeliveryReceipt } from "./chat/ChatRepository.js";
+import { ChatRepository, type ChatConversationRecord, type ChatMessageRecord, type ConversationReadState, type DeliveryStatus, type RelayDeliveryReceipt } from "./chat/ChatRepository.js";
 import { VoiceCommandService } from "./voice/VoiceCommandService.js";
 import { registerVoiceCommandRoutes } from "./voice/VoiceCommandRoutes.js";
-import { assertPublicHttpsUrl, constantTimeEqual, requireLocalApiToken, signApprovalCallback, verifyApprovalCallbackSignature } from "./security/SecurityGuards.js";
+import { assertPublicHttpsUrl, constantTimeEqual, isPrivateOrMetadataHost, requireLocalApiToken, setLocalUiSessionCookie, signApprovalCallback, verifyApprovalCallbackSignature } from "./security/SecurityGuards.js";
 import { createHandshakeContext, verifyHandshakeOffer, verifyHandshakeResponse } from "./security/AnpHandshakeAdapter.js";
 
 const FileSearchSchema = z.object({
@@ -108,6 +108,24 @@ const ChatConversationSendSchema = z.object({
   send_as: z.enum(["normal", "file_request"]).default("normal"),
   idempotency_key: z.string().trim().min(1).max(200).optional(),
   client_message_id: z.string().trim().min(1).max(200).optional()
+});
+
+const ChatMessagesQuerySchema = z.object({
+  around: z.string().trim().min(1).max(200).optional(),
+  before: z.string().trim().min(1).max(200).optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(80)
+});
+
+const ChatPinSchema = z.object({
+  pinned: z.boolean()
+});
+
+const ThreadReplySchema = z.object({
+  text: z.string().trim().min(1).max(2000)
+});
+
+const ChatReadStateSchema = z.object({
+  lastReadMessageId: z.string().trim().min(1).max(200)
 });
 
 const SkillIdSchema = z.string().trim().regex(/^[a-z0-9][a-z0-9-]{1,63}$/);
@@ -281,6 +299,8 @@ const ApprovalCallbackSchema = z.object({
 });
 
 const DEFAULT_DEV_ORG_SLUG = "local-dev";
+const LOCAL_UI_RUNTIME_HEADER = "x-oracle-amigo-runtime";
+const LOCAL_UI_RUNTIME_VERSION = "local-ui-session-v1";
 
 export function buildServer(
   tool = new SandboxTool(),
@@ -503,6 +523,10 @@ export function buildServer(
       reply.status(400).send({ error: "INVALID_INDEX_ROOT", message });
       return;
     }
+    if (message.startsWith("Control plane URL") || message === "Unsupported control plane URL scheme") {
+      reply.status(400).send({ error: "INVALID_CONTROL_PLANE_URL", message });
+      return;
+    }
     if (typeof message === 'string' && (message.includes('jwt expired') || message.includes('expired') || message.includes('TOKEN_EXPIRED'))) {
       reply.status(401).send({ 
         error: "TOKEN_EXPIRED", 
@@ -530,7 +554,7 @@ export function buildServer(
       reply.header("Vary", "Origin");
       reply.header("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
       reply.header("Access-Control-Allow-Headers", "content-type,authorization,x-local-agent-token");
-      reply.header("Access-Control-Allow-Credentials", "false");
+      reply.header("Access-Control-Allow-Credentials", "true");
       if (request.method === "OPTIONS") {
         reply.status(204).send();
         return;
@@ -561,7 +585,12 @@ export function buildServer(
     dryRun: process.env.SANDBOX_DRY_RUN === "true",
     localAgentUrl: localAgentUrl(),
     controlPlaneUrl: defaultControlPlaneUrl(),
-    defaultOrgSlug: defaultOrgSlug()
+    defaultOrgSlug: defaultOrgSlug(),
+    localUiSession: {
+      enabled: true,
+      runtime: LOCAL_UI_RUNTIME_VERSION,
+      cookieName: "oa_local_ui_session"
+    }
   }));
 
   server.get("/manifest.webmanifest", async () => ({
@@ -576,23 +605,22 @@ export function buildServer(
     icons: []
   }));
 
-  server.get("/profile", async () => {
+  server.get("/profile", localOnly, async () => {
     const identity = protocol.createLocalIdentity();
     return {
       agentId: identity.agentId,
       deviceId: identity.deviceId,
       did: identity.did,
-      mode: "single-device",
-      storageRoot: process.env.AGENTIC_STORAGE_ROOT ?? "./storage"
+      mode: "single-device"
     };
   });
 
-  server.post("/profile/init", async () => ({
+  server.post("/profile/init", localOnly, async () => ({
     identity: protocol.createLocalIdentity(),
     session: protocol.createPeerSession({ agentId: protocol.createLocalIdentity().agentId, did: protocol.createLocalIdentity().did, publicKey: protocol.createLocalIdentity().publicKey, trustLevel: "local" })
   }));
 
-  server.get("/search/universal", async (request) => {
+  server.get("/search/universal", localOnly, async (request) => {
     const query = parseBody(UniversalSearchQuerySchema, request.query ?? {});
     const types = query.types
       ?.split(",")
@@ -601,12 +629,12 @@ export function buildServer(
     return sanitizeFacadePayload(universalSearch.search({ query: query.q, types, limit: query.limit }));
   });
 
-  server.get("/missions/:missionId/thread", async (request) => {
+  server.get("/missions/:missionId/thread", localOnly, async (request) => {
     const { missionId } = request.params as { missionId: string };
     return sanitizeFacadePayload({ messages: missionThreads.list(missionId) });
   });
 
-  server.post("/missions/:missionId/thread", async (request) => {
+  server.post("/missions/:missionId/thread", localOnly, async (request) => {
     const { missionId } = request.params as { missionId: string };
     const body = parseBody(MissionThreadCreateSchema, request.body ?? {});
     const message = missionThreads.create({
@@ -625,7 +653,7 @@ export function buildServer(
     return sanitizeFacadePayload({ message });
   });
 
-  server.get("/missions/:missionId/thread/events", async (request, reply) => {
+  server.get("/missions/:missionId/thread/events", localOnly, async (request, reply) => {
     const { missionId } = request.params as { missionId: string };
     reply.raw.writeHead(200, {
       "content-type": "text/event-stream",
@@ -720,7 +748,7 @@ export function buildServer(
       password: body.password,
       display_name: body.display_name ?? body.email,
       org_slug: body.org_slug
-    }, { controlPlaneUrl: body.control_plane_url ?? defaultControlPlaneUrl() });
+    }, { controlPlaneUrl: assertAllowedControlPlaneUrl(body.control_plane_url ?? defaultControlPlaneUrl()) });
   });
 
   server.post("/cloud/login", async (request) => {
@@ -729,16 +757,16 @@ export function buildServer(
       email: body.email,
       password: body.password,
       org_slug: body.org_slug
-    }, { controlPlaneUrl: body.control_plane_url ?? defaultControlPlaneUrl() });
+    }, { controlPlaneUrl: assertAllowedControlPlaneUrl(body.control_plane_url ?? defaultControlPlaneUrl()) });
   });
 
-  server.post("/cloud/logout", localOnly, async () => {
+  server.post("/cloud/logout", async () => {
     heartbeatService.stop();
     inboxPoller.stop();
     return deviceEnrollment.logout();
   });
 
-  server.post("/cloud/enroll", localOnly, async (request, reply) => {
+  server.post("/cloud/enroll", async (request, reply) => {
     const body = parseBody(CloudEnrollSchema, request.body ?? {});
     let result: Awaited<ReturnType<AgentRegistrationService["enroll"]>>;
     try {
@@ -765,7 +793,7 @@ export function buildServer(
     return result;
   });
 
-  server.post("/cloud/device-identity/reset", localOnly, async (_request, reply) => {
+  server.post("/cloud/device-identity/reset", async (_request, reply) => {
     const cloud = cloudStore.getOrCreate();
     if (!cloud.userAccessToken) {
       return reply.status(401).send({
@@ -821,7 +849,7 @@ export function buildServer(
     };
   });
 
-  server.get("/cloud/me", async (request, reply) => {
+  server.get("/cloud/me", localOnly, async (request, reply) => {
     const cloud = requireCloudIdentity(cloudStore.get(), reply);
     if (!cloud) return;
     const token = requireUserAccessToken(cloud, reply);
@@ -830,7 +858,7 @@ export function buildServer(
     return me;
   });
 
-  server.get("/cloud/directory/users", async (request, reply) => {
+  server.get("/cloud/directory/users", localOnly, async (request, reply) => {
     const cloud = requireCloudIdentity(cloudStore.get(), reply);
     if (!cloud) return;
     const token = await requireFreshUserAccessToken(deviceEnrollment, reply);
@@ -839,7 +867,7 @@ export function buildServer(
     return new DirectoryClient(new ControlPlaneClient(cloud.controlPlaneUrl)).searchUsers(q, token);
   });
 
-  server.get("/cloud/directory/users/:user_id/agents", async (request, reply) => {
+  server.get("/cloud/directory/users/:user_id/agents", localOnly, async (request, reply) => {
     const cloud = requireCloudIdentity(cloudStore.get(), reply);
     if (!cloud) return;
     const token = await requireFreshUserAccessToken(deviceEnrollment, reply);
@@ -848,15 +876,29 @@ export function buildServer(
     return new DirectoryClient(new ControlPlaneClient(cloud.controlPlaneUrl)).getUserAgents(user_id, token);
   });
 
-  server.get("/cloud/contacts", async (_request, reply) => {
+  server.get("/cloud/contacts", localOnly, async (_request, reply) => {
     const cloud = requireCloudIdentity(cloudStore.get(), reply);
     if (!cloud) return;
     const token = await requireFreshUserAccessToken(deviceEnrollment, reply);
     if (!token) return;
-    return new DirectoryClient(new ControlPlaneClient(cloud.controlPlaneUrl)).listContacts(token);
+    const client = new DirectoryClient(new ControlPlaneClient(cloud.controlPlaneUrl));
+    const result = await client.listContacts(token);
+    const contacts = await Promise.all((result.contacts ?? []).map(async (contact) => {
+      const peerUserId = contact.requester_user_id === cloud.userId ? contact.target_user_id : contact.requester_user_id;
+      try {
+        const peer = await client.getUserAgents(peerUserId, token);
+        if (contact.requester_user_id === peerUserId) {
+          return { ...contact, requester_display_name: peer.display_name, requester_email: peer.email };
+        }
+        return { ...contact, target_display_name: peer.display_name, target_email: peer.email };
+      } catch {
+        return contact;
+      }
+    }));
+    return { contacts };
   });
 
-  server.post("/cloud/contacts/request", async (request, reply) => {
+  server.post("/cloud/contacts/request", localOnly, async (request, reply) => {
     const cloud = requireCloudIdentity(cloudStore.get(), reply);
     if (!cloud) return;
     const token = await requireFreshUserAccessToken(deviceEnrollment, reply);
@@ -865,7 +907,7 @@ export function buildServer(
     return new DirectoryClient(new ControlPlaneClient(cloud.controlPlaneUrl)).requestContact(body.target_user_id, token);
   });
 
-  server.post("/cloud/contacts/:contact_id/accept", async (request, reply) => {
+  server.post("/cloud/contacts/:contact_id/accept", localOnly, async (request, reply) => {
     const cloud = requireCloudIdentity(cloudStore.get(), reply);
     if (!cloud) return;
     const token = await requireFreshUserAccessToken(deviceEnrollment, reply);
@@ -874,9 +916,9 @@ export function buildServer(
     return new DirectoryClient(new ControlPlaneClient(cloud.controlPlaneUrl)).acceptContact(contact_id, token);
   });
 
-  server.get("/relay/inbox/status", async () => inboxPoller.status());
+  server.get("/relay/inbox/status", localOnly, async () => inboxPoller.status());
 
-  server.get("/relay/task/:relay_task_id/status", async (request, reply) => {
+  server.get("/relay/task/:relay_task_id/status", localOnly, async (request, reply) => {
     const cloud = requireCloudIdentity(cloudStore.get(), reply);
     if (!cloud) return;
     const { relay_task_id } = request.params as { relay_task_id: string };
@@ -885,7 +927,7 @@ export function buildServer(
     return status;
   });
 
-  server.post("/relay/send-message", async (request, reply) => {
+  server.post("/relay/send-message", localOnly, async (request, reply) => {
     const cloud = requireCloudIdentity(cloudStore.get(), reply);
     if (!cloud) return;
     const body = parseBody(RelaySendSchema, request.body);
@@ -925,7 +967,7 @@ export function buildServer(
     return result;
   });
 
-  server.post("/relay/send-file-request", async (request, reply) => {
+  server.post("/relay/send-file-request", localOnly, async (request, reply) => {
     const cloud = requireCloudIdentity(cloudStore.get(), reply);
     if (!cloud) return;
     const body = parseBody(RelaySendSchema, request.body);
@@ -1784,25 +1826,27 @@ export function buildServer(
   });
 
   // Mission control endpoints
-  server.post("/missions/:taskId/pause", async (request, reply) => {
+  server.post("/missions/:taskId/pause", localOnly, async (request, reply) => {
     const schema = z.object({ taskId: z.string().trim().min(1) });
     const { taskId } = parseBody(schema, request.params);
     const db = getDb();
-    
+
     const task = db.prepare("SELECT * FROM a2a_tasks WHERE id = ?").get(taskId) as Record<string, unknown> | undefined;
     if (!task) {
       return reply.status(404).send({ error: "Mission not found" });
     }
-    
+
     const currentStatus = task.status as string;
-    if (currentStatus === "completed" || currentStatus === "rejected" || currentStatus === "failed" || currentStatus === "canceled") {
-      return reply.status(400).send({ error: `Cannot pause mission with status: ${currentStatus}` });
+    const result = db.prepare(`
+      UPDATE a2a_tasks
+      SET status = 'paused', updated_at = ?
+      WHERE id = ?
+        AND status NOT IN ('completed', 'rejected', 'failed', 'canceled', 'paused')
+    `).run(new Date().toISOString(), taskId);
+    if (Number(result.changes) !== 1) {
+      return reply.status(409).send({ error: "INVALID_MISSION_STATE", message: `Cannot pause mission with status: ${currentStatus}` });
     }
-    
-    // For pause, we'll update status to indicate it's paused
-    // In a real implementation, this would need proper workflow state management
-    db.prepare("UPDATE a2a_tasks SET status='paused', updated_at=? WHERE id=?").run(new Date().toISOString(), taskId);
-    
+
     appendAuditEvent({
       actorAgentId: "user",
       taskId,
@@ -1813,27 +1857,29 @@ export function buildServer(
     return { ok: true, status: "paused" };
   });
 
-  server.post("/missions/:taskId/resume", async (request, reply) => {
+  server.post("/missions/:taskId/resume", localOnly, async (request, reply) => {
     const schema = z.object({ taskId: z.string().trim().min(1) });
     const { taskId } = parseBody(schema, request.params);
     const db = getDb();
-    
+
     const task = db.prepare("SELECT * FROM a2a_tasks WHERE id = ?").get(taskId) as Record<string, unknown> | undefined;
     if (!task) {
       return reply.status(404).send({ error: "Mission not found" });
     }
-    
+
     const currentStatus = task.status as string;
-    if (currentStatus !== "paused") {
-      return reply.status(400).send({ error: `Cannot resume mission with status: ${currentStatus}` });
-    }
-    
-    // For resume, we'll update status back to working
     const protocolState = task.protocol_state as string;
     const appropriateStatus = protocolState === "APPROVAL_REQUIRED" ? "input-required" : "working";
-    
-    db.prepare("UPDATE a2a_tasks SET status=?, updated_at=? WHERE id=?").run(appropriateStatus, new Date().toISOString(), taskId);
-    
+
+    const result = db.prepare(`
+      UPDATE a2a_tasks
+      SET status = ?, updated_at = ?
+      WHERE id = ? AND status = 'paused'
+    `).run(appropriateStatus, new Date().toISOString(), taskId);
+    if (Number(result.changes) !== 1) {
+      return reply.status(409).send({ error: "INVALID_MISSION_STATE", message: `Cannot resume mission with status: ${currentStatus}` });
+    }
+
     appendAuditEvent({
       actorAgentId: "user",
       taskId,
@@ -1844,24 +1890,28 @@ export function buildServer(
     return { ok: true, status: appropriateStatus };
   });
 
-  server.post("/missions/:taskId/cancel", async (request, reply) => {
+  server.post("/missions/:taskId/cancel", localOnly, async (request, reply) => {
     const schema = z.object({ taskId: z.string().trim().min(1) });
     const { taskId } = parseBody(schema, request.params);
     const db = getDb();
-    
+
     const task = db.prepare("SELECT * FROM a2a_tasks WHERE id = ?").get(taskId) as Record<string, unknown> | undefined;
     if (!task) {
       return reply.status(404).send({ error: "Mission not found" });
     }
-    
+
     const currentStatus = task.status as string;
-    if (currentStatus === "completed" || currentStatus === "rejected" || currentStatus === "failed" || currentStatus === "canceled") {
-      return reply.status(400).send({ error: `Cannot cancel mission with status: ${currentStatus}` });
+    const now = new Date().toISOString();
+    const result = db.prepare(`
+      UPDATE a2a_tasks
+      SET status = 'canceled', updated_at = ?, completed_at = ?
+      WHERE id = ?
+        AND status NOT IN ('completed', 'rejected', 'failed', 'canceled')
+    `).run(now, now, taskId);
+    if (Number(result.changes) !== 1) {
+      return reply.status(409).send({ error: "INVALID_MISSION_STATE", message: `Cannot cancel mission with status: ${currentStatus}` });
     }
-    
-    // For cancel, we'll update status to canceled
-    db.prepare("UPDATE a2a_tasks SET status='canceled', updated_at=?, completed_at=? WHERE id=?").run(new Date().toISOString(), new Date().toISOString(), taskId);
-    
+
     appendAuditEvent({
       actorAgentId: "user",
       taskId,
@@ -1872,7 +1922,7 @@ export function buildServer(
     return { ok: true, status: "canceled" };
   });
 
-  server.post("/missions/:taskId/retry", async (request, reply) => {
+  server.post("/missions/:taskId/retry", localOnly, async (request, reply) => {
     const schema = z.object({ taskId: z.string().trim().min(1) });
     const { taskId } = parseBody(schema, request.params);
     const db = getDb();
@@ -2339,14 +2389,115 @@ export function buildServer(
     };
   });
 
-  server.get("/chat/conversations/:id/messages", localOnly, async (request) => {
+  server.get("/chat/conversations/:id/messages", localOnly, async (request, reply) => {
     const { id } = request.params as { id: string };
+    const query = parseBody(ChatMessagesQuerySchema, request.query ?? {});
     const cloud = cloudStore.get();
-    const conversation = chatRepo.getConversation(id);
+    const conversation = id === "local-agent"
+      ? chatRepo.getOrCreateLocalConversation(cloud?.agentInstanceId ?? localIdentity.agentId)
+      : chatRepo.getConversation(id);
+    if (!conversation) {
+      return reply.status(404).send({ error: "CONVERSATION_NOT_FOUND", message: "Conversation not found" });
+    }
     const localAgentInstanceId = conversation?.local_agent_instance_id ?? cloud?.agentInstanceId ?? localIdentity.agentId;
-    const refreshed = await refreshRelayDeliveryStatuses(chatRepo.getMessages(id), cloudStore, defaultProfileId());
-    const messages = refreshed.map((message) => messageToTimeline(message, localAgentInstanceId));
-    return { conversationId: id, messages };
+    const windowResult = query.around
+      ? chatRepo.getMessagesAround(id, query.around, query.limit)
+      : query.before
+        ? chatRepo.getMessagesBefore(id, query.before, query.limit)
+        : null;
+    if ((query.around || query.before) && !windowResult) {
+      return reply.status(404).send({ error: "MESSAGE_NOT_FOUND", message: "Message not found in this conversation" });
+    }
+    const sourceMessages = windowResult?.messages ?? chatRepo.getMessages(id);
+    const refreshed = await refreshRelayDeliveryStatuses(sourceMessages, cloudStore, defaultProfileId());
+    const allMessages = chatRepo.getMessages(id);
+    const messages = refreshed.map((message) => messageToTimeline(message, localAgentInstanceId, allMessages));
+    const peer = await resolveRelayPeerInfo(conversation, cloud, deviceEnrollment);
+    return {
+      conversationId: id,
+      conversation: conversationToUi(conversation, allMessages, peer, localAgentInstanceId),
+      messages,
+      pageInfo: {
+        hasMoreBefore: windowResult?.hasMoreBefore ?? false,
+        hasMoreAfter: windowResult?.hasMoreAfter ?? false,
+        oldestMessageId: refreshed[0]?.id,
+        newestMessageId: refreshed.at(-1)?.id
+      },
+      readState: chatRepo.getReadState(id) ?? {
+        conversationId: id,
+        unreadCount: 0,
+        mentionCount: 0
+      }
+    };
+  });
+
+  server.patch("/chat/conversations/:conversationId/messages/:messageId/pin", localOnly, async (request, reply) => {
+    const { conversationId, messageId } = request.params as { conversationId: string; messageId: string };
+    const { pinned } = parseBody(ChatPinSchema, request.body ?? {});
+    const message = chatRepo.getMessage(messageId);
+    if (!message || message.conversation_id !== conversationId) {
+      return reply.status(404).send({ error: "MESSAGE_NOT_FOUND", message: "Message not found in this conversation" });
+    }
+    const updated = chatRepo.updateMessagePayload(messageId, { pinned });
+    return { message: updated ? messageToTimeline(updated, cloudStore.get()?.agentInstanceId ?? localIdentity.agentId, chatRepo.getMessages(conversationId)) : null };
+  });
+
+  server.get("/chat/conversations/:conversationId/threads/:threadId", localOnly, async (request, reply) => {
+    const { conversationId, threadId } = request.params as { conversationId: string; threadId: string };
+    const messages = chatRepo.getMessages(conversationId);
+    const parent = messages.find((message) => message.id === threadId);
+    if (!parent) return reply.status(404).send({ error: "THREAD_NOT_FOUND", message: "Thread not found in this conversation" });
+    const localAgentInstanceId = chatRepo.getConversation(conversationId)?.local_agent_instance_id ?? cloudStore.get()?.agentInstanceId ?? localIdentity.agentId;
+    const replies = threadReplies(messages, threadId).map((message) => messageToTimeline(message, localAgentInstanceId, messages));
+    return {
+      threadId,
+      parent: messageToTimeline(parent, localAgentInstanceId, messages),
+      replies
+    };
+  });
+
+  server.post("/chat/conversations/:conversationId/threads/:threadId/replies", localOnly, async (request, reply) => {
+    const { conversationId, threadId } = request.params as { conversationId: string; threadId: string };
+    const { text } = parseBody(ThreadReplySchema, request.body ?? {});
+    const conversation = chatRepo.getConversation(conversationId);
+    if (!conversation) return reply.status(404).send({ error: "Conversation not found" });
+    const messages = chatRepo.getMessages(conversationId);
+    const parent = messages.find((message) => message.id === threadId);
+    if (!parent) return reply.status(404).send({ error: "THREAD_NOT_FOUND", message: "Thread not found in this conversation" });
+    const cloud = cloudStore.get();
+    const replyMessage = chatRepo.appendMessage({
+      conversationId,
+      senderUserId: cloud?.userId ?? null,
+      senderAgentInstanceId: cloud?.agentInstanceId ?? localIdentity.agentId,
+      receiverAgentInstanceId: conversation.peer_agent_instance_id,
+      messageType: "human",
+      text,
+      payload: {
+        reply_to_id: parent.id,
+        thread_id: threadId,
+        sender_label: cloud?.displayName ?? cloud?.userEmail ?? "You"
+      },
+      deliveryStatus: "delivered"
+    });
+    const allMessages = chatRepo.getMessages(conversationId);
+    return { message: messageToTimeline(replyMessage, cloud?.agentInstanceId ?? localIdentity.agentId, allMessages) };
+  });
+
+  server.post("/chat/conversations/:id/read-state", localOnly, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const body = parseBody(ChatReadStateSchema, request.body);
+    const conversation = chatRepo.getConversation(id);
+    if (!conversation) return reply.status(404).send({ error: "Conversation not found" });
+
+    const marker = chatRepo.getMessage(body.lastReadMessageId);
+    if (!marker) return reply.status(404).send({ error: "Message not found" });
+    if (marker.conversation_id !== id) {
+      return reply.status(400).send({ error: "Message does not belong to conversation" });
+    }
+
+    const readState = chatRepo.updateReadState(id, body.lastReadMessageId);
+    if (!readState) return reply.status(500).send({ error: "Failed to update read state" });
+    return { readState };
   });
 
   server.get("/chat/diagnostics", localOnly, async () => {
@@ -2363,6 +2514,11 @@ export function buildServer(
       fileSearch: {
         roots: fileSearch.getRoots(),
         rootCount: fileSearch.getRoots().length
+      },
+      localUiSession: {
+        enabled: true,
+        runtime: LOCAL_UI_RUNTIME_VERSION,
+        cookieName: "oa_local_ui_session"
       }
     };
   });
@@ -3088,7 +3244,7 @@ export function buildServer(
     return verifyChain();
   });
 
-  server.get("/anp/identity", async () => ({ identity: protocol.createLocalIdentity(), sessions: protocol.listPeerSessions() }));
+  server.get("/anp/identity", localOnly, async () => ({ identity: protocol.createLocalIdentity(), sessions: protocol.listPeerSessions() }));
 
   // ===== ANP v1.0 with DID:WBA + ECDHE =====
   const anpCtx = {
@@ -3241,7 +3397,7 @@ export function buildServer(
   // ===== ANP E2E Messaging =====
   const anpMessageThreads = new Map<string, import("./security/anp/MessagingProtocol.js").MessageThread>();
 
-  server.post("/anp/messages/send", async (request, reply) => {
+  server.post("/anp/messages/send", localOnly, async (request, reply) => {
     const body = (request.body ?? {}) as {
       message: import("./security/anp/MessagingProtocol.js").AnpMessage;
       sessionKey?: string;
@@ -3264,7 +3420,7 @@ export function buildServer(
     return reply.send({ ok: true, threadId, messageId: body.message.id });
   });
 
-  server.get("/anp/messages/thread/:threadId", async (request, reply) => {
+  server.get("/anp/messages/thread/:threadId", localOnly, async (request, reply) => {
     const { threadId } = request.params as { threadId: string };
     const thread = anpMessageThreads.get(threadId);
     if (!thread) return reply.status(404).send({ error: "Thread not found" });
@@ -3275,7 +3431,7 @@ export function buildServer(
   const ap2Intents = new Map<string, import("./security/anp/Ap2PaymentProtocol.ts").Ap2PaymentIntent>();
   const ap2Settlements = new Map<string, import("./security/anp/Ap2PaymentProtocol.ts").Ap2Settlement>();
 
-  server.post("/anp/payment/intent", async (request, reply) => {
+  server.post("/anp/payment/intent", localOnly, async (request, reply) => {
     const body = (request.body ?? {}) as Parameters<typeof import("./security/anp/Ap2PaymentProtocol.js").buildPaymentIntent>[0];
     try {
       const { buildPaymentIntent, issueIntent } = await import("./security/anp/Ap2PaymentProtocol.js");
@@ -3287,7 +3443,7 @@ export function buildServer(
     }
   });
 
-  server.post("/anp/payment/intent/:intentId/authorize", async (request, reply) => {
+  server.post("/anp/payment/intent/:intentId/authorize", localOnly, async (request, reply) => {
     const { intentId } = request.params as { intentId: string };
     const body = (request.body ?? {}) as { authorizedBy: string; authorizedDid: string; signature: import("./security/anp/Ap2PaymentProtocol.js").Ap2Authorization["signature"] };
     const intent = ap2Intents.get(intentId);
@@ -3308,7 +3464,7 @@ export function buildServer(
     }
   });
 
-  server.post("/anp/payment/intent/:intentId/settle", async (request, reply) => {
+  server.post("/anp/payment/intent/:intentId/settle", localOnly, async (request, reply) => {
     const { intentId } = request.params as { intentId: string };
     const body = (request.body ?? {}) as { settledBy: string; transactionHash?: string };
     const intent = ap2Intents.get(intentId);
@@ -3336,7 +3492,7 @@ export function buildServer(
     }
   });
 
-  server.get("/anp/payment/intent/:intentId", async (request, reply) => {
+  server.get("/anp/payment/intent/:intentId", localOnly, async (request, reply) => {
     const { intentId } = request.params as { intentId: string };
     const intent = ap2Intents.get(intentId);
     if (!intent) return reply.status(404).send({ error: "Intent not found" });
@@ -3348,7 +3504,7 @@ export function buildServer(
     if (!asset.ok) {
       return reply.status(asset.statusCode).send({ error: asset.message });
     }
-    return reply.type("text/html; charset=utf-8").send(asset.content);
+    return withLocalUiAppShell(reply).type("text/html; charset=utf-8").send(asset.content);
   });
 
   server.get("/favicon.ico", async (_request, reply) => reply.status(204).send());
@@ -3477,7 +3633,7 @@ export function buildServer(
     if (!asset.ok) {
       return reply.status(asset.statusCode).send({ error: asset.message });
     }
-    return reply.type("text/html; charset=utf-8").send(asset.content);
+    return withLocalUiAppShell(reply).type("text/html; charset=utf-8").send(asset.content);
   });
 
   return server;
@@ -3522,6 +3678,10 @@ function contentType(path: string): string {
 
 function parseBody<T>(schema: z.ZodType<T, z.ZodTypeDef, unknown>, body: unknown): T {
   return schema.parse(body);
+}
+
+function withLocalUiAppShell(reply: FastifyReply): FastifyReply {
+  return setLocalUiSessionCookie(reply).header(LOCAL_UI_RUNTIME_HEADER, LOCAL_UI_RUNTIME_VERSION);
 }
 
 function skillPathForId(id: string): string {
@@ -3649,6 +3809,34 @@ function getRequestedControlPlaneUrl(body: unknown): string {
     }
   }
   return defaultControlPlaneUrl();
+}
+
+function assertAllowedControlPlaneUrl(value: string): string {
+  const trimmed = value.trim();
+  const url = new URL(trimmed);
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new Error("Unsupported control plane URL scheme");
+  }
+
+  const normalized = normalizeUrlForComparison(url.toString());
+  const normalizedDefault = normalizeUrlForComparison(defaultControlPlaneUrl());
+  const allowlist = new Set([
+    normalizedDefault,
+    ...String(process.env.ALLOWED_CONTROL_PLANE_URLS ?? "")
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .map(normalizeUrlForComparison)
+  ]);
+
+  if (!allowlist.has(normalized)) {
+    throw new Error("Control plane URL is not allowlisted");
+  }
+  if (normalized !== normalizedDefault && isPrivateOrMetadataHost(url.hostname)) {
+    throw new Error("Control plane URL host is not allowed");
+  }
+
+  return trimmed;
 }
 
 function localAgentUrl(): string {
@@ -4107,15 +4295,142 @@ function conversationToUi(
     agentInstanceId: peerAgentInstanceId,
     presence: peerAgentInstanceId ? (peer?.presence ?? "unknown") : "online",
     unread: conversation.unread_count,
+    readState: conversationReadStateToUi(conversation),
     lastMessage: last ? summarizeChatMessage(last) : "No messages yet",
     pendingApprovals: messages.filter((message) => message.message_type === "approval").length,
     transferCount: messages.filter((message) => message.message_type === "transfer" || message.message_type === "receipt").length,
-    messages: messages.map((message) => messageToTimeline(message, localAgentInstanceId))
+    messages: messages.map((message) => messageToTimeline(message, localAgentInstanceId, messages))
   };
 }
 
-function messageToTimeline(message: ChatMessageRecord, localAgentInstanceId: string | null = null): Record<string, unknown> {
+function conversationReadStateToUi(conversation: ChatConversationRecord): ConversationReadState {
+  return {
+    conversationId: conversation.id,
+    lastReadMessageId: conversation.last_read_message_id ?? undefined,
+    unreadCount: conversation.unread_count,
+    mentionCount: conversation.mention_count
+  };
+}
+
+function timelineMeta(message: ChatMessageRecord, localAgentInstanceId: string | null = null, conversationMessages: ChatMessageRecord[] = []): Record<string, unknown> {
   const payload = message.payload_json;
+  const senderIsRemote = Boolean(
+    localAgentInstanceId &&
+    message.sender_agent_instance_id &&
+    message.sender_agent_instance_id !== localAgentInstanceId
+  );
+  const isSystem = message.message_type === "system_event";
+  const originSide = isSystem ? "system" : senderIsRemote ? "remote" : "local";
+  const authorKind =
+    isSystem ? "system"
+    : message.message_type === "human" ? "user"
+    : senderIsRemote ? "remote_agent"
+    : "local_agent";
+  const authorLabel =
+    isSystem ? "System"
+    : message.message_type === "human"
+      ? senderIsRemote
+        ? String(payload.sender_label ?? payload.sender ?? "Peer")
+        : "You"
+      : senderIsRemote
+        ? String(payload.sender_label ?? payload.requester ?? payload.sender ?? "Remote agent")
+        : "Agent";
+  const replyToId = typeof payload.reply_to_id === "string" ? payload.reply_to_id : null;
+  const explicitThreadId = typeof payload.thread_id === "string" ? payload.thread_id : null;
+  const isThreadReply = Boolean(explicitThreadId && explicitThreadId !== message.id);
+  const threadId = explicitThreadId ?? message.id;
+  const summary = isThreadReply ? null : threadSummary(conversationMessages, threadId, localAgentInstanceId);
+  return {
+    client_message_id: message.id,
+    origin_side: originSide,
+    author_id: message.sender_user_id ?? message.sender_agent_instance_id ?? authorKind,
+    author_kind: authorKind,
+    author_label: authorLabel,
+    author_avatar_url: typeof payload.author_avatar_url === "string" ? payload.author_avatar_url : null,
+    reply_to_id: replyToId,
+    reply_preview: replyToId ? replyPreview(conversationMessages, replyToId, localAgentInstanceId) : null,
+    thread_id: typeof payload.thread_id === "string" ? payload.thread_id : null,
+    thread_count: summary?.replyCount ?? 0,
+    thread_summary: summary,
+    pinned: Boolean(payload.pinned ?? false),
+    reactions: Array.isArray(payload.reactions) ? payload.reactions : [],
+    attachments: Array.isArray(payload.attachments) ? payload.attachments : [],
+    embeds: Array.isArray(payload.embeds) ? payload.embeds : [],
+    moderation: payload.moderation && typeof payload.moderation === "object"
+      ? payload.moderation
+      : { state: "visible" }
+  };
+}
+
+function threadReplies(messages: ChatMessageRecord[], threadId: string): ChatMessageRecord[] {
+  return messages
+    .filter((message) => message.id !== threadId && message.payload_json.thread_id === threadId)
+    .sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id));
+}
+
+function safeMessagePreview(message: ChatMessageRecord): string {
+  const raw = message.text ?? String(message.payload_json.status_text ?? message.payload_json.request_text ?? "");
+  const compact = raw.replace(/\s+/g, " ").trim();
+  return compact.length > 140 ? `${compact.slice(0, 137)}...` : compact;
+}
+
+function timelineAuthorLabel(message: ChatMessageRecord, localAgentInstanceId: string | null): string {
+  const payload = message.payload_json;
+  const senderIsRemote = Boolean(
+    localAgentInstanceId &&
+    message.sender_agent_instance_id &&
+    message.sender_agent_instance_id !== localAgentInstanceId
+  );
+  if (message.message_type === "system_event") return "System";
+  if (message.message_type === "human") return senderIsRemote ? String(payload.sender_label ?? payload.sender ?? "Peer") : "You";
+  return senderIsRemote ? String(payload.sender_label ?? payload.requester ?? payload.sender ?? "Remote agent") : "Agent";
+}
+
+function replyPreview(messages: ChatMessageRecord[], messageId: string, localAgentInstanceId: string | null): Record<string, unknown> | null {
+  const source = messages.find((message) => message.id === messageId);
+  if (!source) {
+    return {
+      messageId,
+      authorLabel: "Unknown",
+      textPreview: "Original message is unavailable",
+      deleted: true
+    };
+  }
+  const moderation = source.payload_json.moderation as Record<string, unknown> | undefined;
+  const deleted = Boolean(source.payload_json.deleted_at) || moderation?.state === "deleted";
+  return {
+    messageId: source.id,
+    authorLabel: timelineAuthorLabel(source, localAgentInstanceId),
+    textPreview: deleted ? "This message was deleted." : safeMessagePreview(source),
+    deleted
+  };
+}
+
+function threadSummary(messages: ChatMessageRecord[], threadId: string, localAgentInstanceId: string | null): Record<string, unknown> | null {
+  const replies = threadReplies(messages, threadId);
+  if (replies.length === 0) return null;
+  const participants = new Map<string, { id: string; label: string; avatarUrl?: string }>();
+  for (const reply of replies) {
+    const id = reply.sender_user_id ?? reply.sender_agent_instance_id ?? timelineAuthorLabel(reply, localAgentInstanceId);
+    if (!participants.has(id)) {
+      participants.set(id, {
+        id,
+        label: timelineAuthorLabel(reply, localAgentInstanceId),
+        avatarUrl: typeof reply.payload_json.author_avatar_url === "string" ? reply.payload_json.author_avatar_url : undefined
+      });
+    }
+  }
+  return {
+    threadId,
+    replyCount: replies.length,
+    lastReplyAt: replies.at(-1)?.created_at,
+    participants: Array.from(participants.values()).slice(0, 8)
+  };
+}
+
+function messageToTimeline(message: ChatMessageRecord, localAgentInstanceId: string | null = null, conversationMessages: ChatMessageRecord[] = []): Record<string, unknown> {
+  const payload = message.payload_json;
+  const meta = timelineMeta(message, localAgentInstanceId, conversationMessages);
   if (message.message_type === "human") {
     const isIncoming = Boolean(
       localAgentInstanceId &&
@@ -4123,6 +4438,7 @@ function messageToTimeline(message: ChatMessageRecord, localAgentInstanceId: str
       message.sender_agent_instance_id !== localAgentInstanceId
     );
     return {
+      ...meta,
       kind: "human",
       id: message.id,
       conversation_id: message.conversation_id,
@@ -4141,6 +4457,7 @@ function messageToTimeline(message: ChatMessageRecord, localAgentInstanceId: str
   }
   if (message.message_type === "file_request") {
     return {
+      ...meta,
       kind: "file_request",
       id: message.id,
       task_id: message.task_id ?? String(payload.task_id ?? message.id),
@@ -4155,6 +4472,7 @@ function messageToTimeline(message: ChatMessageRecord, localAgentInstanceId: str
   }
   if (message.message_type === "approval") {
     return {
+      ...meta,
       kind: "approval",
       id: message.id,
       created_at: message.created_at,
@@ -4174,6 +4492,7 @@ function messageToTimeline(message: ChatMessageRecord, localAgentInstanceId: str
   }
   if (message.message_type === "transfer") {
     return {
+      ...meta,
       kind: "transfer",
       id: message.id,
       transfer_id: String(payload.transfer_id ?? message.id),
@@ -4188,6 +4507,7 @@ function messageToTimeline(message: ChatMessageRecord, localAgentInstanceId: str
   }
   if (message.message_type === "receipt") {
     return {
+      ...meta,
       kind: "receipt",
       id: message.id,
       transfer_id: String(payload.transfer_id ?? message.id),
@@ -4203,6 +4523,7 @@ function messageToTimeline(message: ChatMessageRecord, localAgentInstanceId: str
   }
   if (message.message_type === "agent_status") {
     return {
+      ...meta,
       kind: "agent_status",
       id: message.id,
       task_id: message.task_id ?? String(payload.task_id ?? message.id),
@@ -4213,6 +4534,7 @@ function messageToTimeline(message: ChatMessageRecord, localAgentInstanceId: str
     };
   }
   return {
+    ...meta,
     kind: "system_event",
     id: message.id,
     event_type: String(payload.event_type ?? payload.severity ?? "info"),

@@ -18,7 +18,8 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   const response = await fetch(path, {
     ...init,
-    headers
+    headers,
+    credentials: "same-origin"
   });
   if (!response.ok) {
     const details = await readResponseBody(response);
@@ -37,17 +38,13 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const localAgentClient = {
   get: <T>(path: string) => request<T>(path),
   post: <T>(path: string, body: unknown) => request<T>(path, { method: "POST", body: JSON.stringify(body) }),
+  patch: <T>(path: string, body: unknown) => request<T>(path, { method: "PATCH", body: JSON.stringify(body) }),
   put: <T>(path: string, body: unknown) => request<T>(path, { method: "PUT", body: JSON.stringify(body) }),
   delete: <T>(path: string) => request<T>(path, { method: "DELETE" })
 };
 
 export function withLocalAgentAuth(headersInit?: HeadersInit): Headers {
-  const headers = new Headers(headersInit);
-  const token = import.meta.env.VITE_LOCAL_AGENT_API_TOKEN ?? import.meta.env.ORACLE_AMIGO_LOCAL_AGENT_API_TOKEN;
-  if (token && !headers.has("x-local-agent-token") && !headers.has("Authorization")) {
-    headers.set("x-local-agent-token", String(token));
-  }
-  return headers;
+  return new Headers(headersInit);
 }
 
 async function readResponseBody(response: Response): Promise<unknown> {

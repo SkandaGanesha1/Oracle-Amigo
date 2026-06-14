@@ -37,20 +37,22 @@ export default function App() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [hold]);
+  }, [hold.cancel]);
 
-  const visibleText = hold.transcript || hold.interimTranscript;
+  const visibleText = [hold.transcript, hold.interimTranscript].filter(Boolean).join(" ");
   const statusText = startupError || hold.error || statusFor(hold.state);
 
   return (
     <main className="voice-shell" aria-live="polite">
-      <p className="transcript-line">
-        {visibleText || " "}
-      </p>
-      <Waveform analyser={hold.analyser} active={hold.isHolding} />
-      <p className={startupError || hold.error ? "voice-hint voice-hint-error" : "voice-hint"}>
-        {statusText}
-      </p>
+      <section className="voice-content">
+        <p className="transcript-line">
+          {visibleText || " "}
+        </p>
+        <Waveform active={hold.isSpeaking} level={hold.voiceLevel} />
+        <p className={startupError || hold.error ? "voice-hint voice-hint-error" : "voice-hint"}>
+          {statusText}
+        </p>
+      </section>
     </main>
   );
 }

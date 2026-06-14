@@ -5,7 +5,6 @@ import {
   ListChecks, ScrollText,
 } from "lucide-react";
 import { useSection, type AppSection } from "./SectionContext";
-import { LogoutButton } from "../features/auth/LogoutButton";
 import { NotificationCenter } from "../components/notifications/NotificationCenter";
 
 const sections: { id: AppSection; label: string; icon: typeof Bot }[] = [
@@ -57,7 +56,6 @@ export function NavBar() {
 
       <div className="ml-auto flex items-center gap-3">
         <NotificationCenter />
-        <LogoutButton />
       </div>
     </header>
   );

@@ -1,11 +1,13 @@
 import { motion } from "framer-motion";
 import { ContextMenu } from "radix-ui";
-import { useCallback, useState } from "react";
-import { Check, AlertCircle, Activity, Copy, Link2, MessageSquareQuote, Pin, RotateCcw, ChevronDown, ChevronRight, User, Bot, ArrowRight, ShieldCheck } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Check, AlertCircle, Activity, Copy, Link2, MessageSquareQuote, Pin, RotateCcw, ChevronDown, ChevronRight, User, Bot, ArrowRight, ShieldCheck, MessagesSquare } from "lucide-react";
 import { OracleAvatar } from "../primitives/OracleAvatar";
 import { MessageDeliveryState } from "../../features/chat/MessageDeliveryState";
 import { MessageActions } from "./MessageActions";
 import { RichMessageContent } from "./RichMessageContent";
+import { MessageAttachments } from "./MessageAttachments";
+import { MessageEmbeds } from "./MessageEmbeds";
 import { AgentRunMessage } from "../agentic-ai/AgentRunMessage";
 import { ApprovalCardMessage } from "../agentic-ai/ApprovalCardMessage";
 import { TransferProgressMessage as TransferProgressCard } from "../agentic-ai/TransferProgressMessage";
@@ -17,9 +19,17 @@ import { AgenticReasoning } from "../agentic-ai/AgenticReasoning";
 import { AgenticToolCall } from "../agentic-ai/AgenticToolCall";
 import { FeedbackBar } from "../agentic-ai/FeedbackBar";
 import { safeDisplayText } from "../../lib/safeText";
-import { useRelayTaskStatus } from "../../hooks/queries";
+import { usePinMessage, useRelayTaskStatus } from "../../hooks/queries";
 import type { TimelineMessage, AgentStatusMessage, HumanChatMessage, FileCandidateApprovalMessage, TransferProgressMessage, FileReceiptMessage, FileRequestMessage as FileRequestMessageType, A2ATaskMessage } from "../../api/types";
 import type { DeliveryStatus } from "../../api/types";
+import {
+  isDeletedMessage,
+  isEditedMessage,
+  isStructuredCardMessage,
+  messageCreatedAt,
+  messageSide,
+  type TimelineRowMeta,
+} from "./timelineModel";
 
 const UUID_RE = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi;
 const AGENT_UUID_RE = /\b(?:ag[ei]_|run_|task_)[0-9a-f-]{36,}\b/gi;
@@ -62,10 +72,6 @@ const authorLabel: Record<string, string> = {
 
 function formatTime(dateStr: string): string {
   return new Date(dateStr).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-}
-
-function messageCreatedAt(message: TimelineMessage): string {
-  return message.kind === "receipt" ? (message as FileReceiptMessage).received_at : message.created_at;
 }
 
 const systemEventLabels: Record<string, string> = {
@@ -119,6 +125,8 @@ function SeverityIcon({ severity }: { severity: string }) {
 interface MessageBubbleProps {
   message: TimelineMessage;
   onRetry?: (messageId: string) => void;
+  grouped?: boolean;
+  meta?: TimelineRowMeta;
 }
 
 function agentSuggestions(text: string): string | null {
@@ -191,13 +199,69 @@ function MissionHeader({ message }: { message: TimelineMessage }) {
   );
 }
 
-export function MessageBubble({ message, onRetry }: MessageBubbleProps) {
-  const [pinned, setPinned] = useState(false);
+function ReplyPreviewCard({ preview }: { preview: NonNullable<TimelineMessage["reply_preview"]> }) {
+  const handleClick = useCallback(() => {
+    window.dispatchEvent(new CustomEvent("oa-jump-to-message", {
+      detail: { messageId: preview.messageId }
+    }));
+  }, [preview.messageId]);
+
+  return (
+    <button
+      type="button"
+      onClick={handleClick}
+      className="mb-1 flex max-w-full items-center gap-2 rounded-md border-l-2 border-oa-blue/60 bg-oa-surface/40 px-2 py-1 text-left text-xs text-oa-text-muted transition-colors hover:bg-oa-surface hover:text-oa-text"
+      aria-label={`Jump to replied message from ${preview.authorLabel}`}
+    >
+      <MessageSquareQuote className="h-3.5 w-3.5 shrink-0 text-oa-blue" />
+      <span className="min-w-0 truncate">
+        <span className="font-medium text-oa-text-secondary">{preview.authorLabel}</span>
+        <span className="mx-1 text-oa-text-disabled">-</span>
+        <span className={preview.deleted ? "italic" : ""}>{preview.textPreview}</span>
+      </span>
+    </button>
+  );
+}
+
+function ThreadSummaryPill({ summary }: { summary: NonNullable<TimelineMessage["thread_summary"]> }) {
+  const handleClick = useCallback(() => {
+    window.dispatchEvent(new CustomEvent("oa-open-thread", {
+      detail: { threadId: summary.threadId }
+    }));
+  }, [summary.threadId]);
+
+  return (
+    <button
+      type="button"
+      onClick={handleClick}
+      className="mt-1 inline-flex items-center gap-1.5 rounded-full border border-oa-border bg-oa-surface/50 px-2 py-1 text-[10px] font-medium text-oa-text-muted transition-colors hover:border-oa-blue/40 hover:text-oa-text"
+      aria-label={`Open thread with ${summary.replyCount} replies`}
+    >
+      <MessagesSquare className="h-3.5 w-3.5 text-oa-blue" />
+      {summary.replyCount} {summary.replyCount === 1 ? "reply" : "replies"}
+    </button>
+  );
+}
+
+export function MessageBubble({ message, onRetry, grouped = false, meta }: MessageBubbleProps) {
   const [linkCopied, setLinkCopied] = useState(false);
   const [showAgentThinking, setShowAgentThinking] = useState(false);
+  const linkCopiedTimerRef = useRef<number | null>(null);
   const isHuman = message.kind === "human";
   const humanMessage = isHuman ? message as HumanChatMessage : null;
-  const isOutgoingHuman = isHuman && humanMessage?.direction !== "incoming";
+  const side = meta?.side ?? messageSide(message);
+  const isOutgoing = side === "right";
+  const isCentered = side === "center";
+  const isStructuredCard = meta?.structuredCard ?? isStructuredCardMessage(message);
+  const isDeleted = meta?.deleted ?? isDeletedMessage(message);
+  const isEdited = meta?.edited ?? isEditedMessage(message);
+  const groupedWithPrevious = meta?.groupedWithPrevious ?? grouped;
+  const isOutgoingHuman = isHuman && isOutgoing;
+  const conversationId = typeof (message as { conversation_id?: unknown }).conversation_id === "string"
+    ? (message as { conversation_id: string }).conversation_id
+    : undefined;
+  const pinned = Boolean(message.pinned);
+  const pinMessage = usePinMessage(conversationId ?? "none");
   const relayTaskStatus = useRelayTaskStatus(
     humanMessage?.relay_task_id,
     isOutgoingHuman && (humanMessage?.delivery_status === "queued_at_relay" || humanMessage?.delivery_status === "delivered_to_remote_agent")
@@ -207,11 +271,11 @@ export function MessageBubble({ message, onRetry }: MessageBubbleProps) {
     ? humanMessage.delivery_receipt.error
     : undefined;
   const tone = avatarTone[message.kind] ?? "rose";
-  const label = humanMessage?.direction === "incoming"
+  const label = message.author_label ?? (humanMessage?.direction === "incoming"
     ? (humanMessage.sender_label ?? "Peer")
     : message.kind === "agent_status"
     ? agentPhaseLabel((message as AgentStatusMessage).phase)
-    : (authorLabel[message.kind] ?? "Agent");
+    : (authorLabel[message.kind] ?? "Agent"));
   const time = formatTime(messageCreatedAt(message));
   const text = messageText(message);
   const suggestion = message.kind === "agent_status" ? agentSuggestions(text) : null;
@@ -222,10 +286,19 @@ export function MessageBubble({ message, onRetry }: MessageBubbleProps) {
 
   const isAgentPhase = isThinking || isSearching;
   const isThinkingBar = message.kind === "thinking_bar";
+  const containerClass = isCentered
+    ? "justify-center"
+    : isOutgoing
+      ? "flex-row-reverse"
+      : "flex-row";
 
-  const containerClass = isOutgoingHuman
-    ? "flex-row-reverse"
-    : "flex-row";
+  useEffect(() => {
+    return () => {
+      if (linkCopiedTimerRef.current !== null) {
+        window.clearTimeout(linkCopiedTimerRef.current);
+      }
+    };
+  }, []);
 
   const handleCopy = useCallback(async () => {
     try {
@@ -240,7 +313,13 @@ export function MessageBubble({ message, onRetry }: MessageBubbleProps) {
       const path = `${window.location.pathname}#message-${message.id}`;
       await navigator.clipboard.writeText(path);
       setLinkCopied(true);
-      setTimeout(() => setLinkCopied(false), 1600);
+      if (linkCopiedTimerRef.current !== null) {
+        window.clearTimeout(linkCopiedTimerRef.current);
+      }
+      linkCopiedTimerRef.current = window.setTimeout(() => {
+        linkCopiedTimerRef.current = null;
+        setLinkCopied(false);
+      }, 1600);
     } catch {
       // Clipboard can be unavailable in restricted browser contexts.
     }
@@ -259,8 +338,9 @@ export function MessageBubble({ message, onRetry }: MessageBubbleProps) {
   }, [label, message, text]);
 
   const handleTogglePin = useCallback(() => {
-    setPinned((current) => !current);
-  }, []);
+    if (!conversationId) return;
+    pinMessage.mutate({ messageId: message.id, pinned: !pinned });
+  }, [conversationId, message.id, pinMessage, pinned]);
 
   return (
     <ContextMenu.Root>
@@ -271,9 +351,14 @@ export function MessageBubble({ message, onRetry }: MessageBubbleProps) {
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.2, ease: "easeOut" }}
-          className={`density-message group/message flex gap-3 px-4 py-2 ${containerClass}`}
+          className={[
+            "density-message group/message flex gap-3 px-4 py-1.5 transition-colors",
+            "hover:bg-white/[0.035]",
+            groupedWithPrevious ? "pt-0.5" : "",
+            containerClass,
+          ].join(" ")}
         >
-          {!isOutgoingHuman && !isAgentPhase && !isThinkingBar && (
+          {!isOutgoing && !isCentered && !groupedWithPrevious && !isAgentPhase && !isThinkingBar && (
             <OracleAvatar
               seed={message.kind}
               initials={label.slice(0, 2).toUpperCase()}
@@ -281,32 +366,54 @@ export function MessageBubble({ message, onRetry }: MessageBubbleProps) {
               className="mt-1 h-8 w-8 shrink-0 ring-2 ring-oa-blue/20"
             />
           )}
+          {!isOutgoing && !isCentered && groupedWithPrevious && !isAgentPhase && !isThinkingBar && (
+            <div className="h-8 w-8 shrink-0" aria-hidden="true" />
+          )}
 
-          <div className={`flex ${isThinkingBar ? "w-full max-w-[860px]" : "max-w-[75%]"} flex-col gap-1 ${isOutgoingHuman ? "items-end" : "items-start"}`}>
-            {!isAgentPhase && !isThinkingBar && (
+          <div
+            className={[
+              "flex flex-col gap-1",
+              isThinkingBar
+                ? "w-full max-w-[860px]"
+                : isCentered
+                  ? "max-w-[860px] items-center"
+                  : isStructuredCard
+                    ? "max-w-[760px]"
+                    : "max-w-[min(760px,calc(100%-96px))]",
+              isOutgoing ? "items-end" : isCentered ? "items-center" : "items-start",
+            ].join(" ")}
+          >
+            {!groupedWithPrevious && !isAgentPhase && !isThinkingBar && !isCentered && (
               <div className="flex items-center gap-2">
-                <span className="text-xs font-medium text-oa-text-secondary">{isOutgoingHuman ? "You" : label}</span>
+                <span className="text-xs font-semibold text-oa-text-secondary">{isOutgoing ? "You" : label}</span>
                 <span className="text-[10px] text-oa-text-muted">{time}</span>
                 {pinned && <Pin className="h-3 w-3 rotate-45 text-oa-amber" aria-label="Pinned" />}
               </div>
             )}
+            {message.reply_preview && <ReplyPreviewCard preview={message.reply_preview} />}
             {isMissionStart && <MissionHeader message={message} />}
 
-            <div className={`rounded-2xl px-4 py-2.5 text-sm leading-relaxed ${
-              isOutgoingHuman
-                ? "bg-oa-bubble-bg text-oa-text rounded-tr-md shadow-lg shadow-black/10"
-                : isAgentPhase || isThinkingBar
-                  ? "bg-transparent p-0"
-                  : "glass-panel text-oa-text rounded-tl-md"
-            }`}>
+            <div
+              className={[
+                "oa-message-content text-sm leading-relaxed",
+                isStructuredCard
+                  ? "rounded-xl border border-oa-border bg-oa-surface/80 p-3 shadow-sm shadow-black/10"
+                  : "bg-transparent p-0 text-oa-text shadow-none",
+                isCentered ? "text-center text-xs text-oa-text-muted" : "",
+                isDeleted ? "italic text-oa-text-muted" : "",
+              ].join(" ")}
+            >
+              {isDeleted && (
+                <span className="text-oa-text-muted">This message was deleted.</span>
+              )}
               {message.kind === "system_event" && (
                 <div className="mb-1 flex items-center gap-1.5">
                   <SeverityIcon severity={(message as TimelineMessage & { severity: string }).severity} />
                 </div>
               )}
 
-              {message.kind === "a2a_task" && <AgentRunMessage message={message as A2ATaskMessage} />}
-              {message.kind === "approval" && (
+              {!isDeleted && message.kind === "a2a_task" && <AgentRunMessage message={message as A2ATaskMessage} />}
+              {!isDeleted && message.kind === "approval" && (
                 <>
                   <ApprovalCardMessage message={message as FileCandidateApprovalMessage} />
                   {((message as FileCandidateApprovalMessage).card.status === "approved" || (message as FileCandidateApprovalMessage).card.status === "rejected") && (
@@ -316,15 +423,20 @@ export function MessageBubble({ message, onRetry }: MessageBubbleProps) {
                   )}
                 </>
               )}
-              {message.kind === "transfer" && <TransferProgressCard message={message as TransferProgressMessage} />}
-              {message.kind === "receipt" && <FileReceiptCard message={message as FileReceiptMessage} />}
-              {message.kind === "file_request" && <FileRequestCard message={message as FileRequestMessageType} />}
-              {isThinkingBar && <ThinkingBar state={message.state} privacyMasked />}
-              {isAgentPhase && <AgentPhaseThinkingBar text={text} />}
-              {message.kind === "human" || (message.kind === "agent_status" && !isAgentPhase) || message.kind === "system_event" ? (
+              {!isDeleted && message.kind === "transfer" && <TransferProgressCard message={message as TransferProgressMessage} />}
+              {!isDeleted && message.kind === "receipt" && <FileReceiptCard message={message as FileReceiptMessage} />}
+              {!isDeleted && message.kind === "file_request" && <FileRequestCard message={message as FileRequestMessageType} />}
+              {!isDeleted && isThinkingBar && <ThinkingBar state={message.state} privacyMasked />}
+              {!isDeleted && isAgentPhase && <AgentPhaseThinkingBar text={text} />}
+              {!isDeleted && (message.kind === "human" || (message.kind === "agent_status" && !isAgentPhase) || message.kind === "system_event") ? (
                 <>
                   {(message.kind === "human" || message.kind === "system_event") && (
-                    <RichMessageContent text={text} />
+                    <>
+                      <RichMessageContent text={text} />
+                      {isEdited && (
+                        <span className="ml-1 text-[10px] text-oa-text-muted">(edited)</span>
+                      )}
+                    </>
                   )}
                   {message.kind === "agent_status" && !isAgentPhase && (
                     <>
@@ -361,6 +473,12 @@ export function MessageBubble({ message, onRetry }: MessageBubbleProps) {
                   )}
                 </>
               ) : null}
+              {!isDeleted && (
+                <>
+                  <MessageAttachments attachments={message.attachments} />
+                  <MessageEmbeds embeds={message.embeds} />
+                </>
+              )}
             </div>
 
             {isOutgoingHuman && (
@@ -371,14 +489,16 @@ export function MessageBubble({ message, onRetry }: MessageBubbleProps) {
               />
             )}
 
-            {!isAgentPhase && !isThinkingBar && (
+            {message.thread_summary && <ThreadSummaryPill summary={message.thread_summary} />}
+
+            {!isCentered && !isAgentPhase && !isThinkingBar && (
               <MessageActions
                 text={text}
                 onRetry={onRetry ? () => onRetry(message.id) : undefined}
                 showRetry={isOutgoingHuman}
                 messageId={message.id}
                 pinned={pinned}
-                onTogglePin={handleTogglePin}
+                onTogglePin={conversationId ? handleTogglePin : undefined}
                 onReply={handleReply}
               />
             )}

@@ -30,6 +30,12 @@ export interface VoiceCommandRecord {
   errorMessage: string | null;
 }
 
+export interface VoiceTranscriptionResult {
+  confidence?: number;
+  provider: string;
+  transcript: string;
+}
+
 const DEFAULT_AGENT_URL = "http://127.0.0.1:3399";
 
 export class LocalAgentVoiceClient {
@@ -72,6 +78,19 @@ export class LocalAgentVoiceClient {
     });
     if (command.preview?.error) throw new Error(command.preview.error);
     return this.confirmCommand(command.id);
+  }
+
+  async transcribeAudio(audio: Blob, options: { locale?: string } = {}): Promise<VoiceTranscriptionResult> {
+    const audioBase64 = await blobToBase64(audio);
+    return this.request<VoiceTranscriptionResult>("/voice/transcribe", {
+      method: "POST",
+      body: JSON.stringify({
+        audioBase64,
+        locale: options.locale,
+        mimeType: audio.type || "application/octet-stream",
+        source: "voice-launcher"
+      })
+    });
   }
 
   private async createCommandWithOptions(
@@ -150,4 +169,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function looksLikeHtml(value: string): boolean {
   return /^\s*<!doctype html/i.test(value) || /^\s*<html[\s>]/i.test(value);
+}
+
+async function blobToBase64(blob: Blob): Promise<string> {
+  const buffer = await blob.arrayBuffer();
+  let binary = "";
+  const bytes = new Uint8Array(buffer);
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+  }
+  return btoa(binary);
 }

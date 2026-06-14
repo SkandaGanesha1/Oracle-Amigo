@@ -52,16 +52,120 @@ describe("backend security hardening", () => {
     await server.close();
   });
 
+  it("allows same-origin browser sessions through signed local UI cookies", async () => {
+    const server = buildServer(undefined, new FileSearchService([allowedRoot]));
+
+    const appShell = await server.inject({ method: "GET", url: "/chats/local-agent" });
+    expect(appShell.statusCode).toBe(200);
+    expect(appShell.headers["x-oracle-amigo-runtime"]).toBe("local-ui-session-v1");
+    const setCookie = appShell.headers["set-cookie"];
+    const cookie = Array.isArray(setCookie) ? setCookie[0] : setCookie;
+    expect(cookie).toContain("oa_local_ui_session=");
+    expect(cookie).toContain("HttpOnly");
+    expect(cookie).toContain("SameSite=Lax");
+
+    const cookieHeader = cookie?.split(";", 1)[0];
+    if (!cookieHeader) throw new Error("Missing local UI session cookie");
+
+    const conversations = await server.inject({
+      method: "GET",
+      url: "/chat/conversations",
+      headers: { cookie: cookieHeader }
+    });
+    expect(conversations.statusCode).toBe(200);
+
+    const localMessages = await server.inject({
+      method: "GET",
+      url: "/chat/conversations/local-agent/messages",
+      headers: { cookie: cookieHeader }
+    });
+    expect(localMessages.statusCode).toBe(200);
+    expect(localMessages.json()).toMatchObject({
+      conversation: { id: "local-agent" },
+      readState: { conversationId: "local-agent" }
+    });
+
+    await server.close();
+  });
+
+  it("reports local UI session runtime support in health diagnostics", async () => {
+    const server = buildServer(undefined, new FileSearchService([allowedRoot]));
+
+    const health = await server.inject({ method: "GET", url: "/health" });
+    expect(health.statusCode).toBe(200);
+    expect(health.json()).toMatchObject({
+      localUiSession: {
+        enabled: true,
+        runtime: "local-ui-session-v1",
+        cookieName: "oa_local_ui_session"
+      }
+    });
+
+    const diagnostics = await server.inject({
+      method: "GET",
+      url: "/chat/diagnostics",
+      headers: { "x-local-agent-token": token }
+    });
+    expect(diagnostics.statusCode).toBe(200);
+    expect(diagnostics.json()).toMatchObject({
+      localUiSession: {
+        enabled: true,
+        runtime: "local-ui-session-v1",
+        cookieName: "oa_local_ui_session"
+      }
+    });
+
+    await server.close();
+  });
+
+  it("rejects tampered local UI session cookies", async () => {
+    const server = buildServer(undefined, new FileSearchService([allowedRoot]));
+
+    const response = await server.inject({
+      method: "GET",
+      url: "/chat/conversations",
+      headers: { cookie: "oa_local_ui_session=v1.1718300000000.deadbeef.invalid" }
+    });
+    expect(response.statusCode).toBe(401);
+
+    await server.close();
+  });
+
   it("requires a local API token for local admin and private data routes", async () => {
     const server = buildServer(undefined, new FileSearchService([allowedRoot]));
 
     const routes = [
       { method: "POST", url: "/skills", payload: { manifest: { id: "safe-skill", name: "Safe Skill" }, body: "" } },
       { method: "POST", url: "/registry/discover", payload: { url: "https://example.com/.well-known/agent.json" } },
-      { method: "POST", url: "/cloud/logout", payload: {} },
+      { method: "GET", url: "/profile" },
+      { method: "POST", url: "/profile/init", payload: {} },
+      { method: "GET", url: "/search/universal?q=secret" },
+      { method: "GET", url: "/missions/task-1/thread" },
+      { method: "POST", url: "/missions/task-1/thread", payload: { body: "inject" } },
+      { method: "POST", url: "/missions/task-1/pause", payload: {} },
+      { method: "POST", url: "/missions/task-1/resume", payload: {} },
+      { method: "POST", url: "/missions/task-1/cancel", payload: {} },
+      { method: "POST", url: "/missions/task-1/retry", payload: {} },
+      { method: "GET", url: "/cloud/me" },
+      { method: "GET", url: "/cloud/directory/users" },
+      { method: "GET", url: "/cloud/directory/users/usr_1/agents" },
+      { method: "GET", url: "/cloud/contacts" },
+      { method: "POST", url: "/cloud/contacts/request", payload: { target_user_id: "usr_2" } },
+      { method: "POST", url: "/cloud/contacts/contact_1/accept", payload: {} },
+      { method: "GET", url: "/relay/inbox/status" },
+      { method: "GET", url: "/relay/task/relay_1/status" },
+      { method: "POST", url: "/relay/send-message", payload: { peer_user_id: "usr_2", text: "hello" } },
+      { method: "POST", url: "/relay/send-file-request", payload: { peer_user_id: "usr_2", text: "send file" } },
       { method: "GET", url: "/memory/conversations" },
       { method: "GET", url: "/chat/conversations" },
-      { method: "GET", url: "/policy/summary" }
+      { method: "GET", url: "/policy/summary" },
+      { method: "GET", url: "/anp/identity" },
+      { method: "POST", url: "/anp/messages/send", payload: { message: { id: "m1", type: "text", from: "a", to: "b", createdTime: Date.now(), body: {} } } },
+      { method: "GET", url: "/anp/messages/thread/thread-1" },
+      { method: "POST", url: "/anp/payment/intent", payload: { fromDid: "did:a", toDid: "did:b", lineItems: [{ id: "1", description: "x", quantity: 1, unitPrice: 1, currency: "USD" }], description: "x" } },
+      { method: "POST", url: "/anp/payment/intent/intent-1/authorize", payload: {} },
+      { method: "POST", url: "/anp/payment/intent/intent-1/settle", payload: {} },
+      { method: "GET", url: "/anp/payment/intent/intent-1" }
     ] as const;
 
     for (const route of routes) {
@@ -69,6 +173,45 @@ describe("backend security hardening", () => {
       expect(response.statusCode).toBe(401);
     }
 
+    await server.close();
+  });
+
+  it("allows browser-safe cloud lifecycle routes without exposing the local API token", async () => {
+    const server = buildServer(undefined, new FileSearchService([allowedRoot]));
+
+    const logout = await server.inject({ method: "POST", url: "/cloud/logout", payload: {} });
+    expect(logout.statusCode).toBe(200);
+
+    const login = await server.inject({
+      method: "POST",
+      url: "/cloud/login",
+      payload: {
+        email: "user@example.com",
+        password: "password123",
+        control_plane_url: "http://127.0.0.1:65535"
+      }
+    });
+    expect(login.statusCode).toBe(400);
+    expect(login.json()).toMatchObject({ error: "INVALID_CONTROL_PLANE_URL" });
+
+    await server.close();
+  });
+
+  it("rejects caller-supplied control plane URLs that are not explicitly allowed", async () => {
+    const server = buildServer(undefined, new FileSearchService([allowedRoot]));
+    const response = await server.inject({
+      method: "POST",
+      url: "/cloud/login",
+      headers: { "x-local-agent-token": token },
+      payload: {
+        email: "user@example.com",
+        password: "password123",
+        control_plane_url: "http://127.0.0.1:65535"
+      }
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ error: "INVALID_CONTROL_PLANE_URL" });
     await server.close();
   });
 

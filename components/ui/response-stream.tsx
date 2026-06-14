@@ -52,6 +52,13 @@ function useTextStream({
   const streamRef = useRef<AbortController | null>(null)
   const completedRef = useRef(false)
   const onCompleteRef = useRef(onComplete)
+  const mountedRef = useRef(true)
+
+  useEffect(() => {
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
 
   useEffect(() => {
     speedRef.current = speed
@@ -208,15 +215,17 @@ function useTextStream({
 
       try {
         for await (const chunk of stream) {
-          if (controller.signal.aborted) return
+          if (controller.signal.aborted || !mountedRef.current) return
 
           displayed += chunk
           setDisplayedText(displayed)
           updateSegments(displayed)
         }
 
+        if (controller.signal.aborted || !mountedRef.current) return
         markComplete()
       } catch (error) {
+        if (controller.signal.aborted || !mountedRef.current) return
         console.error("Error processing text stream:", error)
         markComplete()
         onError?.(error)

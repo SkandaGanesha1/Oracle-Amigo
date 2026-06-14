@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import { FileSearch, Upload, FileText, X, CheckCircle, Loader2 } from "lucide-react";
 
 interface FileRequestIntentChipProps {
@@ -32,6 +32,29 @@ export function FileRequestIntentChip({ visible }: FileRequestIntentChipProps) {
   const [uploadProgress, setUploadProgress] = useState(0);
   const [dragOver, setDragOver] = useState(false);
   const dropRef = useRef<HTMLDivElement>(null);
+  const previewUrlRef = useRef<string | undefined>(undefined);
+  const uploadIntervalRef = useRef<number | null>(null);
+
+  const setNextDroppedFile = useCallback((nextFile: DroppedFile | null) => {
+    if (previewUrlRef.current && previewUrlRef.current !== nextFile?.previewUrl) {
+      URL.revokeObjectURL(previewUrlRef.current);
+    }
+    previewUrlRef.current = nextFile?.previewUrl;
+    setDroppedFile(nextFile);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (previewUrlRef.current) {
+        URL.revokeObjectURL(previewUrlRef.current);
+        previewUrlRef.current = undefined;
+      }
+      if (uploadIntervalRef.current !== null) {
+        window.clearInterval(uploadIntervalRef.current);
+        uploadIntervalRef.current = null;
+      }
+    };
+  }, []);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -52,28 +75,37 @@ export function FileRequestIntentChip({ visible }: FileRequestIntentChipProps) {
     const file = e.dataTransfer.files?.[0];
     if (file) {
       const previewUrl = file.type.startsWith("image/") ? URL.createObjectURL(file) : undefined;
-      setDroppedFile({ name: file.name, size: file.size, type: file.type, previewUrl });
+      setNextDroppedFile({ name: file.name, size: file.size, type: file.type, previewUrl });
       setUploadStatus("pending");
       setUploadProgress(0);
     }
-  }, []);
+  }, [setNextDroppedFile]);
 
   const handleRemove = useCallback(() => {
-    if (droppedFile?.previewUrl) URL.revokeObjectURL(droppedFile.previewUrl);
-    setDroppedFile(null);
+    if (uploadIntervalRef.current !== null) {
+      window.clearInterval(uploadIntervalRef.current);
+      uploadIntervalRef.current = null;
+    }
+    setNextDroppedFile(null);
     setUploadStatus("pending");
     setUploadProgress(0);
-  }, [droppedFile]);
+  }, [setNextDroppedFile]);
 
   const simulateUpload = useCallback(() => {
     if (uploadStatus !== "pending" || !droppedFile) return;
     setUploadStatus("uploading");
     setUploadProgress(0);
-    const interval = setInterval(() => {
+    if (uploadIntervalRef.current !== null) {
+      window.clearInterval(uploadIntervalRef.current);
+    }
+    uploadIntervalRef.current = window.setInterval(() => {
       setUploadProgress((prev) => {
         const next = prev + Math.random() * 20;
         if (next >= 100) {
-          clearInterval(interval);
+          if (uploadIntervalRef.current !== null) {
+            window.clearInterval(uploadIntervalRef.current);
+            uploadIntervalRef.current = null;
+          }
           setUploadStatus("done");
           return 100;
         }
@@ -118,7 +150,7 @@ export function FileRequestIntentChip({ visible }: FileRequestIntentChipProps) {
                 const file = (ev.target as HTMLInputElement).files?.[0];
                 if (file) {
                   const previewUrl = file.type.startsWith("image/") ? URL.createObjectURL(file) : undefined;
-                  setDroppedFile({ name: file.name, size: file.size, type: file.type, previewUrl });
+                  setNextDroppedFile({ name: file.name, size: file.size, type: file.type, previewUrl });
                   setUploadStatus("pending");
                   setUploadProgress(0);
                 }

@@ -1,16 +1,20 @@
-import { useCallback, useMemo, useState } from "react";
-import { useSendMessage, useSendFileRequest, useQueuedMessages, useRetryQueued, useCancelQueued } from "../../hooks/queries";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useSendMessage, useSendFileRequest, useQueuedMessages, useRetryQueued, useCancelQueued, useLoadAroundMessage, useLoadBeforeMessages } from "../../hooks/queries";
 import { MessageTimeline } from "./MessageTimeline";
 import { ComposerDock } from "./ComposerDock";
 import { SendConfirmation, SendConfirmationTitle, SendConfirmationMessage, SendConfirmationActions, SendConfirmationApprove, SendConfirmationReject } from "./SendConfirmation";
 import { safeDisplayText } from "../../lib/safeText";
-import type { AgentStatusMessage, Conversation, SystemEventMessage, TimelineMessage } from "../../api/types";
+import { useTypingStates } from "../../components/stream-like/typingState";
+import type { AgentStatusMessage, Conversation, ConversationMessagesResult, ConversationReadState, SystemEventMessage, TimelineMessage } from "../../api/types";
 
 interface ChatWindowProps {
   conversation: Conversation;
   messages: TimelineMessage[];
   loading: boolean;
   conversationId: string;
+  readState?: ConversationReadState | null;
+  pageInfo?: ConversationMessagesResult["pageInfo"];
+  onMarkRead?: (messageId: string) => void;
 }
 
 const bannerSeverities = new Set(["info", "success"]);
@@ -144,13 +148,17 @@ function collapseAgentStatusMessages(messages: TimelineMessage[]): TimelineMessa
     .sort((a, b) => createdAt(a).localeCompare(createdAt(b)));
 }
 
-export function ChatWindow({ conversation, messages, loading, conversationId }: ChatWindowProps) {
+export function ChatWindow({ conversation, messages, loading, conversationId, readState, pageInfo, onMarkRead }: ChatWindowProps) {
   const sendMessage = useSendMessage(conversationId);
   const sendFileRequest = useSendFileRequest(conversationId);
   const [pendingSend, setPendingSend] = useState<{ text: string; sendAs: "normal" | "file_request" } | null>(null);
+  const [jumpToMessageId, setJumpToMessageId] = useState<string | null>(null);
   const queuedMessages = useQueuedMessages(conversationId);
   const retryQueued = useRetryQueued(conversationId);
   const cancelQueued = useCancelQueued(conversationId);
+  const loadAroundMessage = useLoadAroundMessage(conversationId);
+  const loadBeforeMessages = useLoadBeforeMessages(conversationId);
+  const typingStates = useTypingStates(conversationId);
 
   const { chatMessages, banners } = useMemo(() => {
     const chatMessages: TimelineMessage[] = [];
@@ -166,8 +174,12 @@ export function ChatWindow({ conversation, messages, loading, conversationId }: 
   }, [messages]);
 
   const handleSend = useCallback(async (text: string, sendAs: "normal" | "file_request") => {
+    if (sendAs === "normal") {
+      await sendMessage.mutateAsync({ text, clientMessageId: crypto.randomUUID() });
+      return;
+    }
     setPendingSend({ text, sendAs });
-  }, []);
+  }, [sendMessage]);
 
   const handleConfirmSend = useCallback(async () => {
     if (!pendingSend) return;
@@ -183,6 +195,15 @@ export function ChatWindow({ conversation, messages, loading, conversationId }: 
     setPendingSend(null);
   }, []);
 
+  useEffect(() => {
+    function handleJump(event: Event) {
+      const messageId = (event as CustomEvent<{ messageId?: string }>).detail?.messageId;
+      if (messageId) setJumpToMessageId(messageId);
+    }
+    window.addEventListener("oa-jump-to-message", handleJump);
+    return () => window.removeEventListener("oa-jump-to-message", handleJump);
+  }, []);
+
   const handleRetry = useCallback(async (messageId: string) => {
     const failedMsg = messages.find((m) => m.id === messageId && m.kind === "human");
     if (failedMsg && failedMsg.kind === "human") {
@@ -191,6 +212,9 @@ export function ChatWindow({ conversation, messages, loading, conversationId }: 
   }, [messages, sendMessage]);
 
   const isSending = sendMessage.isPending || sendFileRequest.isPending;
+  const typingLabel = typingStates.length > 0
+    ? `${typingStates[0].actorLabel} is typing`
+    : undefined;
 
   return (
     <>
@@ -232,8 +256,16 @@ export function ChatWindow({ conversation, messages, loading, conversationId }: 
         messages={chatMessages}
         loading={loading}
         onRetry={handleRetry}
-        typing={isSending}
+        typing={typingStates.length > 0}
+        typingLabel={typingLabel}
         conversationId={conversationId}
+        readState={readState}
+        onMarkRead={onMarkRead}
+        hasMoreBefore={pageInfo?.hasMoreBefore ?? false}
+        loadingBefore={loadBeforeMessages.isPending}
+        loadBefore={(beforeMessageId) => loadBeforeMessages.mutateAsync(beforeMessageId).then(() => undefined)}
+        jumpToMessageId={jumpToMessageId}
+        loadAroundMessage={loadAroundMessage}
       />
       {pendingSend && (
         <div className="border-t border-oa-border px-4 py-3 bg-oa-surface">

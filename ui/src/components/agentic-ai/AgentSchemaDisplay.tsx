@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Braces, Copy, Check, ChevronDown, ChevronRight, Search, Eye, EyeOff } from "lucide-react";
 
 interface SchemaField {
@@ -41,6 +41,15 @@ export function AgentSchemaDisplay({
   const [rawMode, setRawMode] = useState(false);
   const [copied, setCopied] = useState(false);
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set(["root"]));
+  const copyTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (copyTimerRef.current !== null) {
+        window.clearTimeout(copyTimerRef.current);
+      }
+    };
+  }, []);
 
   const togglePath = (path: string) => {
     setExpandedPaths((prev) => {
@@ -54,7 +63,13 @@ export function AgentSchemaDisplay({
   const handleCopy = async () => {
     await navigator.clipboard.writeText(JSON.stringify(schema, null, 2));
     setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    if (copyTimerRef.current !== null) {
+      window.clearTimeout(copyTimerRef.current);
+    }
+    copyTimerRef.current = window.setTimeout(() => {
+      copyTimerRef.current = null;
+      setCopied(false);
+    }, 2000);
   };
 
   const fallback: SchemaField[] = Array.isArray(schema)

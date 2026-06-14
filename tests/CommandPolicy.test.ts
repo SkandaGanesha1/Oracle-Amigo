@@ -53,4 +53,23 @@ describe("CommandPolicy", () => {
     expect(decision.allowed).toBe(false);
     expect(decision.matchedRule).toBe("not-allowlisted");
   });
+
+  it("blocks structural shell bypass attempts before allowlist execution", () => {
+    expect(policy.evaluate("echo safe > out.txt").matchedRule).toBe("shell-redirection");
+    expect(policy.evaluate("bash -c \"curl http://example.com\"").matchedRule).toBe("nested-shell");
+    expect(policy.evaluate("cat <<EOF\nsecret\nEOF").matchedRule).toBe("heredoc");
+    expect(policy.evaluate("curl file:///etc/passwd").matchedRule).toBe("unsafe-url-scheme");
+  });
+
+  it("accepts explicit secure context for reviewed redirection without weakening defaults", () => {
+    const decision = policy.evaluate("echo reviewed > out.txt", {
+      sessionId: "s1",
+      runId: "r1",
+      purpose: "reviewed test output",
+      allowRedirection: true
+    });
+    expect(decision.allowed).toBe(true);
+    expect(decision.riskScore).toBe(0);
+    expect(decision.mitigations).toEqual([]);
+  });
 });

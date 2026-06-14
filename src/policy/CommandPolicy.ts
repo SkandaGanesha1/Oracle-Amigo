@@ -1,4 +1,6 @@
 import type { PolicyDecision } from "../sandbox/SandboxTypes.js";
+import { validateCommandStructure } from "../security/CommandStructureValidator.js";
+import { parseSecureCommandContext, type SecureCommandContext } from "../security/SecureCommandContext.js";
 
 interface CommandRule {
   id: string;
@@ -14,6 +16,8 @@ export interface CommandPolicyOptions {
 
 export interface NormalizedPolicyDecision extends PolicyDecision {
   normalizedCommand?: string;
+  riskScore?: number;
+  mitigations?: string[];
 }
 
 export class CommandPolicy {
@@ -94,13 +98,16 @@ export class CommandPolicy {
     this.maxTimeoutMs = options.maxTimeoutMs ?? Number(process.env.SANDBOX_MAX_TIMEOUT_MS ?? 120000);
   }
 
-  evaluate(command: string): NormalizedPolicyDecision {
+  evaluate(command: string, context?: Partial<SecureCommandContext>): NormalizedPolicyDecision {
+    const secureContext = parseSecureCommandContext(context);
     if (command.length > this.maxCommandLength) {
       return {
         allowed: false,
         reason: `Command exceeds maximum length of ${this.maxCommandLength} characters`,
         matchedRule: "max-command-length",
-        classification: "resource-control"
+        classification: "resource-control",
+        riskScore: 80,
+        mitigations: ["Shorten the command or move complex logic into reviewed source files."]
       };
     }
 
@@ -110,11 +117,26 @@ export class CommandPolicy {
         allowed: false,
         reason: dynamic.reason,
         matchedRule: dynamic.rule,
-        classification: "credential-exfiltration"
+        classification: "credential-exfiltration",
+        riskScore: 90,
+        mitigations: ["Use a direct allowlisted command entrypoint with explicit arguments."]
       };
     }
 
     const normalizedCommand = normalizeCommand(command);
+    const structure = validateCommandStructure(normalizedCommand, secureContext);
+    if (!structure.allowed) {
+      return {
+        allowed: false,
+        reason: structure.reason,
+        matchedRule: structure.matchedRule,
+        classification: structure.classification,
+        normalizedCommand,
+        riskScore: structure.riskScore,
+        mitigations: structure.mitigations
+      };
+    }
+
     for (const rule of this.rules) {
       if (rule.pattern.test(normalizedCommand)) {
         return {
@@ -122,19 +144,23 @@ export class CommandPolicy {
           reason: rule.reason,
           matchedRule: rule.id,
           classification: rule.classification,
-          normalizedCommand
+          normalizedCommand,
+          riskScore: 85,
+          mitigations: ["Use a narrower allowlisted command or perform the operation through the approved API."]
         };
       }
     }
 
-    const privateNetwork = targetsPrivateNetwork(normalizedCommand);
+    const privateNetwork = !secureContext.allowPrivateNetwork && targetsPrivateNetwork(normalizedCommand);
     if (privateNetwork) {
       return {
         allowed: false,
         reason: "Blocked private or metadata network target",
         matchedRule: "private-network-target",
         classification: "credential-exfiltration",
-        normalizedCommand
+        normalizedCommand,
+        riskScore: 95,
+        mitigations: ["Route network access through a configured network profile and explicit host allowlist."]
       };
     }
 
@@ -146,7 +172,9 @@ export class CommandPolicy {
         reason: `Command '${deniedCommand}' is not allowlisted`,
         matchedRule: "not-allowlisted",
         classification: "review-required",
-        normalizedCommand
+        normalizedCommand,
+        riskScore: 70,
+        mitigations: ["Add a reviewed policy rule for this command before using it."]
       };
     }
 
@@ -154,7 +182,9 @@ export class CommandPolicy {
       allowed: true,
       reason: "Command allowed by policy",
       classification: this.classify(normalizedCommand),
-      normalizedCommand
+      normalizedCommand,
+      riskScore: 0,
+      mitigations: []
     };
   }
 

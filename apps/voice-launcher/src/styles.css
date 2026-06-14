@@ -12,56 +12,122 @@
 html,
 body,
 #root {
-  width: 100%;
-  height: 100%;
+  width: 100vw;
+  height: 100vh;
   margin: 0;
   background: #000000;
   overflow: hidden;
 }
 
 body {
-  min-width: 420px;
-  min-height: 180px;
+  position: fixed;
+  inset: 0;
 }
 
 .voice-shell {
-  width: 100%;
-  height: 100%;
+  position: fixed;
+  inset: 0;
+  min-width: 0;
+  width: 100vw;
+  height: 100vh;
   display: grid;
-  grid-template-rows: minmax(46px, 1fr) 76px 26px;
-  align-items: center;
-  justify-items: center;
-  padding: 18px 24px 14px;
+  place-items: center;
+  padding: 14px 24px 12px;
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 18px;
   background: #000000;
   color: #ffffff;
 }
 
+.voice-content {
+  min-width: 0;
+  width: min(360px, calc(100vw - 48px));
+  max-width: 100%;
+  display: grid;
+  grid-template-rows: 58px 44px 18px;
+  align-items: center;
+  justify-items: center;
+  row-gap: 8px;
+}
+
 .transcript-line {
+  min-width: 0;
   width: 100%;
-  min-height: 42px;
+  max-width: 100%;
+  min-height: 52px;
+  max-height: 52px;
   margin: 0;
   color: #ffffff;
-  font-size: 18px;
+  font-size: 17px;
   line-height: 1.28;
   text-align: center;
   overflow: hidden;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  display: block;
   overflow-wrap: anywhere;
+  text-wrap: balance;
+  word-break: break-word;
 }
 
-.waveform {
-  width: 320px;
-  height: 76px;
-  display: block;
+.voice-wave-loader {
+  --size: 5px;
+  --voice-level: 0;
+  min-width: 0;
+  width: min(260px, 100%);
+  max-width: 100%;
+  height: 44px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: calc(var(--size) / 1.4);
   background: #000000;
+  overflow: hidden;
+}
+
+.voice-wave-bar {
+  width: var(--size);
+  height: calc(var(--size) * 2);
+  border-radius: var(--size);
+  background-color: #ffd700;
+  opacity: 0.55;
+  transform: scaleY(1);
+  transform-origin: center;
+  transition:
+    height 120ms ease,
+    opacity 120ms ease,
+    transform 120ms ease;
+}
+
+.voice-wave-loader.is-speaking .voice-wave-bar {
+  opacity: 0.96;
+  animation: voice-wave 1.45s infinite ease-in-out;
+  animation-delay: calc(var(--bar-index, 0) * 0.055s);
+}
+
+@keyframes voice-wave {
+  0%,
+  100% {
+    height: calc(var(--size) * 2);
+    background-color: #ffd700;
+    transform: scaleY(calc(1 + var(--voice-level) * 0.6));
+  }
+
+  25% {
+    height: calc(var(--size) * (4 + var(--voice-level) * 9));
+    background-color: #fc00ff;
+    transform: scaleY(1);
+  }
+
+  50% {
+    height: calc(var(--size) * (2 + var(--voice-level) * 4));
+    background-color: #9c73f8;
+    transform: scaleY(1);
+  }
 }
 
 .voice-hint {
+  min-width: 0;
   width: 100%;
+  max-width: 100%;
   margin: 0;
   color: rgba(255, 255, 255, 0.58);
   font-size: 12px;

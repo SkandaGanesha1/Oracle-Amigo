@@ -36,6 +36,32 @@ afterEach(() => {
 });
 
 describe("persisted chat API", () => {
+  it("always exposes and opens the local-agent conversation", async () => {
+    const server = buildServer();
+
+    const conversations = await server.inject({ method: "GET", url: "/chat/conversations" });
+    expect(conversations.statusCode).toBe(200);
+    const local = conversations.json().conversations.find((conversation: { id: string }) => conversation.id === "local-agent");
+    expect(local).toMatchObject({
+      id: "local-agent",
+      title: "My local agent",
+      presence: "online"
+    });
+
+    const messages = await server.inject({ method: "GET", url: "/chat/conversations/local-agent/messages" });
+    expect(messages.statusCode).toBe(200);
+    expect(messages.json().conversation).toMatchObject({
+      id: "local-agent",
+      title: "My local agent"
+    });
+    expect(messages.json().readState).toMatchObject({
+      conversationId: "local-agent",
+      unreadCount: 0,
+      mentionCount: 0
+    });
+    await server.close();
+  });
+
   it("creates conversations and persists normal messages", async () => {
     const server = buildServer();
     const created = await server.inject({
@@ -56,11 +82,220 @@ describe("persisted chat API", () => {
 
     const messages = await server.inject({ method: "GET", url: `/chat/conversations/${conversationId}/messages` });
     expect(messages.statusCode).toBe(200);
+    expect(messages.json().conversation).toMatchObject({
+      id: conversationId,
+      title: "Bob Agent"
+    });
     expect(messages.json().messages.some((message: { kind: string; text?: string }) => message.kind === "human" && message.text === "hello bob")).toBe(true);
 
     const db = getDb();
     const attempts = db.prepare("SELECT COUNT(*) AS n FROM message_delivery_attempts WHERE message_id = ?").get("msg-test-1") as { n: number };
     expect(attempts.n).toBeGreaterThan(0);
+    await server.close();
+  });
+
+  it("preserves peer user and agent targets when creating cloud relay conversations", async () => {
+    const server = buildServer();
+    const created = await server.inject({
+      method: "POST",
+      url: "/chat/conversations",
+      payload: {
+        title: "Docin",
+        mode: "cloud_relay",
+        peer_user_id: "usr-docin",
+        peer_agent_instance_id: "agi-docin"
+      }
+    });
+    expect(created.statusCode).toBe(200);
+    expect(created.json().conversation).toMatchObject({
+      title: "Docin",
+      peerUserId: "usr-docin",
+      agentInstanceId: "agi-docin"
+    });
+
+    const messages = await server.inject({
+      method: "GET",
+      url: `/chat/conversations/${created.json().conversation.id}/messages`
+    });
+    expect(messages.statusCode).toBe(200);
+    expect(messages.json().conversation).toMatchObject({
+      peerUserId: "usr-docin",
+      agentInstanceId: "agi-docin"
+    });
+    await server.close();
+  });
+
+  it("persists conversation read state and rejects markers from other conversations", async () => {
+    const chatRepo = new ChatRepository();
+    const conversation = chatRepo.createConversation({ title: "Read State", mode: "local" });
+    const other = chatRepo.createConversation({ title: "Other Read State", mode: "local" });
+    chatRepo.appendMessage({
+      id: "msg-read-1",
+      conversationId: conversation.id,
+      messageType: "human",
+      text: "one",
+      deliveryStatus: "delivered",
+      createdAt: "2026-06-14T10:00:00.000Z"
+    });
+    chatRepo.appendMessage({
+      id: "msg-read-2",
+      conversationId: conversation.id,
+      messageType: "human",
+      text: "two",
+      deliveryStatus: "delivered",
+      createdAt: "2026-06-14T10:01:00.000Z"
+    });
+    chatRepo.appendMessage({
+      id: "msg-other-1",
+      conversationId: other.id,
+      messageType: "human",
+      text: "other",
+      deliveryStatus: "delivered",
+      createdAt: "2026-06-14T10:02:00.000Z"
+    });
+    const server = buildServer();
+
+    const initial = await server.inject({ method: "GET", url: `/chat/conversations/${conversation.id}/messages` });
+    expect(initial.statusCode).toBe(200);
+    expect(initial.json().readState).toMatchObject({
+      conversationId: conversation.id,
+      unreadCount: 2,
+      mentionCount: 0
+    });
+    expect(initial.json().readState.lastReadMessageId).toBeUndefined();
+
+    const rejected = await server.inject({
+      method: "POST",
+      url: `/chat/conversations/${conversation.id}/read-state`,
+      payload: { lastReadMessageId: "msg-other-1" }
+    });
+    expect(rejected.statusCode).toBe(400);
+
+    const updated = await server.inject({
+      method: "POST",
+      url: `/chat/conversations/${conversation.id}/read-state`,
+      payload: { lastReadMessageId: "msg-read-1" }
+    });
+    expect(updated.statusCode).toBe(200);
+    expect(updated.json().readState).toMatchObject({
+      conversationId: conversation.id,
+      lastReadMessageId: "msg-read-1",
+      unreadCount: 1,
+      mentionCount: 0
+    });
+
+    const refreshed = await server.inject({ method: "GET", url: `/chat/conversations/${conversation.id}/messages` });
+    expect(refreshed.json().readState).toMatchObject(updated.json().readState);
+    expect(chatRepo.getConversation(conversation.id)?.unread_count).toBe(1);
+    await server.close();
+  });
+
+  it("persists reply previews, thread summaries, pins, and around-window message jumps", async () => {
+    const chatRepo = new ChatRepository();
+    const conversation = chatRepo.createConversation({ title: "Threaded Chat", mode: "local" });
+    chatRepo.appendMessage({
+      id: "msg-parent",
+      conversationId: conversation.id,
+      messageType: "human",
+      text: "parent message",
+      deliveryStatus: "delivered",
+      createdAt: "2026-06-14T10:00:00.000Z"
+    });
+    for (let i = 0; i < 8; i += 1) {
+      chatRepo.appendMessage({
+        id: `msg-filler-${i}`,
+        conversationId: conversation.id,
+        messageType: "human",
+        text: `filler ${i}`,
+        deliveryStatus: "delivered",
+        createdAt: `2026-06-14T10:0${i + 1}:00.000Z`
+      });
+    }
+    chatRepo.appendMessage({
+      id: "msg-reply",
+      conversationId: conversation.id,
+      messageType: "human",
+      text: "reply body",
+      payload: {
+        reply_to_id: "msg-parent",
+        thread_id: "msg-parent",
+        sender_label: "Docin"
+      },
+      deliveryStatus: "delivered",
+      createdAt: "2026-06-14T10:10:00.000Z"
+    });
+    const server = buildServer();
+
+    const pinned = await server.inject({
+      method: "PATCH",
+      url: `/chat/conversations/${conversation.id}/messages/msg-parent/pin`,
+      payload: { pinned: true }
+    });
+    expect(pinned.statusCode).toBe(200);
+    expect(pinned.json().message).toMatchObject({ id: "msg-parent", pinned: true });
+
+    const messages = await server.inject({ method: "GET", url: `/chat/conversations/${conversation.id}/messages` });
+    expect(messages.statusCode).toBe(200);
+    expect(messages.json().messages).toContainEqual(expect.objectContaining({
+      id: "msg-reply",
+      reply_preview: expect.objectContaining({
+        messageId: "msg-parent",
+        authorLabel: "You",
+        textPreview: "parent message"
+      })
+    }));
+    expect(messages.json().messages).toContainEqual(expect.objectContaining({
+      id: "msg-parent",
+      pinned: true,
+      thread_summary: expect.objectContaining({
+        threadId: "msg-parent",
+        replyCount: 1
+      })
+    }));
+
+    const thread = await server.inject({ method: "GET", url: `/chat/conversations/${conversation.id}/threads/msg-parent` });
+    expect(thread.statusCode).toBe(200);
+    expect(thread.json().replies).toContainEqual(expect.objectContaining({ id: "msg-reply", text: "reply body" }));
+
+    const createdReply = await server.inject({
+      method: "POST",
+      url: `/chat/conversations/${conversation.id}/threads/msg-parent/replies`,
+      payload: { text: "server-backed reply" }
+    });
+    expect(createdReply.statusCode).toBe(200);
+    expect(createdReply.json().message).toMatchObject({
+      kind: "human",
+      text: "server-backed reply",
+      reply_to_id: "msg-parent",
+      thread_id: "msg-parent"
+    });
+
+    const around = await server.inject({
+      method: "GET",
+      url: `/chat/conversations/${conversation.id}/messages?around=msg-filler-4&limit=5`
+    });
+    expect(around.statusCode).toBe(200);
+    expect(around.json().messages.map((message: { id: string }) => message.id)).toContain("msg-filler-4");
+    expect(around.json().pageInfo).toMatchObject({ hasMoreBefore: true, hasMoreAfter: true });
+
+    const before = await server.inject({
+      method: "GET",
+      url: `/chat/conversations/${conversation.id}/messages?before=msg-filler-4&limit=3`
+    });
+    expect(before.statusCode).toBe(200);
+    expect(before.json().messages.map((message: { id: string }) => message.id)).toEqual([
+      "msg-filler-1",
+      "msg-filler-2",
+      "msg-filler-3"
+    ]);
+    expect(before.json().pageInfo).toMatchObject({ hasMoreBefore: true, hasMoreAfter: true });
+
+    const missing = await server.inject({
+      method: "GET",
+      url: `/chat/conversations/${conversation.id}/messages?around=msg-missing&limit=5`
+    });
+    expect(missing.statusCode).toBe(404);
+    expect(missing.json()).toMatchObject({ error: "MESSAGE_NOT_FOUND" });
     await server.close();
   });
 

@@ -2,7 +2,7 @@
 pub fn run() {
   tauri::Builder::default()
     .plugin(tauri_plugin_shell::init())
-    .invoke_handler(tauri::generate_handler![show_voice_window])
+    .invoke_handler(tauri::generate_handler![hide_voice_window, show_voice_window])
     .setup(|app| {
       #[cfg(desktop)]
       {
@@ -29,6 +29,17 @@ pub fn run() {
     })
     .run(tauri::generate_context!())
     .expect("error while running Oracle Amigo Quick Voice");
+}
+
+#[tauri::command]
+fn hide_voice_window(app: tauri::AppHandle) -> Result<(), String> {
+  use tauri::Manager;
+
+  let window = app
+    .get_webview_window("main")
+    .ok_or_else(|| "voice launcher window not found".to_string())?;
+  window.hide().map_err(|err| err.to_string())?;
+  Ok(())
 }
 
 #[tauri::command]

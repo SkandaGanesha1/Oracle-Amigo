@@ -389,7 +389,7 @@ export interface AuditEvent {
   createdAt: string;
 }
 
-export interface HumanChatMessage {
+export interface HumanChatMessage extends TimelineMessageMeta {
       kind: "human";
       id: string;
       conversation_id: string;
@@ -406,7 +406,7 @@ export interface HumanChatMessage {
       delivery_status_updated_at?: string | null;
 }
 
-export interface AgentStatusMessage {
+export interface AgentStatusMessage extends TimelineMessageMeta {
       kind: "agent_status";
       id: string;
       task_id: string;
@@ -441,6 +441,53 @@ export interface MessageReaction {
   users: string[];
 }
 
+export type MessageOriginSide = "local" | "remote" | "system";
+export type MessageAuthorKind = "user" | "local_agent" | "remote_agent" | "system";
+
+export interface ReplyPreview {
+  messageId: string;
+  authorLabel: string;
+  textPreview: string;
+  deleted?: boolean;
+}
+
+export interface ThreadParticipant {
+  id: string;
+  label: string;
+  avatarUrl?: string;
+}
+
+export interface ThreadSummary {
+  threadId: string;
+  replyCount: number;
+  lastReplyAt?: string;
+  participants: ThreadParticipant[];
+}
+
+export interface TimelineMessageMeta {
+  client_message_id?: string | null;
+  origin_side?: MessageOriginSide;
+  author_id?: string | null;
+  author_kind?: MessageAuthorKind;
+  author_label?: string;
+  author_avatar_url?: string | null;
+  edited_at?: string | null;
+  deleted_at?: string | null;
+  reply_to_id?: string | null;
+  reply_preview?: ReplyPreview | null;
+  thread_id?: string | null;
+  thread_count?: number;
+  thread_summary?: ThreadSummary | null;
+  pinned?: boolean;
+  reactions?: MessageReaction[];
+  attachments?: Array<Record<string, unknown>>;
+  embeds?: Array<Record<string, unknown>>;
+  moderation?: {
+    state: "visible" | "hidden" | "deleted" | "quarantined" | "redacted";
+    reason?: string;
+  };
+}
+
 export interface SuggestedPrompt {
   text: string;
   category: "approval" | "mission" | "search" | "memory";
@@ -462,6 +509,26 @@ export interface ChatSplitViewContext {
   actions: string[];
 }
 
+export interface ConversationReadState {
+  conversationId: string;
+  lastReadMessageId?: string;
+  unreadCount: number;
+  mentionCount: number;
+}
+
+export interface ConversationMessagesResult {
+  conversationId: string;
+  conversation?: Conversation;
+  messages: TimelineMessage[];
+  pageInfo?: {
+    hasMoreBefore: boolean;
+    hasMoreAfter: boolean;
+    oldestMessageId?: string;
+    newestMessageId?: string;
+  };
+  readState: ConversationReadState;
+}
+
 export interface ThreadedMessage {
   id: string;
   parentMessageId: string;
@@ -474,7 +541,7 @@ export interface ThreadedMessage {
 
 export type ChatViewMode = "main_timeline" | "threaded" | "thinking_bar_expanded" | "privacy_masked";
 
-export interface ThinkingBarMessage {
+export interface ThinkingBarMessage extends TimelineMessageMeta {
   kind: "thinking_bar";
   id: string;
   run_id: string;
@@ -485,7 +552,7 @@ export interface ThinkingBarMessage {
   sourceMessageIds: string[];
 }
 
-export interface SystemEventMessage {
+export interface SystemEventMessage extends TimelineMessageMeta {
       kind: "system_event";
       id: string;
       event_type: string;
@@ -494,7 +561,7 @@ export interface SystemEventMessage {
       created_at: string;
 }
 
-export interface FileRequestMessage {
+export interface FileRequestMessage extends TimelineMessageMeta {
       kind: "file_request";
       id: string;
       task_id: string;
@@ -507,14 +574,14 @@ export interface FileRequestMessage {
       details?: Record<string, unknown>;
 }
 
-export interface FileCandidateApprovalMessage {
+export interface FileCandidateApprovalMessage extends TimelineMessageMeta {
       kind: "approval";
       id: string;
       created_at: string;
       card: FileCandidateApprovalCard;
 }
 
-export interface TransferProgressMessage {
+export interface TransferProgressMessage extends TimelineMessageMeta {
       kind: "transfer";
       id: string;
       transfer_id: string;
@@ -527,7 +594,7 @@ export interface TransferProgressMessage {
       created_at: string;
 }
 
-export interface FileReceiptMessage {
+export interface FileReceiptMessage extends TimelineMessageMeta {
       kind: "receipt";
       id: string;
       transfer_id: string;
@@ -542,7 +609,7 @@ export interface FileReceiptMessage {
       hash_verified: boolean;
 }
 
-export interface A2ATaskMessage {
+export interface A2ATaskMessage extends TimelineMessageMeta {
   kind: "a2a_task";
   id: string;
   task_id: string;
@@ -677,6 +744,7 @@ export interface Conversation {
   agentInstanceId: string | null;
   presence: PresenceState;
   unread: number;
+  readState?: ConversationReadState;
   lastMessage: string;
   pendingApprovals: number;
   transferCount: number;

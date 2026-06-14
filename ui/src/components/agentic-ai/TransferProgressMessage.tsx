@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { Link } from "react-router-dom";
 import { ContextMenu } from "radix-ui";
@@ -12,6 +12,7 @@ interface TransferProgressMessageProps {
 
 export function TransferProgressMessage({ message }: TransferProgressMessageProps) {
   const [copied, setCopied] = useState<"hash" | "id" | null>(null);
+  const copyTimerRef = useRef<number | null>(null);
   const statusConfig: Record<string, { icon: typeof Upload; color: string; label: string }> = {
     preparing: { icon: RotateCw, color: "text-oa-amber", label: "Preparing" },
     uploading: { icon: Upload, color: "text-oa-blue", label: "Uploading" },
@@ -29,11 +30,25 @@ export function TransferProgressMessage({ message }: TransferProgressMessageProp
   const isComplete = message.status === "stored" || message.status === "available";
   const fileName = safeDisplayText(message.file_name);
 
+  useEffect(() => {
+    return () => {
+      if (copyTimerRef.current !== null) {
+        window.clearTimeout(copyTimerRef.current);
+      }
+    };
+  }, []);
+
   const copyValue = useCallback(async (value: string, type: "hash" | "id") => {
     try {
       await navigator.clipboard.writeText(value);
       setCopied(type);
-      setTimeout(() => setCopied(null), 1600);
+      if (copyTimerRef.current !== null) {
+        window.clearTimeout(copyTimerRef.current);
+      }
+      copyTimerRef.current = window.setTimeout(() => {
+        copyTimerRef.current = null;
+        setCopied(null);
+      }, 1600);
     } catch {
       // Clipboard can be unavailable in restricted browser contexts.
     }

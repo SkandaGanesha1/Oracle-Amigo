@@ -1,5 +1,5 @@
 import { Check, Copy, Heart, Laugh, MessageSquareQuote, Pin, RotateCcw, Sparkles, ThumbsUp } from "lucide-react";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useMessageReactions } from "../../lib/messageReactions";
 
 interface MessageActionsProps {
@@ -30,12 +30,27 @@ export function MessageActions({
 }: MessageActionsProps) {
   const [copied, setCopied] = useState(false);
   const { reactions, toggleReaction } = useMessageReactions(messageId);
+  const copyTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (copyTimerRef.current !== null) {
+        window.clearTimeout(copyTimerRef.current);
+      }
+    };
+  }, []);
 
   const handleCopy = useCallback(async () => {
     try {
       await navigator.clipboard.writeText(text);
       setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      if (copyTimerRef.current !== null) {
+        window.clearTimeout(copyTimerRef.current);
+      }
+      copyTimerRef.current = window.setTimeout(() => {
+        copyTimerRef.current = null;
+        setCopied(false);
+      }, 2000);
     } catch {
       // Clipboard can be unavailable in restricted browser contexts.
     }

@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { z, ZodError } from "zod";
-import { VoiceCommandRequestSchema } from "./VoiceCommandTypes.js";
+import { VoiceCommandRequestSchema, VoiceTranscribeRequestSchema, type VoiceTranscribeRequest } from "./VoiceCommandTypes.js";
 import { VoiceCommandError, VoiceCommandService } from "./VoiceCommandService.js";
 
 const CommandIdParamsSchema = z.object({
@@ -17,6 +17,15 @@ export function registerVoiceCommandRoutes(
     localAgent: "online",
     ...getStatus()
   }));
+
+  server.post("/voice/transcribe", async (request, reply) => {
+    try {
+      const body = VoiceTranscribeRequestSchema.parse(request.body ?? {});
+      return await transcribeVoiceAudio(body, reply);
+    } catch (err) {
+      return sendVoiceError(reply, err);
+    }
+  });
 
   server.post("/voice/commands", async (request, reply) => {
     try {
@@ -56,6 +65,45 @@ export function registerVoiceCommandRoutes(
   });
 }
 
+async function transcribeVoiceAudio(body: VoiceTranscribeRequest, reply: FastifyReply): Promise<unknown> {
+  const providerUrl = process.env.ORACLE_AMIGO_TRANSCRIBE_URL?.trim();
+  if (!providerUrl) {
+    return reply.status(501).send({
+      error: "VOICE_TRANSCRIBER_UNAVAILABLE",
+      message: "No local speech-to-text provider is configured for /voice/transcribe."
+    });
+  }
+
+  const response = await fetch(providerUrl, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      audioBase64: body.audioBase64,
+      locale: body.locale,
+      mimeType: body.mimeType,
+      source: body.source
+    })
+  });
+  const payload = await response.json().catch(() => null);
+  if (!response.ok) {
+    const message = isRecord(payload) && typeof payload.message === "string"
+      ? payload.message
+      : "Speech-to-text provider failed.";
+    return reply.status(response.status).send({ error: "VOICE_TRANSCRIPTION_FAILED", message });
+  }
+  if (!isRecord(payload) || typeof payload.transcript !== "string" || !payload.transcript.trim()) {
+    return reply.status(502).send({
+      error: "VOICE_TRANSCRIPTION_FAILED",
+      message: "Speech-to-text provider returned no transcript."
+    });
+  }
+  return {
+    confidence: typeof payload.confidence === "number" ? payload.confidence : undefined,
+    provider: typeof payload.provider === "string" ? payload.provider : "local",
+    transcript: payload.transcript.trim()
+  };
+}
+
 function sendVoiceError(reply: FastifyReply, err: unknown): void {
   if (err instanceof ZodError) {
     reply.status(400).send({ error: "INVALID_VOICE_COMMAND", message: err.issues[0]?.message ?? "Invalid voice command" });
@@ -67,4 +115,8 @@ function sendVoiceError(reply: FastifyReply, err: unknown): void {
   }
   const message = err instanceof Error ? err.message : String(err);
   reply.status(500).send({ error: "VOICE_COMMAND_FAILED", message });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }

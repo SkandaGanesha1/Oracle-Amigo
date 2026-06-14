@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Copy, Check, ChevronDown, ChevronRight, Terminal } from "lucide-react";
 
 interface AgentCodeBlockProps {
@@ -20,11 +20,26 @@ export function AgentCodeBlock({
 }: AgentCodeBlockProps) {
   const [copied, setCopied] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
+  const copyTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (copyTimerRef.current !== null) {
+        window.clearTimeout(copyTimerRef.current);
+      }
+    };
+  }, []);
 
   const handleCopy = async () => {
     await navigator.clipboard.writeText(code);
     setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    if (copyTimerRef.current !== null) {
+      window.clearTimeout(copyTimerRef.current);
+    }
+    copyTimerRef.current = window.setTimeout(() => {
+      copyTimerRef.current = null;
+      setCopied(false);
+    }, 2000);
   };
 
   const lines = code.split("\n");

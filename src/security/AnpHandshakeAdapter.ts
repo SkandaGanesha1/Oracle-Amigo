@@ -157,7 +157,7 @@ export async function verifyHandshakeOffer(
   }
   const resolution = await ctx.didCache.resolve(fields.from_did);
   if (!resolution) return { valid: false, reason: "did_unresolved" };
-  if (resolution.publicKeyHex !== publicKeyHex) {
+  if (!verifyAnpPayload(fields, offer.signature, resolution.publicKeyHex)) {
     return { valid: false, reason: "did_key_mismatch" };
   }
   if (!ctx.replayStore.checkAndRecord(fields.to_peer, fields.offer_id, fields.nonce, ctx.now().getTime())) {
@@ -233,7 +233,7 @@ export async function verifyHandshakeResponse(
   }
   const resolution = await ctx.didCache.resolve(fields.from_did);
   if (!resolution) return { valid: false, reason: "did_unresolved" };
-  if (resolution.publicKeyHex !== publicKeyHex) {
+  if (!verifyAnpPayload(fields, response.signature, resolution.publicKeyHex)) {
     return { valid: false, reason: "did_key_mismatch" };
   }
   if (!ctx.replayStore.checkAndRecord(fields.to_peer, fields.offer_id, response.nonce, ctx.now().getTime())) {

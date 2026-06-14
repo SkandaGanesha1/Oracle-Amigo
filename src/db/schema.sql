@@ -51,7 +51,9 @@ CREATE TABLE IF NOT EXISTS conversations (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   last_message_at TEXT,
-  unread_count INTEGER NOT NULL DEFAULT 0
+  last_read_message_id TEXT,
+  unread_count INTEGER NOT NULL DEFAULT 0,
+  mention_count INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS conversation_participants (

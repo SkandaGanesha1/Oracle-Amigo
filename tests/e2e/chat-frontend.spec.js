@@ -40,6 +40,7 @@ test.describe("Oracle Amigo routed chat frontend", () => {
     await expect(page.getByRole("banner")).not.toContainText("Inbox");
     await expect(page.getByRole("banner")).not.toContainText("Chats");
     await expect(page.getByRole("banner")).not.toContainText("Settings");
+    await expect(page.getByRole("banner")).not.toContainText("Log out");
     await expect(page.getByRole("navigation", { name: "Intent Inbox" })).toBeVisible();
     await expect(page.getByRole("main", { name: "Main content" })).toBeVisible();
     await expect(page.getByRole("main", { name: "Main content" })).toContainText("Intent Inbox");
@@ -86,8 +87,20 @@ test.describe("Oracle Amigo routed chat frontend", () => {
     expect(badgeStyle.backgroundColor).not.toBe("rgba(0, 0, 0, 0)");
     expect(badgeStyle.backgroundColor).toBe("rgb(34, 197, 94)");
 
+    await openAccountDropdown(page);
+    await page.getByRole("menuitem", { name: "Profile" }).click();
+    const profileDrawer = page.getByRole("dialog", { name: "Account profile drawer" });
+    await expect(profileDrawer).toBeVisible();
+    await expect(profileDrawer).toContainText("User Profile");
+    await expect(profileDrawer).toContainText("Device & Agent");
+    for (const label of ["Name", "Email", "User ID", "Device ID", "Agent ID", "Agent Instance", "Connection"]) {
+      await expect(profileDrawer).toContainText(label);
+    }
+    await profileDrawer.getByRole("button", { name: "Close profile drawer" }).click();
+    await expect(profileDrawer).toBeHidden();
+
     await oracleButton.click();
-    await expect(page).toHaveURL(/\/chats$/);
+    await expect(page).toHaveURL(/\/chats(?:\/local-agent)?$/);
   });
 
   test("logs out from the active shell and returns to login", async ({ page }) => {
@@ -100,7 +113,8 @@ test.describe("Oracle Amigo routed chat frontend", () => {
 
     await page.goto("/");
     await expect(page).toHaveURL(/\/inbox$/);
-    await page.getByRole("button", { name: "Log out" }).click();
+    await openAccountDropdown(page);
+    await page.getByRole("menuitem", { name: "Log out" }).click();
 
     await expect(page).toHaveURL(/\/login$/);
     await expect(page.getByRole("heading", { name: "Oracle Amigo" })).toBeVisible();
@@ -127,7 +141,8 @@ test.describe("Oracle Amigo routed chat frontend", () => {
       await expect(main).not.toContainText(/coming soon/i);
     }
 
-    await page.getByRole("button", { name: "Settings" }).click();
+    await openAccountDropdown(page);
+    await page.getByRole("menuitem", { name: "Settings" }).click();
     await expect(page).toHaveURL(/\/settings$/);
     await expect(page.getByRole("main", { name: "Main content" })).toContainText("Account");
   });
@@ -182,6 +197,14 @@ test.describe("Oracle Amigo routed chat frontend", () => {
   });
 });
 
+async function openAccountDropdown(page) {
+  const rail = page.getByLabel("People and inbox rail");
+  await rail.getByRole("button", { name: /Account profile:/ }).click();
+  await expect(page.getByRole("menuitem", { name: "Profile" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "Settings" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "Log out" })).toBeVisible();
+}
+
 async function mockCloudStatus(page, status) {
   await page.route("**/cloud/status", (route) => route.fulfill({
     json: status,
@@ -229,6 +252,16 @@ async function mockEnrolledAgent(page, options = {}) {
     await mockCloudStatus(page, cloudStatus("enrolled"));
   }
   await page.route("**/health", (route) => route.fulfill({ json: { status: "ok", dryRun: true } }));
+  await page.route("**/cloud/me", (route) => route.fulfill({
+    json: {
+      user: {
+        user_id: "user-alice",
+        email: "alice@example.com",
+        display_name: "Alice",
+        status: "enrolled"
+      }
+    }
+  }));
   await page.route("**/relay/inbox/status", (route) => route.fulfill({ json: { running: true, lastItemCount: 0, lastError: null } }));
   await page.route("**/cloud/contacts", (route) => route.fulfill({ json: { contacts: [] } }));
   await page.route("**/cloud/directory/users**", (route) => route.fulfill({ json: { users: [] } }));

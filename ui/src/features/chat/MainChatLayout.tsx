@@ -1,8 +1,9 @@
 import { useEffect, useState, useCallback } from "react";
 import { AnimatePresence } from "framer-motion";
 import { useParams, useNavigate } from "react-router-dom";
-import { Search, MessageSquareText, ListTodo } from "lucide-react";
-import { useConversations, useConversationMessages } from "../../hooks/queries";
+import { AlertTriangle, Search, MessageSquareText, ListTodo, RefreshCw } from "lucide-react";
+import { useConversations, useConversationMessages, useCreateThreadReply, useUpdateConversationReadState } from "../../hooks/queries";
+import { ApiRequestError } from "../../api/localAgentClient";
 import { ConversationHeader } from "./ConversationHeader";
 import { ChatWindow } from "./ChatWindow";
 import { RightInspectorPanel } from "../inspector/RightInspectorPanel";
@@ -24,6 +25,17 @@ function messageTitle(message: TimelineMessage): string {
   return "A2A task";
 }
 
+function messagePreviewText(message: TimelineMessage): string {
+  if (message.kind === "human") return message.text;
+  if (message.kind === "system_event") return message.text;
+  if (message.kind === "agent_status") return message.status_text;
+  if (message.kind === "file_request") return message.natural_language_request;
+  if (message.kind === "approval") return message.card.request_text;
+  if (message.kind === "transfer") return message.file_name;
+  if (message.kind === "receipt") return message.file_name;
+  return messageTitle(message);
+}
+
 function useInspectorState() {
   const [inspectorOpen, setInspectorOpen] = useState(false);
 
@@ -43,16 +55,103 @@ function useInspectorState() {
   return { inspectorOpen, toggleInspector, closeInspector };
 }
 
+function conversationLoadErrorCopy(error: unknown): { title: string; message: string } {
+  if (error instanceof ApiRequestError) {
+    if (error.status === 401) {
+      return {
+        title: "Local agent session unavailable",
+        message: "Reload this local app window to refresh the secure browser session, then open the chat again."
+      };
+    }
+    if (error.status === 404) {
+      return {
+        title: "Conversation not found",
+        message: "This chat could not be found locally. Reopen your local agent chat or select another person from the rail."
+      };
+    }
+    return {
+      title: "Conversation failed to load",
+      message: error.message || `The local agent returned HTTP ${error.status}.`
+    };
+  }
+  return {
+    title: "Conversation failed to load",
+    message: error instanceof Error ? error.message : "The local agent could not load this conversation."
+  };
+}
+
+function ConversationLoadErrorPanel({
+  error,
+  onRetry,
+  onOpenLocalAgent,
+}: {
+  error: unknown;
+  onRetry: () => void;
+  onOpenLocalAgent: () => void;
+}) {
+  const copy = conversationLoadErrorCopy(error);
+  const isMissing = error instanceof ApiRequestError && error.status === 404;
+
+  return (
+    <div className="flex flex-1 items-center justify-center px-6">
+      <div className="flex max-w-md flex-col items-center gap-4 text-center">
+        <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-oa-surface ring-1 ring-oa-border">
+          <AlertTriangle className="h-7 w-7 text-oa-red" />
+        </div>
+        <div className="space-y-1">
+          <h2 className="text-base font-semibold text-oa-text">{copy.title}</h2>
+          <p className="text-sm leading-6 text-oa-text-muted">{copy.message}</p>
+        </div>
+        <div className="flex flex-wrap justify-center gap-2">
+          <button
+            type="button"
+            onClick={onRetry}
+            className="inline-flex min-h-[40px] items-center gap-2 rounded-lg bg-oa-blue px-3 py-2 text-sm font-medium text-white transition hover:bg-oa-blue/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oa-blue focus-visible:ring-offset-2"
+          >
+            <RefreshCw className="h-4 w-4" />
+            Retry
+          </button>
+          {isMissing && (
+            <button
+              type="button"
+              onClick={onOpenLocalAgent}
+              className="inline-flex min-h-[40px] items-center rounded-lg border border-oa-border bg-oa-surface px-3 py-2 text-sm font-medium text-oa-text transition hover:bg-oa-surface-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oa-blue focus-visible:ring-offset-2"
+            >
+              Open local agent
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function MainChatLayout() {
   const { conversationId } = useParams<{ conversationId?: string }>();
   const { data: conversationsData } = useConversations();
-  const { data: messagesData, isLoading } = useConversationMessages(conversationId ?? null);
+  const {
+    data: messagesData,
+    error: messagesError,
+    isError: messagesIsError,
+    isLoading,
+    refetch: refetchMessages,
+  } = useConversationMessages(conversationId ?? null);
+  const updateReadState = useUpdateConversationReadState(conversationId ?? null);
   const { inspectorOpen, toggleInspector, closeInspector } = useInspectorState();
   const [threadSubject, setThreadSubject] = useState<ThreadSubject | null>(null);
+  const createThreadReply = useCreateThreadReply(conversationId ?? null, threadSubject?.messageId ?? null);
   const navigate = useNavigate();
 
-  const activeConversation = conversationsData?.conversations?.find((c) => c.id === conversationId) ?? null;
+  const localConversationId = conversationsData?.conversations?.find((conversation) => conversation.id === "local-agent")?.id;
+  const activeConversation = conversationsData?.conversations?.find((c) => c.id === conversationId) ?? messagesData?.conversation ?? null;
   const messages = messagesData?.messages ?? [];
+  const readState = messagesData?.readState ?? activeConversation?.readState ?? null;
+
+  const handleMarkRead = useCallback((messageId: string) => {
+    if (!conversationId || updateReadState.isPending) return;
+    if (readState?.lastReadMessageId === messageId && readState.unreadCount === 0) return;
+    updateReadState.mutate(messageId);
+  }, [conversationId, readState?.lastReadMessageId, readState?.unreadCount, updateReadState]);
 
   useEffect(() => {
     function handleReply(event: Event) {
@@ -71,6 +170,23 @@ export function MainChatLayout() {
     return () => window.removeEventListener("oa-reply-to-message", handleReply);
   }, [messages]);
 
+  useEffect(() => {
+    function handleOpenThread(event: Event) {
+      const threadId = (event as CustomEvent<{ threadId?: string }>).detail?.threadId;
+      if (!threadId) return;
+      const message = messages.find((m) => m.id === threadId || m.thread_id === threadId);
+      setThreadSubject({
+        messageId: threadId,
+        title: message ? messageTitle(message) : "Message",
+        text: message ? messagePreviewText(message) : "",
+        createdAt: message ? messageCreatedAt(message) : new Date().toISOString(),
+        kind: message?.kind,
+      });
+    }
+    window.addEventListener("oa-open-thread", handleOpenThread);
+    return () => window.removeEventListener("oa-open-thread", handleOpenThread);
+  }, [messages]);
+
   const focusDirectorySearch = useCallback(() => {
     navigate("/chats");
     window.setTimeout(() => {
@@ -78,24 +194,44 @@ export function MainChatLayout() {
     }, 0);
   }, [navigate]);
 
+  useEffect(() => {
+    if (conversationId || conversationsData === undefined) return;
+    navigate(`/chats/${localConversationId ?? "local-agent"}`, { replace: true });
+  }, [conversationId, conversationsData, localConversationId, navigate]);
+
   return (
     <div className="chat-canvas flex h-full w-full">
       <div className="flex flex-1 flex-col min-w-0">
-        {activeConversation && conversationId ? (
+        {conversationId && (activeConversation || isLoading || messagesIsError) ? (
           <>
-            <ConversationHeader
-              conversation={activeConversation}
-              onToggleInspector={toggleInspector}
-              inspectorOpen={inspectorOpen}
-            />
+            {activeConversation && (
+              <ConversationHeader
+                conversation={activeConversation}
+                onToggleInspector={toggleInspector}
+                inspectorOpen={inspectorOpen}
+              />
+            )}
             <div className="flex flex-1 overflow-hidden">
               <div className="flex flex-1 flex-col min-w-0 bg-oa-chat-bg">
-                <ChatWindow
-                  conversation={activeConversation}
-                  messages={messages}
-                  loading={isLoading}
-                  conversationId={conversationId}
-                />
+                {activeConversation ? (
+                  <ChatWindow
+                    conversation={activeConversation}
+                    messages={messages}
+                    loading={isLoading}
+                    conversationId={conversationId}
+                    readState={readState}
+                    pageInfo={messagesData?.pageInfo}
+                    onMarkRead={handleMarkRead}
+                  />
+                ) : messagesIsError ? (
+                  <ConversationLoadErrorPanel
+                    error={messagesError}
+                    onRetry={() => void refetchMessages()}
+                    onOpenLocalAgent={() => navigate("/chats/local-agent", { replace: true })}
+                  />
+                ) : (
+                  <div className="flex flex-1 items-center justify-center text-sm text-oa-text-muted">Loading conversation...</div>
+                )}
               </div>
 
               {inspectorOpen && (
@@ -144,6 +280,9 @@ export function MainChatLayout() {
           <ThreadDrawer
             subject={threadSubject}
             onClose={() => setThreadSubject(null)}
+            onReply={async (_messageId, text) => {
+              await createThreadReply.mutateAsync(text);
+            }}
           />
         )}
       </AnimatePresence>

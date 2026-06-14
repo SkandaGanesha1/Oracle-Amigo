@@ -15,4 +15,31 @@ describe("SecretPolicy", () => {
     const redacted = new SecretPolicy().redactObject({ npmToken: "abc", nested: { password: "pw" } });
     expect(redacted).toEqual({ npmToken: "[REDACTED]", nested: { password: "[REDACTED]" } });
   });
+
+  it("redacts nested headers, cookies, OpenAI-style keys, and private keys", () => {
+    const policy = new SecretPolicy();
+    const redactedText = policy.redactText([
+      "x-api-key: sk-abcdefghijklmnopqrstuvwxyz",
+      "Cookie: session=abc123",
+      "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----"
+    ].join("\n"));
+    expect(redactedText).not.toContain("sk-abcdefghijklmnopqrstuvwxyz");
+    expect(redactedText).not.toContain("session=abc123");
+    expect(redactedText).not.toContain("BEGIN PRIVATE KEY");
+
+    const redactedObject = policy.redactObject({
+      headers: {
+        Authorization: "Bearer abc",
+        cookie: "sid=123"
+      },
+      safe: "visible"
+    });
+    expect(redactedObject).toEqual({
+      headers: {
+        Authorization: "[REDACTED]",
+        cookie: "[REDACTED]"
+      },
+      safe: "visible"
+    });
+  });
 });

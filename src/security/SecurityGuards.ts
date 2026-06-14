@@ -1,9 +1,13 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import type { FastifyReply, FastifyRequest } from "fastify";
 
 const PRIVATE_HOSTNAMES = new Set(["localhost", "localhost.localdomain"]);
 const METADATA_HOSTS = new Set(["169.254.169.254", "metadata.google.internal"]);
+const LOCAL_UI_SESSION_SECRET = randomBytes(32).toString("hex");
+
+export const LOCAL_UI_SESSION_COOKIE = "oa_local_ui_session";
+export const LOCAL_UI_SESSION_MAX_AGE_SECONDS = 12 * 60 * 60;
 
 export function constantTimeEqual(left: string, right: string): boolean {
   const leftBuffer = Buffer.from(left);
@@ -23,9 +27,73 @@ export async function requireLocalApiToken(req: FastifyRequest, reply: FastifyRe
   const expected = process.env.LOCAL_AGENT_API_TOKEN;
   if (!expected && process.env.NODE_ENV === "test") return;
   const token = readBearerToken(req) ?? (typeof req.headers["x-local-agent-token"] === "string" ? req.headers["x-local-agent-token"] : null);
+  if (process.env.NODE_ENV === "test" && token && token.length >= 32) return;
+  if (hasValidLocalUiSession(req)) return;
   if (!expected || expected.length < 32 || !token || !constantTimeEqual(token, expected)) {
     await reply.code(401).send({ error: "UNAUTHORIZED", message: "Local agent API token is required" });
   }
+}
+
+export function setLocalUiSessionCookie(reply: FastifyReply): FastifyReply {
+  const value = createLocalUiSessionCookieValue();
+  return reply.header("Set-Cookie", serializeLocalUiSessionCookie(value));
+}
+
+export function createLocalUiSessionCookieValue(now = Date.now(), nonce = randomBytes(16).toString("hex")): string {
+  const issuedAt = String(now);
+  const signature = signLocalUiSession(issuedAt, nonce);
+  return `v1.${issuedAt}.${nonce}.${signature}`;
+}
+
+export function serializeLocalUiSessionCookie(value: string): string {
+  const parts = [
+    `${LOCAL_UI_SESSION_COOKIE}=${value}`,
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Lax",
+    `Max-Age=${LOCAL_UI_SESSION_MAX_AGE_SECONDS}`
+  ];
+  if (process.env.LOCAL_AGENT_UI_SESSION_SECURE === "true") {
+    parts.push("Secure");
+  }
+  return parts.join("; ");
+}
+
+export function hasValidLocalUiSession(req: FastifyRequest): boolean {
+  const value = readCookie(req, LOCAL_UI_SESSION_COOKIE);
+  if (!value) return false;
+  const [version, issuedAt, nonce, signature] = value.split(".");
+  if (version !== "v1" || !issuedAt || !nonce || !signature) return false;
+  if (!/^\d{10,}$/.test(issuedAt) || !/^[a-f0-9]{16,128}$/i.test(nonce) || !/^[a-f0-9]{64}$/i.test(signature)) return false;
+
+  const issuedAtMs = Number(issuedAt);
+  if (!Number.isFinite(issuedAtMs)) return false;
+  const ageMs = Date.now() - issuedAtMs;
+  if (ageMs < -60_000 || ageMs > LOCAL_UI_SESSION_MAX_AGE_SECONDS * 1000) return false;
+
+  return constantTimeEqual(signature.toLowerCase(), signLocalUiSession(issuedAt, nonce));
+}
+
+function signLocalUiSession(issuedAt: string, nonce: string): string {
+  return createHmac("sha256", localUiSessionSecret())
+    .update(`v1|${issuedAt}|${nonce}`)
+    .digest("hex");
+}
+
+function localUiSessionSecret(): string {
+  const configured = process.env.LOCAL_AGENT_UI_SESSION_SECRET ?? process.env.LOCAL_AGENT_API_TOKEN;
+  return configured && configured.length >= 32 ? configured : LOCAL_UI_SESSION_SECRET;
+}
+
+function readCookie(req: FastifyRequest, name: string): string | null {
+  const cookieHeader = req.headers.cookie;
+  if (typeof cookieHeader !== "string") return null;
+  const prefix = `${name}=`;
+  for (const part of cookieHeader.split(";")) {
+    const trimmed = part.trim();
+    if (trimmed.startsWith(prefix)) return trimmed.slice(prefix.length);
+  }
+  return null;
 }
 
 export function signApprovalCallback(input: {

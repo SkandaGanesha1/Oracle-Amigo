@@ -20,7 +20,10 @@ describe("localAgentClient", () => {
   it("does not add JSON content type to bodyless GET requests", async () => {
     const fetchMock = vi.fn(async (_path: string, init?: RequestInit) => {
       const headers = new Headers(init?.headers);
+      expect(init?.credentials).toBe("same-origin");
       expect(headers.has("Content-Type")).toBe(false);
+      expect(headers.has("x-local-agent-token")).toBe(false);
+      expect(headers.has("Authorization")).toBe(false);
       return new Response(JSON.stringify({ ok: true }), {
         status: 200,
         headers: { "Content-Type": "application/json" }
@@ -129,6 +132,15 @@ describe("frontend hardening source contracts", () => {
     const realtime = read("ui/src/realtime/RealtimeTransport.ts");
     const legacyChat = read("ui/src/components/StreamLikeChat.tsx");
     const admin = read("ui-admin/src/portal/PortalApp.tsx");
+    const localAgentClient = read("ui/src/api/localAgentClient.ts");
+    const sharedMessage = read("components/ui/message.tsx");
+    const intentChip = read("ui/src/features/chat/FileRequestIntentChip.tsx");
+    const responseStream = read("components/ui/response-stream.tsx");
+    const agentCodeBlock = read("ui/src/components/agentic-ai/AgentCodeBlock.tsx");
+    const messageBubble = read("ui/src/components/stream-like/MessageBubble.tsx");
+    const terminal = read("src/components/ai/terminal.tsx");
+    const stackTrace = read("src/components/ai/stack-trace.tsx");
+    const aiCodeBlock = read("src/components/ai/code-block.tsx");
     expect(redaction).toContain("safeExternalHref");
     expect(redaction).not.toContain("href={apply.data.job.downloadUrl}");
     expect(`${audit}\n${transfer}`).toContain("AbortController");
@@ -150,6 +162,20 @@ describe("frontend hardening source contracts", () => {
     expect(legacyChat).toContain("if (!mountedRef.current) return;");
     expect(admin).toContain("clipboardClearTimerRef");
     expect(admin).toContain("onClearClipboardLater");
+    expect(localAgentClient).not.toContain("VITE_LOCAL_AGENT_API_TOKEN");
+    expect(localAgentClient).not.toContain("ORACLE_AMIGO_LOCAL_AGENT_API_TOKEN");
+    expect(localAgentClient).not.toContain("x-local-agent-token");
+    expect(localAgentClient).toContain("credentials: \"same-origin\"");
+    expect(sharedMessage).toContain("safeMediaSrc(src)");
+    expect(sharedMessage).not.toContain("<AvatarImage src={src}");
+    expect(intentChip).toContain("previewUrlRef");
+    expect(intentChip).toContain("URL.revokeObjectURL(previewUrlRef.current)");
+    expect(responseStream).toContain("mountedRef");
+    expect(responseStream).toContain("controller.signal.aborted || !mountedRef.current");
+    for (const source of [agentCodeBlock, messageBubble, terminal, stackTrace, aiCodeBlock]) {
+      expect(source).toContain("clearTimeout");
+      expect(source).toContain("window.setTimeout");
+    }
   });
 
   it("wraps the routed app in a render error boundary", () => {
@@ -163,13 +189,113 @@ describe("frontend hardening source contracts", () => {
   it("keeps the active message timeline virtualized and accessible", () => {
     const timeline = read("ui/src/features/chat/MessageTimeline.tsx");
     const virtualized = read("ui/src/components/stream-like/VirtualizedMessageList.tsx");
+    const scrollState = read("ui/src/components/stream-like/timelineScrollState.ts");
+    const typingState = read("ui/src/components/stream-like/typingState.ts");
+    const chatWindow = read("ui/src/features/chat/ChatWindow.tsx");
+    const hooks = read("ui/src/hooks/queries.ts");
+    const chatApi = read("ui/src/api/chatApi.ts");
+    const server = read("src/server.ts");
+    const styles = read("ui/src/styles.css");
     expect(timeline).toContain("role=\"log\"");
     expect(timeline).toContain("aria-live=\"polite\"");
+    expect(timeline).toContain("hasMoreBefore?: boolean");
+    expect(timeline).toContain("jumpToMessageId?: string | null");
+    expect(timeline).toContain("loadAroundMessage={loadAroundMessage}");
     expect(virtualized).toContain("useVirtualizer");
     expect(virtualized).toContain("estimateMessageSize");
+    expect(scrollState).toContain("const timelineScrollByConversation = new Map<string, SavedTimelineScroll>();");
+    expect(virtualized).toContain("saveTimelineScroll(conversationId");
+    expect(virtualized).toContain("getTimelineScroll(conversationId)");
+    expect(virtualized).toContain("getItemKey: (index) => messages[index]?.id ?? index");
+    expect(virtualized).toContain("overscan: 16");
+    expect(virtualized).toContain("contain: \"strict\"");
+    expect(virtualized).toContain("overflowAnchor: \"none\"");
+    expect(virtualized).toContain("loadBefore(firstMessage.id)");
+    expect(chatApi).toContain("before?: string");
+    expect(chatApi).toContain("params.set(\"before\", options.before)");
+    expect(hooks).toContain("export function useLoadBeforeMessages");
+    expect(hooks).toContain("before: beforeMessageId");
+    expect(chatWindow).toContain("hasMoreBefore={pageInfo?.hasMoreBefore ?? false}");
+    expect(server).toContain("before: z.string()");
+    expect(server).toContain("getMessagesBefore");
+    expect(virtualized).toContain("effectiveUnreadMessageId === message.id");
+    expect(virtualized).toContain("interface LocalNewMessageState");
+    expect(virtualized).toContain("firstNewMessageId");
+    expect(virtualized).toContain("label=\"Unread messages\"");
+    expect(virtualized).toContain("label=\"New messages\"");
+    expect(virtualized).toContain("onMarkRead(newestMessageId)");
+    expect(virtualized).toContain("jumpToMessageId");
+    expect(virtualized).toContain("loadAroundMessage(jumpToMessageId)");
+    expect(virtualized).toContain("oa-message-jump-highlight");
+    expect(typingState).toContain("interface TypingState");
+    expect(typingState).toContain("TYPING_TTL_MS = 6000");
+    expect(typingState).toContain("removeExpiredTypingStates(Date.now())");
+    expect(typingState).toContain("window.setInterval");
+    expect(typingState).toContain("oa-typing-start");
+    expect(chatWindow).toContain("useTypingStates(conversationId)");
     expect(virtualized).toContain("const showTyping = Boolean(typing)");
     expect(virtualized).toContain("className=\"flex gap-1\"");
     expect(virtualized).not.toContain("motion-safe:flex gap-1 hidden");
+    expect(styles).toContain(".oa-message-jump-highlight");
+    expect(styles).toContain("@keyframes oa-message-jump-pulse");
+  });
+
+  it("renders message attachments and embeds through safe media previews", () => {
+    const bubble = read("ui/src/components/stream-like/MessageBubble.tsx");
+    const attachments = read("ui/src/components/stream-like/MessageAttachments.tsx");
+    const embeds = read("ui/src/components/stream-like/MessageEmbeds.tsx");
+    const media = read("ui/src/components/stream-like/SafeMediaPreview.tsx");
+    const safeUrl = read("ui/src/lib/safeUrl.ts");
+
+    expect(bubble).toContain("<MessageAttachments attachments={message.attachments}");
+    expect(bubble).toContain("<MessageEmbeds embeds={message.embeds}");
+    expect(attachments).toContain("<SafeMediaPreview");
+    expect(embeds).toContain("safeExternalHref");
+    expect(media).toContain("safeMediaSrc(url)");
+    expect(media).toContain("safeExternalHref(url)");
+    expect(safeUrl).toContain("export function safeMediaSrc");
+    expect(safeUrl).toContain("SAFE_DATA_IMAGE_TYPES");
+  });
+
+  it("renders ordinary chat as flat chat message rows while preserving structured cards", () => {
+    const bubble = read("ui/src/components/stream-like/MessageBubble.tsx");
+    const virtualized = read("ui/src/components/stream-like/VirtualizedMessageList.tsx");
+    const timelineModel = read("ui/src/components/stream-like/timelineModel.ts");
+    const styles = read("ui/src/styles.css");
+    const server = read("src/server.ts");
+    const types = read("ui/src/types.ts");
+    const chat = read("ui/src/features/chat/ChatWindow.tsx");
+
+    expect(types).toContain("export interface TimelineMessageMeta");
+    expect(types).toContain("origin_side?: MessageOriginSide");
+    expect(server).toContain("function timelineMeta");
+    expect(server).toContain("pageInfo:");
+    expect(server).toContain("readState:");
+    expect(server).toContain("\"/chat/conversations/:id/read-state\"");
+    expect(virtualized).toContain("buildTimelineMeta(messages)");
+    expect(virtualized).toContain("readState={readState}");
+    expect(virtualized).toContain("meta={rowMeta}");
+    expect(timelineModel).toContain("export function shouldGroupWithPrevious");
+    expect(timelineModel).toContain("export function getUnreadMessageId");
+    expect(timelineModel).toContain("export function messageSide");
+    expect(bubble).toContain("isStructuredCard");
+    expect(bubble).toContain("This message was deleted.");
+    expect(bubble).toContain("hover:bg-white/[0.035]");
+    expect(bubble).toContain("<ApprovalCardMessage");
+    expect(bubble).toContain("<TransferProgressCard");
+    expect(bubble).toContain("<FileRequestCard");
+    expect(bubble).toContain("oa-message-content");
+    expect(styles).toContain(".oa-message-content");
+    expect(chat).toContain("sendAs === \"normal\"");
+    expect(chat).toContain("clientMessageId: crypto.randomUUID()");
+    expect(chat).toContain("setPendingSend({ text, sendAs })");
+  });
+
+  it("keeps chat polling stable with structural message sharing", () => {
+    const hooks = read("ui/src/hooks/queries.ts");
+    expect(hooks).toContain("function shallowEqualRecord");
+    expect(hooks).toContain("function structurallyShareMessages");
+    expect(hooks).toContain("structuralSharing: structurallyShareMessages");
   });
 
   it("keeps routed pages and section rails out of placeholder mode", () => {
@@ -294,23 +420,25 @@ describe("frontend hardening source contracts", () => {
     const header = read("ui/src/features/chat/ConversationHeader.tsx");
     const listItem = read("ui/src/features/chat/ConversationListItem.tsx");
     const bubble = read("ui/src/components/stream-like/MessageBubble.tsx");
+    const timelineModel = read("ui/src/components/stream-like/timelineModel.ts");
     const hooks = read("ui/src/hooks/queries.ts");
     const mapper = read("ui/src/lib/normalizePeerPresence.ts");
     expect(header).toContain("normalizePeerPresence(conversation)");
     expect(listItem).toContain("normalizePeerPresence(conversation)");
     expect(mapper).toContain("Presence unavailable");
     expect(mapper).toContain("Old agent route - switch to current agent");
-    expect(bubble).toContain("direction !== \"incoming\"");
+    expect(timelineModel).toContain("direction !== \"incoming\"");
     expect(bubble).toContain("humanMessage.sender_label");
     expect(bubble).toContain("showRetry={isOutgoingHuman}");
     expect(hooks).toContain("queryKeys.contacts");
   });
 
-  it("uses a Discord-inspired user rail without raw agent rows", () => {
+  it("uses an Oracle Amigo user rail without raw agent rows", () => {
     const shell = read("ui/src/app/AppShell.tsx");
     const rail = read("ui/src/app/UserRail.tsx");
     const model = read("ui/src/app/userRailModel.ts");
     expect(shell).toContain("<UserRail />");
+    expect(rail).toContain("oa-user-rail");
     expect(rail).toContain("Badge.Anchor");
     expect(rail).toContain("Search directory");
     expect(model).toContain("buildRailUsers");
@@ -320,7 +448,34 @@ describe("frontend hardening source contracts", () => {
     expect(model).toContain("directoryByAgentInstanceId");
     expect(model).toContain("peerUserIdForContact");
     expect(rail).toContain("Account profile:");
-    expect(rail).toContain("label=\"Settings\"");
+    expect(rail).toContain("Dropdown");
+    expect(rail).toContain("Drawer");
+    expect(rail).toContain("AccountProfileDrawer");
+    expect(rail).toContain("<ProfileDetails");
+    expect(rail).toContain("id=\"profile\"");
+    expect(rail).toContain("id=\"settings\"");
+    expect(rail).toContain("id=\"logout\"");
+    expect(rail.indexOf("id=\"profile\"")).toBeLessThan(rail.indexOf("id=\"settings\""));
+    expect(rail.indexOf("id=\"settings\"")).toBeLessThan(rail.indexOf("id=\"logout\""));
+    expect(rail).toContain("placement=\"right\"");
+    expect(rail).toContain("aria-label=\"Account profile drawer\"");
+    expect(rail).not.toContain("label=\"Settings\"");
+    expect(rail).toContain("navigate(\"/chats/local-agent\")");
+    expect(rail).toContain("peer_agent_instance_id");
+    expect(model).toContain("agent:${conversation.agentInstanceId}");
+  });
+
+  it("uses focused conversation data so routed chats are not hidden by stale lists", () => {
+    const main = read("ui/src/features/chat/MainChatLayout.tsx");
+    const types = read("ui/src/types.ts");
+    const server = read("src/server.ts");
+    expect(types).toContain("conversation?: Conversation");
+    expect(main).toContain("messagesData?.conversation");
+    expect(main).toContain("messagesIsError");
+    expect(main).toContain("<ConversationLoadErrorPanel");
+    expect(main).toContain("navigate(`/chats/${localConversationId ?? \"local-agent\"}`");
+    expect(server).toContain("conversation: conversationToUi");
+    expect(server).toContain("getOrCreateLocalConversation");
   });
 
   it("wires reply actions to the persistent thread drawer", () => {
@@ -328,11 +483,32 @@ describe("frontend hardening source contracts", () => {
     const bubble = read("ui/src/components/stream-like/MessageBubble.tsx");
     const drawer = read("ui/src/components/stream-like/ThreadDrawer.tsx");
     const threadStore = read("ui/src/lib/messageThreads.ts");
+    const hooks = read("ui/src/hooks/queries.ts");
+    const api = read("ui/src/api/chatApi.ts");
+    const server = read("src/server.ts");
     expect(main).toContain("oa-reply-to-message");
+    expect(main).toContain("oa-open-thread");
     expect(main).toContain("<ThreadDrawer");
+    expect(main).toContain("useCreateThreadReply");
     expect(bubble).toContain("Reply in thread");
+    expect(bubble).toContain("ReplyPreviewCard");
+    expect(bubble).toContain("oa-jump-to-message");
+    expect(bubble).toContain("ThreadSummaryPill");
+    expect(bubble).toContain("usePinMessage");
+    expect(bubble).not.toContain("const [pinned, setPinned]");
     expect(threadStore).toContain("oa-message-threads-v1");
     expect(drawer).toContain("useMessageThread(subject?.messageId)");
+    expect(hooks).toContain("useLoadAroundMessage");
+    expect(hooks).toContain("useThread");
+    expect(hooks).toContain("usePinMessage");
+    expect(api).toContain("around");
+    expect(api).toContain("pinMessage");
+    expect(api).toContain("createThreadReply");
+    expect(server).toContain("\"/chat/conversations/:conversationId/messages/:messageId/pin\"");
+    expect(server).toContain("\"/chat/conversations/:conversationId/threads/:threadId\"");
+    expect(server).toContain("reply_preview");
+    expect(server).toContain("thread_summary");
+    expect(server).toContain("MESSAGE_NOT_FOUND");
   });
 
   it("applies glass/depth styling to the active shell surfaces", () => {
@@ -420,7 +596,8 @@ describe("frontend hardening source contracts", () => {
     expect(hooks).toContain("queryClient.setQueryData<CloudStatus | undefined>(queryKeys.cloudStatus, disconnectedCloudStatus)");
     expect(button).toContain("aria-label=\"Log out\"");
     expect(button).toContain("navigate(\"/login\"");
-    expect(nav).toContain("<LogoutButton />");
+    expect(nav).not.toContain("<LogoutButton />");
+    expect(nav).toContain("<NotificationCenter />");
     expect(service).toContain("remoteRevoked");
     expect(service).toContain("this.store.clearTokens(profileId)");
   });
@@ -439,7 +616,7 @@ describe("frontend hardening source contracts", () => {
     expect(hooks).toContain("clientMessageId: msg.clientMessageId");
     expect(hooks).not.toContain("clientMessageId: crypto.randomUUID()");
     expect(chatWindow).toContain("clientMessageId: messageId");
-    expect(chatWindow).not.toContain("clientMessageId: crypto.randomUUID()");
+    expect(chatWindow).toContain("clientMessageId: crypto.randomUUID()");
   });
 
   it("makes chat empty-state and new-conversation controls focus directory search", () => {

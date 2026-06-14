@@ -1,15 +1,20 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { DatabaseSync } from "node:sqlite";
 
 const SCHEMA_VERSION = 1;
-const schemaPath = join(dirname(fileURLToPath(import.meta.url)), "schema.sql");
+const moduleDir = dirname(fileURLToPath(import.meta.url));
+const schemaPathCandidates = [
+  join(moduleDir, "schema.sql"),
+  join(process.cwd(), "src", "db", "schema.sql"),
+  join(process.cwd(), "dist", "src", "db", "schema.sql")
+];
 
 export function migrate(db: DatabaseSync): void {
   const row = db.prepare("PRAGMA user_version").get() as { user_version: number };
   if (row.user_version < SCHEMA_VERSION) {
-    const schema = readFileSync(schemaPath, "utf8");
+    const schema = readFileSync(resolveSchemaPath(), "utf8");
     db.exec(schema);
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   }
@@ -19,6 +24,14 @@ export function migrate(db: DatabaseSync): void {
   ensureAnpTables(db);
   ensurePhaseFiveTables(db);
   ensureVoiceTables(db);
+}
+
+function resolveSchemaPath(): string {
+  const schemaPath = schemaPathCandidates.find((candidate) => existsSync(candidate));
+  if (!schemaPath) {
+    throw new Error(`Unable to locate database schema.sql. Checked: ${schemaPathCandidates.join(", ")}`);
+  }
+  return schemaPath;
 }
 
 function ensureLocalCloudTables(db: DatabaseSync): void {
@@ -69,7 +82,9 @@ function ensureChatTables(db: DatabaseSync): void {
   addColumnIfMissing(db, "conversations", "peer_agent_instance_id", "TEXT");
   addColumnIfMissing(db, "conversations", "title", "TEXT NOT NULL DEFAULT 'Conversation'");
   addColumnIfMissing(db, "conversations", "last_message_at", "TEXT");
+  addColumnIfMissing(db, "conversations", "last_read_message_id", "TEXT");
   addColumnIfMissing(db, "conversations", "unread_count", "INTEGER NOT NULL DEFAULT 0");
+  addColumnIfMissing(db, "conversations", "mention_count", "INTEGER NOT NULL DEFAULT 0");
   db.exec(`
     UPDATE conversations SET mode = 'local' WHERE mode = 'single-device';
 
