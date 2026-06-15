@@ -475,12 +475,27 @@ describe("frontend hardening source contracts", () => {
   });
 
   it("persists message reactions with stable message IDs", () => {
+    const pkg = read("package.json");
     const store = read("ui/src/lib/messageReactions.ts");
     const actions = read("ui/src/components/stream-like/MessageActions.tsx");
+    const bubble = read("ui/src/components/stream-like/MessageBubble.tsx");
+    const composer = read("ui/src/components/stream-like/MessageComposer.tsx");
+    expect(pkg).toContain("emoji-picker-react");
     expect(store).toContain("oa-message-reactions-v1");
     expect(store).toContain("useSyncExternalStore");
+    expect(store).toContain("LEGACY_REACTION_MAP");
+    expect(store).toContain("like: \"👍\"");
     expect(actions).toContain("useMessageReactions(messageId)");
-    expect(actions).toContain("toggleReaction(\"like\")");
+    expect(actions).toContain("EmojiPicker");
+    expect(actions).toContain("QUICK_REACTIONS");
+    expect(actions).toContain("👍");
+    expect(actions).toContain("allowExpandReactions");
+    expect(actions).toContain("onEmojiClick");
+    expect(actions).not.toContain("toggleReaction(\"like\")");
+    expect(bubble).toContain("mergeReactions(message.reactions, localReactions)");
+    expect(composer).toContain("EmojiPicker");
+    expect(composer).toContain("insertEmoji");
+    expect(composer).toContain("onEmojiClick");
     expect(actions).toContain("oa-message-hover-toolbar");
     expect(actions).toContain("DropdownMenu.Content");
     expect(actions).not.toContain("min-h-[48px]");
@@ -525,6 +540,48 @@ describe("frontend hardening source contracts", () => {
     expect(styles).toContain(".oa-doc-card");
     expect(styles).toContain(".oa-message-hover-toolbar");
     expect(styles).toContain(".oa-composer-dock");
+  });
+
+  it("uses prompt-kit thinking components and keeps chat approval cards lean", () => {
+    const promptThinking = read("components/prompt-kit/thinking-bar.tsx");
+    const promptChain = read("components/prompt-kit/chain-of-thought.tsx");
+    const promptShimmer = read("components/prompt-kit/text-shimmer.tsx");
+    const agentThinking = read("ui/src/components/agentic-ai/ThinkingBar.tsx");
+    const chatThinking = read("ui/src/components/chat/ThinkingBar.tsx");
+    const agentRun = read("ui/src/components/agentic-ai/AgentRunCard.tsx");
+    const typing = read("ui/src/components/stream-like/TypingIndicator.tsx");
+    const approval = read("ui/src/components/agentic-ai/ApprovalCardMessage.tsx");
+    const consent = read("ui/src/features/approvals/ConsentConsole.tsx");
+
+    expect(promptThinking).toContain("export * from \"../ui/thinking-bar\"");
+    expect(promptChain).toContain("export * from \"../ui/chain-of-thought\"");
+    expect(promptShimmer).toContain("export * from \"../ui/text-shimmer\"");
+    expect(agentThinking).toContain("@/components/prompt-kit/text-shimmer");
+    expect(chatThinking).toContain("@/components/prompt-kit/text-shimmer");
+    expect(chatThinking).toContain("@/components/prompt-kit/chain-of-thought");
+    expect(chatThinking).toContain("state.isActive ? (");
+    expect(chatThinking).toContain("<TextShimmer");
+    expect(chatThinking).toContain("<ChainOfThought");
+    expect(chatThinking).toContain("<ChainOfThoughtStep");
+    expect(chatThinking).toContain("<ChainOfThoughtTrigger");
+    expect(chatThinking).toContain("<ChainOfThoughtContent");
+    expect(chatThinking).toContain("<ChainOfThoughtItem");
+    expect(chatThinking).not.toContain("bg-oa-blue/5");
+    expect(chatThinking).not.toContain("border-oa-blue");
+    expect(chatThinking).not.toContain("shadow-sm");
+    expect(chatThinking).not.toContain("Trusted local trace");
+    expect(chatThinking).not.toContain("Private details masked");
+    expect(chatThinking).not.toContain("bg-gradient-to-r");
+    expect(agentThinking).not.toContain("StopCircle");
+    expect(agentThinking).not.toContain("stopLabel");
+    expect(agentThinking).not.toContain("bg-oa-blue/5");
+    expect(agentThinking).not.toContain("border-oa-blue");
+    expect(agentThinking).not.toContain("bg-gradient-to-r");
+    expect(agentRun).not.toContain("onStop={onStop}");
+    expect(typing).not.toContain("showStop={");
+    expect(typing).not.toContain("onStop={onStop}");
+    expect(approval).not.toContain("RedactionEditor");
+    expect(consent).toContain("<RedactionEditor");
   });
 
   it("renders relay peer presence and incoming messages without false offline labels", () => {
@@ -602,7 +659,8 @@ describe("frontend hardening source contracts", () => {
     expect(rail).toContain("navigate(\"/files\")");
     expect(rail).toContain("navigate(\"/tasks\")");
     expect(rail).toContain("navigate(\"/audit\")");
-    expect(rail).toContain("placement=\"right\"");
+    expect(rail).toContain("<DialogPrimitive.Portal>");
+    expect(rail).toContain("className=\"oa-profile-drawer fixed right-0 top-0");
     expect(rail).toContain("aria-label=\"Account profile drawer\"");
     expect(rail).not.toContain("label=\"Settings\"");
     expect(rail).toContain("navigate(\"/chats/local-agent\")");

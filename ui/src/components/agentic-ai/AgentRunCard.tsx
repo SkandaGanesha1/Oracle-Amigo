@@ -103,7 +103,7 @@ export function AgentRunCard({ run, onStop, onPause }: AgentRunCardProps) {
       aria-label="Agent progress card"
     >
       {isRunning && (
-        <ThinkingBar text="Agent is working" onStop={onStop} />
+        <ThinkingBar text="Deep reasoning in progress" />
       )}
 
       {isRunning && (

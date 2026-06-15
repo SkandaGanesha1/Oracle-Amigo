@@ -4,6 +4,7 @@ import { useParams, useNavigate } from "react-router-dom";
 import { AlertTriangle, Search, MessageSquareText, ListTodo, RefreshCw } from "lucide-react";
 import { useConversations, useConversationMessages, useCreateThreadReply, useUpdateConversationReadState } from "../../hooks/queries";
 import { ApiRequestError } from "../../api/localAgentClient";
+import { api } from "../../api/client";
 import { ConversationHeader } from "./ConversationHeader";
 import { ChatWindow } from "./ChatWindow";
 import { RightInspectorPanel } from "../inspector/RightInspectorPanel";
@@ -82,10 +83,12 @@ function conversationLoadErrorCopy(error: unknown): { title: string; message: st
 
 function ConversationLoadErrorPanel({
   error,
+  refreshing,
   onRetry,
   onOpenLocalAgent,
 }: {
   error: unknown;
+  refreshing?: boolean;
   onRetry: () => void;
   onOpenLocalAgent: () => void;
 }) {
@@ -106,10 +109,11 @@ function ConversationLoadErrorPanel({
           <button
             type="button"
             onClick={onRetry}
+            disabled={refreshing}
             className="inline-flex min-h-[40px] items-center gap-2 rounded-lg bg-oa-blue px-3 py-2 text-sm font-medium text-white transition hover:bg-oa-blue/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oa-blue focus-visible:ring-offset-2"
           >
-            <RefreshCw className="h-4 w-4" />
-            Retry
+            <RefreshCw className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`} />
+            {refreshing ? "Refreshing session" : "Retry"}
           </button>
           {isMissing && (
             <button
@@ -139,6 +143,7 @@ export function MainChatLayout() {
   const updateReadState = useUpdateConversationReadState(conversationId ?? null);
   const { inspectorOpen, toggleInspector, closeInspector } = useInspectorState();
   const [threadSubject, setThreadSubject] = useState<ThreadSubject | null>(null);
+  const [refreshingSession, setRefreshingSession] = useState(false);
   const createThreadReply = useCreateThreadReply(conversationId ?? null, threadSubject?.messageId ?? null);
   const navigate = useNavigate();
 
@@ -193,6 +198,21 @@ export function MainChatLayout() {
     }, 0);
   }, [navigate]);
 
+  const retryConversationLoad = useCallback(async () => {
+    if (messagesError instanceof ApiRequestError && messagesError.status === 401) {
+      setRefreshingSession(true);
+      try {
+        await api.refreshLocalUiSession();
+      } catch {
+        window.location.reload();
+        return;
+      } finally {
+        setRefreshingSession(false);
+      }
+    }
+    await refetchMessages();
+  }, [messagesError, refetchMessages]);
+
   return (
     <div className="chat-canvas flex h-full w-full">
       <div className="flex flex-1 flex-col min-w-0">
@@ -220,7 +240,8 @@ export function MainChatLayout() {
                 ) : messagesIsError ? (
                   <ConversationLoadErrorPanel
                     error={messagesError}
-                    onRetry={() => void refetchMessages()}
+                    refreshing={refreshingSession}
+                    onRetry={() => void retryConversationLoad()}
                     onOpenLocalAgent={() => navigate("/chats/local-agent", { replace: true })}
                   />
                 ) : (

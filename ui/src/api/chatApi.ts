@@ -1,4 +1,4 @@
-import type { AgentRunResult, ChatDiagnostics, ChatSendRequest, ChatSendResult, ChatThreadResult, Conversation, ConversationMessagesResult, ConversationReadState, CreateConversationRequest, TimelineMessage } from "./types";
+import type { AgentRunResult, ChatDiagnostics, ChatSendRequest, ChatSendResult, ChatThreadResult, Conversation, ConversationMessagesResult, ConversationReadState, CreateConversationRequest, MessageReaction, TimelineMessage } from "./types";
 import { localAgentClient } from "./localAgentClient";
 
 export const chatApi = {
@@ -25,6 +25,12 @@ export const chatApi = {
       `/chat/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/pin`,
       { pinned }
     ),
+  setMessageReaction: (conversationId: string, messageId: string, emoji: string, active: boolean) => {
+    const path = `/chat/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/reactions/${encodeURIComponent(emoji)}`;
+    return active
+      ? localAgentClient.put<{ reactions: MessageReaction[]; message: TimelineMessage | null }>(path, {})
+      : localAgentClient.delete<{ reactions: MessageReaction[]; message: TimelineMessage | null }>(path);
+  },
   thread: (conversationId: string, threadId: string) =>
     localAgentClient.get<ChatThreadResult>(`/chat/conversations/${encodeURIComponent(conversationId)}/threads/${encodeURIComponent(threadId)}`),
   createThreadReply: (conversationId: string, threadId: string, text: string) =>

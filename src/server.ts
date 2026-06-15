@@ -76,10 +76,10 @@ import { PeerRoutingService } from "./runtime/PeerRoutingService.js";
 import { ApprovalTransferOrchestrator } from "./runtime/ApprovalTransferOrchestrator.js";
 import { resolveFileRequestCandidates, toApprovalCandidatePayload } from "./runtime/FileRequestCandidateResolver.js";
 import { getDeviceTokenRecoveryStatus, structuredEnrollmentError, withRecoveredDeviceToken } from "./runtime/CloudTokenRecovery.js";
-import { ChatRepository, type ChatConversationRecord, type ChatMessageRecord, type ConversationReadState, type DeliveryStatus, type RelayDeliveryReceipt } from "./chat/ChatRepository.js";
+import { ChatRepository, type ChatConversationRecord, type ChatMessageRecord, type ChatMessageReaction, type ConversationReadState, type DeliveryStatus, type RelayDeliveryReceipt } from "./chat/ChatRepository.js";
 import { VoiceCommandService } from "./voice/VoiceCommandService.js";
 import { registerVoiceCommandRoutes } from "./voice/VoiceCommandRoutes.js";
-import { assertPublicHttpsUrl, constantTimeEqual, isPrivateOrMetadataHost, requireLocalApiToken, setLocalUiSessionCookie, signApprovalCallback, verifyApprovalCallbackSignature } from "./security/SecurityGuards.js";
+import { assertPublicHttpsUrl, constantTimeEqual, hasValidLocalUiSession, isPrivateOrMetadataHost, LOCAL_UI_SESSION_COOKIE, requireLocalApiToken, setLocalUiSessionCookie, signApprovalCallback, verifyApprovalCallbackSignature } from "./security/SecurityGuards.js";
 import { createHandshakeContext, verifyHandshakeOffer, verifyHandshakeResponse } from "./security/AnpHandshakeAdapter.js";
 
 const FileSearchSchema = z.object({
@@ -118,6 +118,12 @@ const ChatMessagesQuerySchema = z.object({
 
 const ChatPinSchema = z.object({
   pinned: z.boolean()
+});
+
+const ChatReactionParamsSchema = z.object({
+  conversationId: z.string().trim().min(1).max(200),
+  messageId: z.string().trim().min(1).max(200),
+  emoji: z.string().trim().min(1).max(32).refine((value) => !/[\u0000-\u001F\u007F]/u.test(value), "Invalid emoji")
 });
 
 const ThreadReplySchema = z.object({
@@ -609,7 +615,7 @@ export function buildServer(
     chatRunSubscriptions.clear();
   });
 
-  server.get("/health", async () => ({
+  server.get("/health", async (request) => ({
     status: "ok",
     dryRun: process.env.SANDBOX_DRY_RUN === "true",
     localAgentUrl: localAgentUrl(),
@@ -618,9 +624,23 @@ export function buildServer(
     localUiSession: {
       enabled: true,
       runtime: LOCAL_UI_RUNTIME_VERSION,
-      cookieName: "oa_local_ui_session"
+      cookieName: LOCAL_UI_SESSION_COOKIE,
+      valid: hasValidLocalUiSession(request)
     }
   }));
+
+  server.get("/local-ui-session", async (request, reply) => {
+    const wasValid = hasValidLocalUiSession(request);
+    return withLocalUiAppShell(reply).send({
+      ok: true,
+      localUiSession: {
+        enabled: true,
+        runtime: LOCAL_UI_RUNTIME_VERSION,
+        cookieName: LOCAL_UI_SESSION_COOKIE,
+        wasValid
+      }
+    });
+  });
 
   server.get("/manifest.webmanifest", async () => ({
     name: "Oracle Amigo",
@@ -2587,6 +2607,36 @@ export function buildServer(
     return { message: updated ? messageToTimeline(updated, cloudStore.get()?.agentInstanceId ?? localIdentity.agentId, chatRepo.getMessages(conversationId)) : null };
   });
 
+  async function setChatMessageReaction(request: FastifyRequest, reply: FastifyReply, active: boolean) {
+    const { conversationId, messageId, emoji } = parseBody(ChatReactionParamsSchema, request.params);
+    const message = chatRepo.getMessage(messageId);
+    if (!message || message.conversation_id !== conversationId) {
+      return reply.status(404).send({ error: "MESSAGE_NOT_FOUND", message: "Message not found in this conversation" });
+    }
+    if (emoji.length > 16) {
+      return reply.status(400).send({ error: "INVALID_REACTION", message: "Reaction emoji is too long" });
+    }
+    const cloud = cloudStore.get();
+    const actorId = cloud?.userId ?? cloud?.agentInstanceId ?? localIdentity.agentId;
+    const reactions: ChatMessageReaction[] | null = chatRepo.setMessageReaction(messageId, actorId, emoji, active);
+    if (!reactions) {
+      return reply.status(404).send({ error: "MESSAGE_NOT_FOUND", message: "Message not found in this conversation" });
+    }
+    const updated = chatRepo.updateMessagePayload(messageId, { reactions });
+    return {
+      reactions,
+      message: updated ? messageToTimeline(updated, cloud?.agentInstanceId ?? localIdentity.agentId, chatRepo.getMessages(conversationId)) : null
+    };
+  }
+
+  server.put("/chat/conversations/:conversationId/messages/:messageId/reactions/:emoji", localOnly, async (request, reply) => {
+    return setChatMessageReaction(request, reply, true);
+  });
+
+  server.delete("/chat/conversations/:conversationId/messages/:messageId/reactions/:emoji", localOnly, async (request, reply) => {
+    return setChatMessageReaction(request, reply, false);
+  });
+
   server.get("/chat/conversations/:conversationId/threads/:threadId", localOnly, async (request, reply) => {
     const { conversationId, threadId } = request.params as { conversationId: string; threadId: string };
     const messages = chatRepo.getMessages(conversationId);
@@ -2645,10 +2695,16 @@ export function buildServer(
     return { readState };
   });
 
-  server.get("/chat/diagnostics", localOnly, async () => {
+  server.get("/chat/diagnostics", localOnly, async (request) => {
     const runs = agentRuns.listRuns();
     return {
       backend: "ok",
+      localUiSession: {
+        enabled: true,
+        runtime: LOCAL_UI_RUNTIME_VERSION,
+        cookieName: LOCAL_UI_SESSION_COOKIE,
+        valid: hasValidLocalUiSession(request)
+      },
       agentRuns: {
         active: runs.filter((run) => run.status === "running").length,
         total: runs.length
@@ -2659,11 +2715,6 @@ export function buildServer(
       fileSearch: {
         roots: fileSearch.getRoots(),
         rootCount: fileSearch.getRoots().length
-      },
-      localUiSession: {
-        enabled: true,
-        runtime: LOCAL_UI_RUNTIME_VERSION,
-        cookieName: "oa_local_ui_session"
       }
     };
   });

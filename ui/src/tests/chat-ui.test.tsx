@@ -141,7 +141,8 @@ describe("UserRail", () => {
     expect(source).toContain('navigate("/files")');
     expect(source).toContain('navigate("/tasks")');
     expect(source).toContain('navigate("/audit")');
-    expect(source).toContain("placement=\"right\"");
+    expect(source).toContain("<DialogPrimitive.Portal>");
+    expect(source).toContain("className=\"oa-profile-drawer fixed right-0 top-0");
     expect(source).toContain("aria-label=\"Account profile drawer\"");
     expect(source.indexOf("<AccountProfileDrawer")).toBeLessThan(source.indexOf("function RailProfileButton"));
     expect(source).not.toContain("label=\"Settings\"");

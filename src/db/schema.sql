@@ -97,6 +97,18 @@ CREATE TABLE IF NOT EXISTS chat_messages (
 CREATE INDEX IF NOT EXISTS idx_chat_messages_conversation_created
   ON chat_messages(conversation_id, created_at);
 
+CREATE TABLE IF NOT EXISTS chat_message_reactions (
+  message_id TEXT NOT NULL,
+  actor_id TEXT NOT NULL,
+  emoji TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (message_id, actor_id, emoji),
+  FOREIGN KEY (message_id) REFERENCES chat_messages(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_message_reactions_message
+  ON chat_message_reactions(message_id);
+
 CREATE TABLE IF NOT EXISTS message_delivery_attempts (
   id TEXT PRIMARY KEY,
   message_id TEXT NOT NULL,

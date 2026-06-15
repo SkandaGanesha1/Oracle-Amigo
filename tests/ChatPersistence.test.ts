@@ -360,6 +360,76 @@ describe("persisted chat API", () => {
     await server.close();
   });
 
+  it("persists message reactions and rejects reactions for other conversations", async () => {
+    const chatRepo = new ChatRepository();
+    const conversation = chatRepo.createConversation({ title: "Reaction Chat", mode: "local" });
+    const other = chatRepo.createConversation({ title: "Other Reaction Chat", mode: "local" });
+    chatRepo.appendMessage({
+      id: "msg-reaction-1",
+      conversationId: conversation.id,
+      messageType: "human",
+      text: "react to me",
+      deliveryStatus: "delivered",
+      createdAt: "2026-06-14T10:00:00.000Z"
+    });
+    chatRepo.appendMessage({
+      id: "msg-reaction-other",
+      conversationId: other.id,
+      messageType: "human",
+      text: "other",
+      deliveryStatus: "delivered",
+      createdAt: "2026-06-14T10:01:00.000Z"
+    });
+    const server = buildServer();
+    const emoji = encodeURIComponent("👍");
+
+    const added = await server.inject({
+      method: "PUT",
+      url: `/chat/conversations/${conversation.id}/messages/msg-reaction-1/reactions/${emoji}`,
+      payload: {}
+    });
+    expect(added.statusCode).toBe(200);
+    expect(added.json().reactions).toEqual([
+      expect.objectContaining({ emoji: "👍", count: 1, me: true })
+    ]);
+
+    const duplicate = await server.inject({
+      method: "PUT",
+      url: `/chat/conversations/${conversation.id}/messages/msg-reaction-1/reactions/${emoji}`,
+      payload: {}
+    });
+    expect(duplicate.statusCode).toBe(200);
+    expect(duplicate.json().reactions[0]).toMatchObject({ emoji: "👍", count: 1 });
+
+    const refreshed = await server.inject({ method: "GET", url: `/chat/conversations/${conversation.id}/messages` });
+    expect(refreshed.json().messages).toContainEqual(expect.objectContaining({
+      id: "msg-reaction-1",
+      reactions: [expect.objectContaining({ emoji: "👍", count: 1, me: true })]
+    }));
+
+    const rejected = await server.inject({
+      method: "PUT",
+      url: `/chat/conversations/${conversation.id}/messages/msg-reaction-other/reactions/${emoji}`,
+      payload: {}
+    });
+    expect(rejected.statusCode).toBe(404);
+
+    const invalid = await server.inject({
+      method: "PUT",
+      url: `/chat/conversations/${conversation.id}/messages/msg-reaction-1/reactions/${encodeURIComponent("not-an-emoji-too-long")}`,
+      payload: {}
+    });
+    expect(invalid.statusCode).toBe(400);
+
+    const removed = await server.inject({
+      method: "DELETE",
+      url: `/chat/conversations/${conversation.id}/messages/msg-reaction-1/reactions/${emoji}`
+    });
+    expect(removed.statusCode).toBe(200);
+    expect(removed.json().reactions).toEqual([]);
+    await server.close();
+  });
+
   it("answers simple local chat without starting a broad agent run", async () => {
     const server = buildServer();
     const created = await server.inject({

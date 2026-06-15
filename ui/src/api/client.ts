@@ -86,6 +86,15 @@ export const api = {
     controlPlaneUrl?: string;
     defaultOrgSlug?: string;
   }>("/health"),
+  refreshLocalUiSession: () => localAgentClient.get<{
+    ok: boolean;
+    localUiSession: {
+      enabled: boolean;
+      runtime: string;
+      cookieName: string;
+      wasValid: boolean;
+    };
+  }>("/local-ui-session"),
   cloudStatus: cloudAuthApi.cloudStatus,
   signup: cloudAuthApi.signup,
   login: cloudAuthApi.login,
@@ -104,6 +113,7 @@ export const api = {
   updateConversationReadState: chatApi.updateReadState,
   sendChatMessage: chatApi.send,
   pinChatMessage: chatApi.pinMessage,
+  setChatMessageReaction: chatApi.setMessageReaction,
   chatThread: chatApi.thread,
   createChatThreadReply: chatApi.createThreadReply,
   chatDiagnostics: chatApi.diagnostics,

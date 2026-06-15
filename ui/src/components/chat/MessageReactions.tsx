@@ -1,4 +1,3 @@
-import { Heart, Laugh, Sparkles, ThumbsUp } from "lucide-react";
 import { useMessageReactions } from "../../lib/messageReactions";
 
 interface MessageReactionsProps {
@@ -6,17 +5,17 @@ interface MessageReactionsProps {
 }
 
 const REACTIONS = [
-  { id: "like", icon: ThumbsUp, label: "Like" },
-  { id: "love", icon: Heart, label: "Love" },
-  { id: "smile", icon: Laugh, label: "Smile" },
-  { id: "celebrate", icon: Sparkles, label: "Celebrate" }
+  { id: "👍", label: "Thumbs up" },
+  { id: "❤️", label: "Heart" },
+  { id: "😀", label: "Smile" },
+  { id: "🙏", label: "Pray" }
 ];
 
 export function MessageReactions({ messageId }: MessageReactionsProps) {
   const { reactions, toggleReaction } = useMessageReactions(messageId);
   return (
     <div className="flex items-center gap-1" aria-label="Message reactions">
-      {REACTIONS.map(({ id, icon: Icon, label }) => {
+      {REACTIONS.map(({ id, label }) => {
         const active = reactions.has(id);
         return (
           <button
@@ -29,7 +28,7 @@ export function MessageReactions({ messageId }: MessageReactionsProps) {
             aria-label={active ? `Remove ${label} reaction` : `React with ${label}`}
             aria-pressed={active}
           >
-            <Icon className="h-3.5 w-3.5" />
+            <span aria-hidden="true">{id}</span>
           </button>
         );
       })}

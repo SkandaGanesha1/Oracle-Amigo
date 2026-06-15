@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Search, Plus, X } from "lucide-react";
-import { useDirectorySearch, useStartConversation } from "../../hooks/queries";
+import { useConversations, useDirectorySearch, useStartConversation } from "../../hooks/queries";
 import { useNavigate } from "react-router-dom";
 import { OracleAvatar } from "../../components/primitives/OracleAvatar";
 import type { AgentInstance } from "../../api/types";
@@ -9,11 +9,18 @@ export function DirectorySearch() {
   const navigate = useNavigate();
   const inputRef = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState("");
-  const { data: directoryData } = useDirectorySearch(query);
+  const { data: directoryData, error: directoryError, isError: directoryIsError, isFetching: directoryIsFetching } = useDirectorySearch(query);
+  const { data: conversationsData } = useConversations();
   const createConversation = useStartConversation();
   const [showResults, setShowResults] = useState(false);
 
   const users = directoryData?.users ?? [];
+  const existingConversations = (conversationsData?.conversations ?? []).filter((conversation) => {
+    if (conversation.id === "local-agent") return false;
+    const normalized = query.trim().toLowerCase();
+    if (!normalized) return false;
+    return `${conversation.title} ${conversation.subtitle}`.toLowerCase().includes(normalized);
+  });
 
   useEffect(() => {
     function focusDirectorySearch() {
@@ -80,7 +87,39 @@ export function DirectorySearch() {
 
       {showResults && query.trim() && (
         <div id="directory-search-results" className="absolute left-3 right-3 top-full z-50 mt-1 max-h-60 overflow-y-auto rounded-lg border border-oa-border bg-oa-surface-2 p-1 shadow-lg" role="listbox" aria-live="polite">
-          {users.length === 0 ? (
+          {existingConversations.map((conversation) => (
+            <button
+              key={conversation.id}
+              type="button"
+              role="option"
+              onClick={() => {
+                setShowResults(false);
+                setQuery("");
+                navigate(`/chats/${conversation.id}`);
+              }}
+              className="flex min-h-[48px] w-full items-center gap-2.5 rounded-md px-3 py-2 text-left transition-colors hover:bg-oa-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-oa-blue"
+            >
+              <OracleAvatar
+                seed={conversation.peerUserId ?? conversation.agentInstanceId ?? conversation.id}
+                initials={conversation.title.slice(0, 2).toUpperCase()}
+                size="sm"
+                className="h-7 w-7"
+              />
+              <div className="flex min-w-0 flex-1 flex-col">
+                <span className="truncate text-sm font-medium text-oa-text">{conversation.title}</span>
+                <span className="truncate text-xs text-oa-text-muted">{conversation.subtitle || "Existing chat"}</span>
+              </div>
+            </button>
+          ))}
+          {directoryIsFetching ? (
+            <div className="px-3 py-4 text-center text-xs text-oa-text-muted">
+              Searching directory...
+            </div>
+          ) : directoryIsError ? (
+            <div className="px-3 py-4 text-center text-xs text-oa-red">
+              Directory unavailable: {directoryError instanceof Error ? directoryError.message : "try again after refreshing the local session."}
+            </div>
+          ) : users.length === 0 && existingConversations.length === 0 ? (
             <div className="px-3 py-4 text-center text-xs text-oa-text-muted">
               No users found
             </div>

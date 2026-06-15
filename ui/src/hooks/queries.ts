@@ -388,6 +388,28 @@ export function usePinMessage(conversationId: string) {
   });
 }
 
+export function useToggleMessageReaction(conversationId: string | null | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ messageId, emoji, active }: { messageId: string; emoji: string; active: boolean }) =>
+      api.setChatMessageReaction(conversationId ?? "", messageId, emoji, active),
+    onSuccess: ({ message }, input) => {
+      if (!conversationId) return;
+      if (message) {
+        queryClient.setQueryData<ConversationMessagesResult>(
+          queryKeys.conversationMessages(conversationId),
+          (current) => current ? {
+            ...current,
+            messages: current.messages.map((item) => item.id === input.messageId ? message : item)
+          } : current
+        );
+      }
+      void queryClient.invalidateQueries({ queryKey: queryKeys.conversationMessages(conversationId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.conversations });
+    }
+  });
+}
+
 export function useThread(conversationId: string | null, threadId: string | null) {
   return useQuery({
     queryKey: queryKeys.chatThread(conversationId ?? "none", threadId ?? "none"),

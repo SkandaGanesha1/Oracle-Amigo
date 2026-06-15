@@ -1,7 +1,9 @@
+import EmojiPicker, { Theme } from "emoji-picker-react";
 import { Check, Copy, MoreHorizontal, MessageSquareQuote, Pin, RotateCcw, SmilePlus } from "lucide-react";
-import { DropdownMenu, Toolbar } from "radix-ui";
+import { DropdownMenu, Popover, Toolbar } from "radix-ui";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import { useToggleMessageReaction } from "../../hooks/queries";
 import { useMessageReactions } from "../../lib/messageReactions";
 import type { TimelineSide } from "./timelineModel";
 
@@ -10,12 +12,23 @@ interface MessageActionsProps {
   onRetry?: () => void;
   showRetry?: boolean;
   messageId?: string;
+  conversationId?: string;
   pinned?: boolean;
   onTogglePin?: () => void;
   onReply?: () => void;
   side?: TimelineSide;
   onCopyLink?: () => void;
 }
+
+export const QUICK_REACTIONS = [
+  { emoji: "👍", unified: "1f44d", label: "Thumbs up" },
+  { emoji: "❤️", unified: "2764-fe0f", label: "Heart" },
+  { emoji: "😀", unified: "1f600", label: "Smile" },
+  { emoji: "😢", unified: "1f622", label: "Sad" },
+  { emoji: "🙏", unified: "1f64f", label: "Pray" },
+  { emoji: "👎", unified: "1f44e", label: "Thumbs down" },
+  { emoji: "😡", unified: "1f621", label: "Angry" }
+];
 
 function ActionButton({
   label,
@@ -47,6 +60,7 @@ export function MessageActions({
   onRetry,
   showRetry,
   messageId,
+  conversationId,
   pinned = false,
   onTogglePin,
   onReply,
@@ -54,9 +68,11 @@ export function MessageActions({
   onCopyLink,
 }: MessageActionsProps) {
   const [copied, setCopied] = useState(false);
-  const { reactions, toggleReaction } = useMessageReactions(messageId);
+  const [reactionPickerOpen, setReactionPickerOpen] = useState(false);
+  const { reactions, setReaction } = useMessageReactions(messageId);
+  const persistReaction = useToggleMessageReaction(conversationId);
   const copyTimerRef = useRef<number | null>(null);
-  const liked = reactions.has("like");
+  const hasAnyQuickReaction = QUICK_REACTIONS.some((reaction) => reactions.has(reaction.emoji));
 
   useEffect(() => {
     return () => {
@@ -92,6 +108,16 @@ export function MessageActions({
     }));
   }, [messageId, onReply, text]);
 
+  const handleReaction = useCallback((emoji: string) => {
+    if (!messageId || !emoji.trim()) return;
+    const active = !reactions.has(emoji);
+    setReaction(emoji, active);
+    if (conversationId) {
+      persistReaction.mutate({ messageId, emoji, active });
+    }
+    setReactionPickerOpen(false);
+  }, [conversationId, messageId, persistReaction, reactions, setReaction]);
+
   if (side === "center") return null;
 
   return (
@@ -100,13 +126,45 @@ export function MessageActions({
       className="oa-message-hover-toolbar"
       aria-label="Message actions"
     >
-      <ActionButton
-        label={liked ? "Remove quick reaction" : "Add quick reaction"}
-        onClick={() => toggleReaction("like")}
-        pressed={liked}
+      <Popover.Root
+        open={reactionPickerOpen}
+        onOpenChange={setReactionPickerOpen}
       >
-        <SmilePlus size={16} aria-hidden="true" />
-      </ActionButton>
+        <Popover.Trigger asChild>
+          <button
+            type="button"
+            aria-label="Add reaction"
+            aria-pressed={hasAnyQuickReaction}
+            title="Add reaction"
+            className="oa-message-action-btn"
+          >
+            <SmilePlus size={16} aria-hidden="true" />
+          </button>
+        </Popover.Trigger>
+        <Popover.Portal>
+          <Popover.Content
+            side="top"
+            align={side === "right" ? "start" : "end"}
+            sideOffset={8}
+            className="oa-emoji-popover"
+          >
+            <div className="oa-emoji-picker-shell">
+              <EmojiPicker
+                theme={Theme.DARK}
+                lazyLoadEmojis
+                width={340}
+                height={380}
+                reactionsDefaultOpen
+                reactions={QUICK_REACTIONS.map((reaction) => reaction.unified)}
+                allowExpandReactions
+                previewConfig={{ showPreview: false }}
+                onReactionClick={(emojiData) => handleReaction(emojiData.emoji)}
+                onEmojiClick={(emojiData) => handleReaction(emojiData.emoji)}
+              />
+            </div>
+          </Popover.Content>
+        </Popover.Portal>
+      </Popover.Root>
 
       <ActionButton label="Reply" onClick={handleReply}>
         <MessageSquareQuote size={16} aria-hidden="true" />

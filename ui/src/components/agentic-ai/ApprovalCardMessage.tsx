@@ -3,7 +3,6 @@ import { FolderOpen, Search, Shield, X } from "lucide-react";
 import { DocumentPreviewCard, PreviewButton, type ChatDocumentPreview } from "../stream-like/DocumentPreviewCard";
 import { useApproveFileRequest, useIndexedFiles, useRebindApprovalFile, useRejectFileRequest, useSubmitApprovalFeedback } from "../../hooks/queries";
 import { BiometricApproveButton } from "../../features/approvals/BiometricApproveButton";
-import { RedactionEditor } from "../../features/approvals/RedactionEditor";
 import type { FileCandidateApprovalMessage, CandidateFile } from "../../api/types";
 
 const AGENT_ID_RE = /^ag[ei][_-]/i;
@@ -191,10 +190,6 @@ export function ApprovalCardMessage({ message }: ApprovalCardMessageProps) {
             </div>
           )}
         </div>
-      )}
-
-      {card.status === "pending" && selectedFile && (
-        <RedactionEditor file={selectedFile} recipientDisplayName={requester} />
       )}
 
       {card.status === "pending" && (

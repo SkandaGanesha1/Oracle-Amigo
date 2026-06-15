@@ -1,6 +1,8 @@
-import { useEffect, useMemo, useRef, useState, type Key, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { Badge, Button, Drawer, Dropdown } from "@heroui/react";
+import { Badge, Button } from "@heroui/react";
+import { Dialog as DialogPrimitive } from "radix-ui";
+import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { Cpu, FileText, Inbox, ListChecks, LoaderCircle, LogOut, ScrollText, Search, Settings, ShieldCheck, User as UserIcon, X } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import oracleLogoUrl from "../../../UI_images/oracle_logo.png";
@@ -221,6 +223,7 @@ function RailProfileButton({
 }) {
   const navigate = useNavigate();
   const logout = useLogout();
+  const [menuOpen, setMenuOpen] = useState(false);
   const displayName = cloudStatus?.cloud?.displayName ?? cloudStatus?.cloud?.userEmail ?? "Account";
   const avatarSeed = cloudStatus?.cloud?.userEmail ?? displayName;
   const presence: PeerPresence = {
@@ -239,9 +242,10 @@ function RailProfileButton({
     }
   }
 
-  function handleAction(key: Key) {
+  function handleAction(key: string) {
     if (key === "profile") {
-      onOpenProfile();
+      setMenuOpen(false);
+      window.setTimeout(onOpenProfile, 0);
       return;
     }
     if (key === "agents") {
@@ -276,20 +280,24 @@ function RailProfileButton({
   const LogoutIcon = logout.isPending ? LoaderCircle : LogOut;
 
   return (
-    <Dropdown>
-      <Tooltip>
+    <DropdownMenu.Root open={menuOpen} onOpenChange={setMenuOpen}>
+      <Tooltip open={menuOpen ? false : undefined}>
         <TooltipTrigger asChild>
-          <Button
-            className="group relative flex min-h-[54px] w-full items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oa-blue focus-visible:ring-offset-2"
-            aria-label={`Account profile: ${displayName}`}
-            variant="ghost"
-          >
-            <StatusAvatar
-              avatarSeed={avatarSeed}
-              displayName={displayName}
-              presence={presence}
-            />
-          </Button>
+          <span className="inline-flex w-full justify-center">
+            <DropdownMenu.Trigger asChild>
+            <button
+              type="button"
+              className="group relative flex min-h-[54px] w-full items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oa-blue focus-visible:ring-offset-2"
+              aria-label={`Account profile: ${displayName}`}
+            >
+              <StatusAvatar
+                avatarSeed={avatarSeed}
+                displayName={displayName}
+                presence={presence}
+              />
+            </button>
+            </DropdownMenu.Trigger>
+          </span>
         </TooltipTrigger>
         <TooltipContent side="right" sideOffset={10} className="oa-rail-tooltip oa-rail-tooltip-rich">
           <RailUserTooltip
@@ -300,43 +308,48 @@ function RailProfileButton({
           />
         </TooltipContent>
       </Tooltip>
-      <Dropdown.Popover className="oa-account-dropdown min-w-44 rounded-xl border border-white/10 bg-[#2F2F2F] p-1.5 shadow-2xl">
-        <Dropdown.Menu aria-label="Account actions" className="oa-account-dropdown-menu" onAction={handleAction}>
-          <Dropdown.Item id="profile" textValue="Profile" className="oa-account-dropdown-item">
+      <DropdownMenu.Portal>
+        <DropdownMenu.Content
+          side="right"
+          align="end"
+          sideOffset={12}
+          className="oa-account-dropdown min-w-44 rounded-xl border border-white/10 bg-[#2F2F2F] p-1.5 shadow-2xl"
+        >
+          <DropdownMenu.Item id="profile" textValue="Profile" className="oa-account-dropdown-item" onSelect={() => handleAction("profile")}>
             <UserIcon className="h-4 w-4 shrink-0 text-oa-text-muted" />
             <span>Profile</span>
-          </Dropdown.Item>
-          <Dropdown.Item id="agents" textValue="Agents" className="oa-account-dropdown-item">
+          </DropdownMenu.Item>
+          <DropdownMenu.Item id="agents" textValue="Agents" className="oa-account-dropdown-item" onSelect={() => handleAction("agents")}>
             <Cpu className="h-4 w-4 shrink-0 text-oa-text-muted" />
             <span>Agents</span>
-          </Dropdown.Item>
-          <Dropdown.Item id="approvals" textValue="Approvals" className="oa-account-dropdown-item">
+          </DropdownMenu.Item>
+          <DropdownMenu.Item id="approvals" textValue="Approvals" className="oa-account-dropdown-item" onSelect={() => handleAction("approvals")}>
             <ShieldCheck className="h-4 w-4 shrink-0 text-oa-text-muted" />
             <span>Approvals</span>
-          </Dropdown.Item>
-          <Dropdown.Item id="files" textValue="Vault" className="oa-account-dropdown-item">
+          </DropdownMenu.Item>
+          <DropdownMenu.Item id="files" textValue="Vault" className="oa-account-dropdown-item" onSelect={() => handleAction("files")}>
             <FileText className="h-4 w-4 shrink-0 text-oa-text-muted" />
             <span>Vault</span>
-          </Dropdown.Item>
-          <Dropdown.Item id="tasks" textValue="Missions" className="oa-account-dropdown-item">
+          </DropdownMenu.Item>
+          <DropdownMenu.Item id="tasks" textValue="Missions" className="oa-account-dropdown-item" onSelect={() => handleAction("tasks")}>
             <ListChecks className="h-4 w-4 shrink-0 text-oa-text-muted" />
             <span>Missions</span>
-          </Dropdown.Item>
-          <Dropdown.Item id="audit" textValue="Audit" className="oa-account-dropdown-item">
+          </DropdownMenu.Item>
+          <DropdownMenu.Item id="audit" textValue="Audit" className="oa-account-dropdown-item" onSelect={() => handleAction("audit")}>
             <ScrollText className="h-4 w-4 shrink-0 text-oa-text-muted" />
             <span>Audit</span>
-          </Dropdown.Item>
-          <Dropdown.Item id="settings" textValue="Settings" className="oa-account-dropdown-item">
+          </DropdownMenu.Item>
+          <DropdownMenu.Item id="settings" textValue="Settings" className="oa-account-dropdown-item" onSelect={() => handleAction("settings")}>
             <Settings className="h-4 w-4 shrink-0 text-oa-text-muted" />
             <span>Settings</span>
-          </Dropdown.Item>
-          <Dropdown.Item id="logout" textValue="Log out" variant="danger" className="oa-account-dropdown-item oa-account-dropdown-item-danger">
+          </DropdownMenu.Item>
+          <DropdownMenu.Item id="logout" textValue="Log out" className="oa-account-dropdown-item oa-account-dropdown-item-danger" onSelect={() => handleAction("logout")}>
             <LogoutIcon className={`h-4 w-4 shrink-0 text-oa-red ${logout.isPending ? "animate-spin" : ""}`} />
             <span>Log out</span>
-          </Dropdown.Item>
-        </Dropdown.Menu>
-      </Dropdown.Popover>
-    </Dropdown>
+          </DropdownMenu.Item>
+        </DropdownMenu.Content>
+      </DropdownMenu.Portal>
+    </DropdownMenu.Root>
   );
 }
 
@@ -390,14 +403,15 @@ function AccountProfileDrawer({
   onOpenChange: (isOpen: boolean) => void;
 }) {
   return (
-    <Drawer>
-      <Drawer.Backdrop isOpen={isOpen} onOpenChange={onOpenChange}>
-        <Drawer.Content
-          placement="right"
-          className="oa-profile-drawer w-[360px] max-w-[calc(100vw-1.5rem)] border-l border-oa-border bg-[#1e1f22] text-oa-text shadow-2xl"
+    <DialogPrimitive.Root open={isOpen} onOpenChange={onOpenChange}>
+      <DialogPrimitive.Portal>
+        <DialogPrimitive.Overlay className="oa-profile-drawer-overlay fixed inset-0" />
+        <DialogPrimitive.Content
+          aria-label="Account profile drawer"
+          className="oa-profile-drawer fixed right-0 top-0 flex h-dvh w-[360px] max-w-[calc(100vw-1.5rem)] flex-col border-l border-oa-border bg-[#1e1f22] text-oa-text shadow-2xl outline-none"
         >
-          <Drawer.Dialog aria-label="Account profile drawer" className="flex h-full flex-col">
-            <Drawer.Header className="flex items-center justify-between border-b border-oa-border px-4 py-3">
+          <div className="flex h-full flex-col">
+            <div className="flex items-center justify-between border-b border-oa-border px-4 py-3">
               <div>
                 <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-oa-text-muted">Account</p>
                 <h2 className="text-lg font-semibold text-oa-text">Profile</h2>
@@ -412,8 +426,8 @@ function AccountProfileDrawer({
               >
                 <X className="h-4 w-4" />
               </Button>
-            </Drawer.Header>
-            <Drawer.Body className="min-h-0 flex-1 overflow-y-auto p-0">
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto p-0">
               <ProfileDetails
                 className="p-4"
                 header={
@@ -431,11 +445,11 @@ function AccountProfileDrawer({
                   </div>
                 }
               />
-            </Drawer.Body>
-          </Drawer.Dialog>
-        </Drawer.Content>
-      </Drawer.Backdrop>
-    </Drawer>
+            </div>
+          </div>
+        </DialogPrimitive.Content>
+      </DialogPrimitive.Portal>
+    </DialogPrimitive.Root>
   );
 }
 
@@ -490,12 +504,17 @@ function RailSearchPanel({
   const navigate = useNavigate();
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [query, setQuery] = useState("");
-  const { data: directoryData } = useDirectorySearch(query);
+  const { data: directoryData, error: directoryError, isError: directoryIsError, isFetching: directoryIsFetching } = useDirectorySearch(query);
   const createConversation = useStartConversation();
-  const existingMatches = users.filter((user) =>
-    !user.isLocalAgent && user.displayName.toLowerCase().includes(query.trim().toLowerCase())
-  );
-  const directoryUsers = directoryData?.users ?? [];
+  const normalizedQuery = query.trim().toLowerCase();
+  const knownPeople = users.filter((user) => !user.isLocalAgent);
+  const existingMatches = normalizedQuery
+    ? knownPeople.filter((user) =>
+        `${user.displayName} ${user.email ?? ""}`.toLowerCase().includes(normalizedQuery)
+      )
+    : knownPeople;
+  const existingUserIds = new Set(existingMatches.map((user) => user.id));
+  const directoryUsers = (directoryData?.users ?? []).filter((user) => !existingUserIds.has(user.user_id));
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -531,17 +550,25 @@ function RailSearchPanel({
       </div>
 
       <div className="mt-3 max-h-[420px] overflow-y-auto">
-        {query.trim() && existingMatches.length > 0 && (
-          <SearchGroup label="Chats">
+        {existingMatches.length > 0 && (
+          <SearchGroup label={normalizedQuery ? "Chats and contacts" : "People"}>
             {existingMatches.map((user) => (
               <SearchUserRow key={user.id} label={user.displayName} presence={user.presence} seed={user.avatarSeed} onClick={() => onSelectUser(user)} />
             ))}
           </SearchGroup>
         )}
-        {query.trim() && (
+        {normalizedQuery && (
           <SearchGroup label="Directory">
-            {directoryUsers.length === 0 ? (
-              <p className="px-3 py-4 text-center text-xs text-oa-text-muted">No people found</p>
+            {directoryIsFetching ? (
+              <p className="px-3 py-3 text-center text-xs text-oa-text-muted">Searching directory...</p>
+            ) : directoryIsError ? (
+              <p className="px-3 py-3 text-center text-xs text-oa-red">
+                Directory unavailable: {directoryError instanceof Error ? directoryError.message : "try again after refreshing the local session."}
+              </p>
+            ) : directoryUsers.length === 0 ? (
+              <p className="px-3 py-4 text-center text-xs text-oa-text-muted">
+                {existingMatches.length > 0 ? "No additional directory people found" : "No people found"}
+              </p>
             ) : (
               directoryUsers.map((user) => (
                 <SearchUserRow
@@ -556,9 +583,9 @@ function RailSearchPanel({
             )}
           </SearchGroup>
         )}
-        {!query.trim() && (
+        {!normalizedQuery && existingMatches.length === 0 && (
           <p className="px-3 py-6 text-center text-xs text-oa-text-muted">
-            Type a name or email to find people. Agent instances stay in diagnostics, not in the people rail.
+            Type a name or email to find people. Accepted contacts and existing chats will appear here when available.
           </p>
         )}
       </div>

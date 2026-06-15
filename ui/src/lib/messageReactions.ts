@@ -5,6 +5,12 @@ export const MESSAGE_REACTIONS_KEY = "oa-message-reactions-v1";
 type ReactionMap = Record<string, string[]>;
 
 const listeners = new Set<() => void>();
+const LEGACY_REACTION_MAP: Record<string, string> = {
+  like: "👍",
+  love: "❤️",
+  smile: "😀",
+  celebrate: "🎉"
+};
 
 function storageAvailable(): boolean {
   return typeof window !== "undefined" && typeof window.localStorage !== "undefined";
@@ -17,7 +23,11 @@ function parseSnapshot(snapshot: string): ReactionMap {
     const map: ReactionMap = {};
     for (const [messageId, reactions] of Object.entries(parsed)) {
       if (Array.isArray(reactions)) {
-        map[messageId] = reactions.filter((reaction): reaction is string => typeof reaction === "string");
+        const normalized = reactions
+          .filter((reaction): reaction is string => typeof reaction === "string")
+          .map((reaction) => LEGACY_REACTION_MAP[reaction] ?? reaction)
+          .filter((reaction) => reaction.trim().length > 0);
+        map[messageId] = Array.from(new Set(normalized));
       }
     }
     return map;
@@ -65,5 +75,16 @@ export function useMessageReactions(messageId?: string) {
     writeMap(next);
   }, [messageId]);
 
-  return { reactions, toggleReaction };
+  const setReaction = useCallback((reactionId: string, active: boolean) => {
+    if (!messageId) return;
+    const next = parseSnapshot(readSnapshot());
+    const current = new Set(next[messageId] ?? []);
+    if (active) current.add(reactionId);
+    else current.delete(reactionId);
+    if (current.size === 0) delete next[messageId];
+    else next[messageId] = Array.from(current);
+    writeMap(next);
+  }, [messageId]);
+
+  return { reactions, toggleReaction, setReaction };
 }

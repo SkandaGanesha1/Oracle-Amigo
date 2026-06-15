@@ -20,6 +20,7 @@ import { AgenticToolCall } from "../agentic-ai/AgenticToolCall";
 import { FeedbackBar } from "../agentic-ai/FeedbackBar";
 import { safeDisplayText } from "../../lib/safeText";
 import { usePinMessage, useRelayTaskStatus } from "../../hooks/queries";
+import { useMessageReactions } from "../../lib/messageReactions";
 import type { TimelineMessage, AgentStatusMessage, HumanChatMessage, FileCandidateApprovalMessage, TransferProgressMessage, FileReceiptMessage, FileRequestMessage as FileRequestMessageType, A2ATaskMessage } from "../../api/types";
 import type { DeliveryStatus } from "../../api/types";
 import {
@@ -273,9 +274,34 @@ function ReactionPills({ reactions }: { reactions?: TimelineMessage["reactions"]
   );
 }
 
+function mergeReactions(
+  serverReactions: TimelineMessage["reactions"] | undefined,
+  localReactions: Set<string>
+): TimelineMessage["reactions"] {
+  const merged = new Map<string, NonNullable<TimelineMessage["reactions"]>[number]>();
+  for (const reaction of serverReactions ?? []) {
+    merged.set(reaction.emoji, { ...reaction });
+  }
+  for (const emoji of localReactions) {
+    const existing = merged.get(emoji);
+    if (existing) {
+      merged.set(emoji, {
+        ...existing,
+        me: true,
+        count: existing.me ? existing.count : existing.count + 1,
+        users: existing.users ?? []
+      });
+    } else {
+      merged.set(emoji, { emoji, count: 1, users: ["local"], me: true });
+    }
+  }
+  return Array.from(merged.values());
+}
+
 export function MessageBubble({ message, onRetry, grouped = false, meta }: MessageBubbleProps) {
   const [linkCopied, setLinkCopied] = useState(false);
   const [showAgentThinking, setShowAgentThinking] = useState(false);
+  const { reactions: localReactions } = useMessageReactions(message.id);
   const linkCopiedTimerRef = useRef<number | null>(null);
   const isHuman = message.kind === "human";
   const humanMessage = isHuman ? message as HumanChatMessage : null;
@@ -315,6 +341,7 @@ export function MessageBubble({ message, onRetry, grouped = false, meta }: Messa
   const isSearching = message.kind === "agent_status" && (message as AgentStatusMessage).phase === "searching";
   const hasAgentDetails = message.kind === "agent_status" && !!((message as AgentStatusMessage).details?.reasoning_steps || (message as AgentStatusMessage).details?.tool_calls);
   const isMissionStart = message.kind === "human" && (message as { text?: string }).text?.startsWith("/mission");
+  const mergedReactions = mergeReactions(message.reactions, localReactions);
 
   const isAgentPhase = isThinking || isSearching;
   const isThinkingBar = message.kind === "thinking_bar";
@@ -513,7 +540,7 @@ export function MessageBubble({ message, onRetry, grouped = false, meta }: Messa
             )}
 
             {!isUnavailable && message.thread_summary && <ThreadSummaryPill summary={message.thread_summary} />}
-            {!isUnavailable && <ReactionPills reactions={message.reactions} />}
+            {!isUnavailable && <ReactionPills reactions={mergedReactions} />}
 
             {!isCentered && !isAgentPhase && !isThinkingBar && !isUnavailable && (
               <MessageActions
@@ -521,6 +548,7 @@ export function MessageBubble({ message, onRetry, grouped = false, meta }: Messa
                 onRetry={onRetry ? () => onRetry(message.id) : undefined}
                 showRetry={isOutgoingHuman && String(deliveryStatus).toLowerCase().includes("fail")}
                 messageId={message.id}
+                conversationId={conversationId}
                 pinned={pinned}
                 onTogglePin={conversationId ? handleTogglePin : undefined}
                 onReply={handleReply}

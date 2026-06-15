@@ -15,13 +15,13 @@ const phaseLabels: Record<string, { label: string; text: string }> = {
 };
 
 export function TypingIndicator({ label, phase, reasoningText, onStop }: TypingIndicatorProps) {
+  void onStop;
+
   if (phase && phaseLabels[phase]) {
     const config = phaseLabels[phase];
     return (
       <ThinkingBar
         text={reasoningText ?? config.text}
-        showStop={Boolean(onStop)}
-        onStop={onStop}
         className="mx-4 mb-2"
       />
     );

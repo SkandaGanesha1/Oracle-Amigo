@@ -62,6 +62,13 @@ export interface ChatMessageRecord {
   updated_at: string;
 }
 
+export interface ChatMessageReaction {
+  emoji: string;
+  count: number;
+  users: string[];
+  me?: boolean;
+}
+
 export interface CreateConversationInput {
   id?: string;
   orgId?: string | null;
@@ -368,6 +375,47 @@ export class ChatRepository {
       WHERE id = ?
     `).run(JSON.stringify({ ...existing.payload_json, ...patch }), now, id);
     return this.getMessage(id);
+  }
+
+  listMessageReactions(messageId: string, actorId?: string | null): ChatMessageReaction[] {
+    const rows = this.db.prepare(`
+      SELECT emoji, actor_id
+      FROM chat_message_reactions
+      WHERE message_id = ?
+      ORDER BY created_at ASC, actor_id ASC
+    `).all(messageId) as Array<{ emoji: string; actor_id: string }>;
+    const byEmoji = new Map<string, { emoji: string; users: string[]; me: boolean }>();
+    for (const row of rows) {
+      const current = byEmoji.get(row.emoji) ?? { emoji: row.emoji, users: [], me: false };
+      current.users.push(row.actor_id);
+      if (actorId && row.actor_id === actorId) current.me = true;
+      byEmoji.set(row.emoji, current);
+    }
+    return Array.from(byEmoji.values()).map((reaction) => ({
+      emoji: reaction.emoji,
+      count: reaction.users.length,
+      users: reaction.users,
+      me: reaction.me
+    }));
+  }
+
+  setMessageReaction(messageId: string, actorId: string, emoji: string, active: boolean): ChatMessageReaction[] | null {
+    const message = this.getMessage(messageId);
+    if (!message) return null;
+    const now = new Date().toISOString();
+    if (active) {
+      this.db.prepare(`
+        INSERT INTO chat_message_reactions (message_id, actor_id, emoji, created_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(message_id, actor_id, emoji) DO NOTHING
+      `).run(messageId, actorId, emoji, now);
+    } else {
+      this.db.prepare(`
+        DELETE FROM chat_message_reactions
+        WHERE message_id = ? AND actor_id = ? AND emoji = ?
+      `).run(messageId, actorId, emoji);
+    }
+    return this.listMessageReactions(messageId, actorId);
   }
 
   updateMessageDeliveryStatus(

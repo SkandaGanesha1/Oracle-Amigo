@@ -1,6 +1,8 @@
+import EmojiPicker, { Theme } from "emoji-picker-react";
 import { useState, useCallback, useRef, useMemo } from "react";
 import { PromptInput, PromptInputTextarea, PromptInputActions, PromptInputAction } from "~/components/ui/prompt-input";
 import { ArrowUp, Paperclip, Command, User, Plus, Smile } from "lucide-react";
+import { Popover } from "radix-ui";
 import { FileRequestIntentChip, matchFileRequestIntent } from "../../features/chat/FileRequestIntentChip";
 import { AttachmentPreview } from "./AttachmentPreview";
 import { SuggestedPrompts } from "../chat/SuggestedPrompts";
@@ -45,6 +47,7 @@ export function MessageComposer({ conversationId, onSend, disabled, availableAge
   const [mentionQuery, setMentionQuery] = useState("");
   const [mentionIndex, setMentionIndex] = useState(0);
   const [attachment, setAttachment] = useState<{ name: string; size: number } | null>(null);
+  const [emojiPickerOpen, setEmojiPickerOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const isFileRequest = matchFileRequestIntent(text);
@@ -93,6 +96,11 @@ export function MessageComposer({ conversationId, onSend, disabled, availableAge
 
   function handleKeyDown(e: React.KeyboardEvent) {
     if (e.key === "Escape") {
+      if (emojiPickerOpen) {
+        e.preventDefault();
+        setEmojiPickerOpen(false);
+        return;
+      }
       if (showCommands) {
         e.preventDefault();
         setShowCommands(false);
@@ -161,6 +169,11 @@ export function MessageComposer({ conversationId, onSend, disabled, availableAge
 
   function insertSuggestedPrompt(prompt: string) {
     setText(prompt);
+  }
+
+  function insertEmoji(emoji: string) {
+    setText((current) => `${current}${emoji}`);
+    setEmojiPickerOpen(false);
   }
 
   return (
@@ -300,11 +313,34 @@ export function MessageComposer({ conversationId, onSend, disabled, availableAge
               className="hidden"
               onChange={handleFileSelect}
             />
-            <PromptInputAction tooltip="Emoji">
-              <button type="button" className="oa-composer-icon" aria-label="Insert emoji">
-                <Smile className="h-4 w-4" />
-              </button>
-            </PromptInputAction>
+            <Popover.Root open={emojiPickerOpen} onOpenChange={setEmojiPickerOpen}>
+              <PromptInputAction tooltip="Emoji">
+                <Popover.Trigger asChild>
+                  <button type="button" className="oa-composer-icon" aria-label="Insert emoji" aria-pressed={emojiPickerOpen}>
+                    <Smile className="h-4 w-4" />
+                  </button>
+                </Popover.Trigger>
+              </PromptInputAction>
+              <Popover.Portal>
+                <Popover.Content
+                  side="top"
+                  align="end"
+                  sideOffset={10}
+                  className="oa-emoji-popover oa-composer-emoji-popover"
+                >
+                  <div className="oa-emoji-picker-shell">
+                    <EmojiPicker
+                      theme={Theme.DARK}
+                      lazyLoadEmojis
+                      width={320}
+                      height={380}
+                      previewConfig={{ showPreview: false }}
+                      onEmojiClick={(emojiData) => insertEmoji(emojiData.emoji)}
+                    />
+                  </div>
+                </Popover.Content>
+              </Popover.Portal>
+            </Popover.Root>
             <PromptInputAction tooltip="Send message">
               <button
                 type="button"
