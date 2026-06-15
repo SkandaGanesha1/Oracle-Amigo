@@ -1,9 +1,8 @@
 import { useState, useCallback, useRef, useMemo } from "react";
 import { PromptInput, PromptInputTextarea, PromptInputActions, PromptInputAction } from "~/components/ui/prompt-input";
-import { ArrowUp, Paperclip, Command, User } from "lucide-react";
+import { ArrowUp, Paperclip, Command, User, Plus, Smile } from "lucide-react";
 import { FileRequestIntentChip, matchFileRequestIntent } from "../../features/chat/FileRequestIntentChip";
 import { AttachmentPreview } from "./AttachmentPreview";
-import { HuddleButton } from "../chat/HuddleButton";
 import { SuggestedPrompts } from "../chat/SuggestedPrompts";
 import type { SuggestedPrompt } from "../../types";
 
@@ -165,11 +164,13 @@ export function MessageComposer({ conversationId, onSend, disabled, availableAge
   }
 
   return (
-    <div className="density-composer glass-panel flex flex-col gap-2 border-t border-oa-border px-4 py-3">
-      <SuggestedPrompts prompts={DEFAULT_SUGGESTED_PROMPTS} onSelect={insertSuggestedPrompt} />
+    <div className="oa-composer-dock density-composer">
+      <div className="oa-composer-quick-actions">
+        <SuggestedPrompts prompts={DEFAULT_SUGGESTED_PROMPTS} onSelect={insertSuggestedPrompt} />
+      </div>
 
       {isFileRequest && (
-        <div className="flex items-center gap-2 px-1">
+        <div className="mb-2 flex items-center gap-2 px-1">
           <FileRequestIntentChip visible={true} />
           <span className="text-[10px] text-oa-text-muted">Message will be sent as a file request to the agent</span>
         </div>
@@ -205,7 +206,7 @@ export function MessageComposer({ conversationId, onSend, disabled, availableAge
         }}
         onSubmit={handleSubmit}
         disabled={disabled}
-        className="rounded-2xl border-oa-border bg-oa-bg-elevated/90 shadow-lg shadow-black/10 focus-within:border-oa-blue/70 focus-within:ring-2 focus-within:ring-oa-blue/20"
+        className="oa-composer-frame"
       >
         {showCommands && filteredCommands.length > 0 && (
           <div className="mb-2 overflow-hidden rounded-lg border border-oa-border bg-oa-surface-2">
@@ -257,31 +258,37 @@ export function MessageComposer({ conversationId, onSend, disabled, availableAge
         )}
 
         <div className="flex items-end gap-2">
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            className="oa-composer-icon"
+            aria-label="Add attachment"
+            title="Add attachment"
+          >
+            <Plus className="h-5 w-5" />
+          </button>
           <PromptInputTextarea
             placeholder="Type a message or / for commands... @ to mention"
             onKeyDown={handleKeyDown}
-            className="min-h-[44px] text-sm text-oa-text placeholder:text-oa-text-disabled"
+            className="oa-composer-input"
             rows={1}
           />
-          <PromptInputActions className="flex items-center gap-1 rounded-xl border border-oa-border bg-oa-surface/80 p-1">
+          <PromptInputActions className="oa-composer-actions">
             <PromptInputAction tooltip="Open command bar">
               <button
                 type="button"
                 onClick={openCommandPalette}
-                className="flex min-h-[48px] min-w-[48px] items-center justify-center rounded-lg text-oa-text-muted transition-colors hover:bg-oa-surface hover:text-oa-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oa-blue focus-visible:ring-offset-2"
+                className="oa-composer-icon"
                 aria-label="Open command bar"
               >
                 <Command className="h-4 w-4" />
               </button>
             </PromptInputAction>
-            <PromptInputAction tooltip="Start huddle">
-              <HuddleButton />
-            </PromptInputAction>
             <PromptInputAction tooltip="Attach file">
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
-                className="flex min-h-[48px] min-w-[48px] items-center justify-center rounded-lg text-oa-text-muted transition-colors hover:bg-oa-surface hover:text-oa-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oa-blue focus-visible:ring-offset-2"
+                className="oa-composer-icon"
                 aria-label="Attach file"
               >
                 <Paperclip className="h-4 w-4" />
@@ -293,12 +300,17 @@ export function MessageComposer({ conversationId, onSend, disabled, availableAge
               className="hidden"
               onChange={handleFileSelect}
             />
+            <PromptInputAction tooltip="Emoji">
+              <button type="button" className="oa-composer-icon" aria-label="Insert emoji">
+                <Smile className="h-4 w-4" />
+              </button>
+            </PromptInputAction>
             <PromptInputAction tooltip="Send message">
               <button
                 type="button"
                 onClick={handleSubmit}
                 disabled={!text.trim() || disabled}
-                className="flex min-h-[48px] min-w-[48px] items-center justify-center rounded-lg bg-oa-blue text-white transition-colors hover:bg-oa-blue/80 disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oa-blue focus-visible:ring-offset-2"
+                className="oa-composer-send"
                 aria-label="Send message"
               >
                 <ArrowUp className="h-4 w-4" />

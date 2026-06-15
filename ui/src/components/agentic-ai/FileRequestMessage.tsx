@@ -7,39 +7,36 @@ interface FileRequestMessageProps {
 
 export function FileRequestMessage({ message }: FileRequestMessageProps) {
   return (
-    <div className="rounded-xl border border-oa-border bg-oa-surface p-4">
-      <div className="flex items-start gap-3">
-        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-oa-pink/10">
-          <FileSearch className="h-4 w-4 text-oa-pink" />
+    <section className="oa-agent-card compact" aria-label={`File request: ${message.natural_language_request}`}>
+      <div className="oa-agent-card-header">
+        <div className="min-w-0">
+          <div className="oa-agent-card-kicker">File request</div>
+          <h3 className="oa-agent-card-title">{message.natural_language_request}</h3>
         </div>
-        <div className="min-w-0 flex-1">
-          <h3 className="text-xs font-semibold uppercase tracking-wider text-oa-text-muted">
-            File Request
-          </h3>
-          <p className="mt-1 text-sm text-oa-text">{message.natural_language_request}</p>
-
-          <div className="mt-3 space-y-1.5">
-            <div className="flex items-center gap-2 text-xs text-oa-text-muted">
-              <User className="h-3 w-3" />
-              <span>Requester: {message.requester}</span>
-            </div>
-            <div className="flex items-center gap-2 text-xs text-oa-text-muted">
-              <Target className="h-3 w-3" />
-              <span>Target: {message.target}</span>
-            </div>
-            <div className="flex items-center gap-2 text-xs text-oa-text-muted">
-              <FileText className="h-3 w-3" />
-              <span>Query: &ldquo;{message.query}&rdquo;</span>
-            </div>
-          </div>
-
-          <div className="mt-3">
-            <span className="rounded-full border border-oa-border bg-oa-bg-elevated px-2 py-0.5 text-[10px] font-medium text-oa-text-muted">
-              {message.status}
-            </span>
-          </div>
-        </div>
+        <span className="oa-doc-chip">{message.status}</span>
       </div>
-    </div>
+
+      <dl className="oa-agent-card-facts">
+        <div>
+          <dt><User size={13} aria-hidden="true" /> Requester</dt>
+          <dd>{message.requester}</dd>
+        </div>
+        <div>
+          <dt><Target size={13} aria-hidden="true" /> Target</dt>
+          <dd>{message.target}</dd>
+        </div>
+        <div>
+          <dt><FileText size={13} aria-hidden="true" /> Query</dt>
+          <dd>&ldquo;{message.query}&rdquo;</dd>
+        </div>
+      </dl>
+
+      <div className="oa-agent-card-footer">
+        <button type="button" className="oa-doc-action" disabled>
+          <FileSearch size={16} aria-hidden="true" />
+          Preview request
+        </button>
+      </div>
+    </section>
   );
 }

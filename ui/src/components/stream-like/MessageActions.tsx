@@ -1,6 +1,9 @@
-import { Check, Copy, Heart, Laugh, MessageSquareQuote, Pin, RotateCcw, Sparkles, ThumbsUp } from "lucide-react";
+import { Check, Copy, MoreHorizontal, MessageSquareQuote, Pin, RotateCcw, SmilePlus } from "lucide-react";
+import { DropdownMenu, Toolbar } from "radix-ui";
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { useMessageReactions } from "../../lib/messageReactions";
+import type { TimelineSide } from "./timelineModel";
 
 interface MessageActionsProps {
   text: string;
@@ -10,14 +13,34 @@ interface MessageActionsProps {
   pinned?: boolean;
   onTogglePin?: () => void;
   onReply?: () => void;
+  side?: TimelineSide;
+  onCopyLink?: () => void;
 }
 
-const REACTIONS = [
-  { id: "like", icon: ThumbsUp, label: "Like" },
-  { id: "love", icon: Heart, label: "Love" },
-  { id: "smile", icon: Laugh, label: "Smile" },
-  { id: "celebrate", icon: Sparkles, label: "Celebrate" },
-];
+function ActionButton({
+  label,
+  children,
+  onClick,
+  pressed,
+}: {
+  label: string;
+  children: ReactNode;
+  onClick?: () => void;
+  pressed?: boolean;
+}) {
+  return (
+    <Toolbar.Button
+      type="button"
+      aria-label={label}
+      aria-pressed={pressed}
+      title={label}
+      onClick={onClick}
+      className="oa-message-action-btn"
+    >
+      {children}
+    </Toolbar.Button>
+  );
+}
 
 export function MessageActions({
   text,
@@ -27,10 +50,13 @@ export function MessageActions({
   pinned = false,
   onTogglePin,
   onReply,
+  side = "left",
+  onCopyLink,
 }: MessageActionsProps) {
   const [copied, setCopied] = useState(false);
   const { reactions, toggleReaction } = useMessageReactions(messageId);
   const copyTimerRef = useRef<number | null>(null);
+  const liked = reactions.has("like");
 
   useEffect(() => {
     return () => {
@@ -50,7 +76,7 @@ export function MessageActions({
       copyTimerRef.current = window.setTimeout(() => {
         copyTimerRef.current = null;
         setCopied(false);
-      }, 2000);
+      }, 1600);
     } catch {
       // Clipboard can be unavailable in restricted browser contexts.
     }
@@ -66,78 +92,73 @@ export function MessageActions({
     }));
   }, [messageId, onReply, text]);
 
+  if (side === "center") return null;
+
   return (
-    <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover/message:opacity-100" role="group" aria-label="Message actions">
-      <div className="flex items-center gap-0.5">
-        {REACTIONS.map(({ id, icon: Icon, label }) => {
-          const isActive = reactions.has(id);
-          return (
-            <button
-              key={id}
-              type="button"
-              onClick={() => toggleReaction(id)}
-              className={`flex min-h-[48px] min-w-[48px] items-center justify-center rounded-lg text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oa-blue focus-visible:ring-offset-2 ${
-                isActive ? "bg-oa-blue/10 text-oa-blue" : "text-oa-text-muted hover:bg-oa-surface hover:text-oa-text"
-              }`}
-              aria-label={isActive ? `Remove ${label} reaction` : `React with ${label}`}
-              aria-pressed={isActive}
-              title={label}
-            >
-              <Icon className="h-3.5 w-3.5" />
-            </button>
-          );
-        })}
-      </div>
-
-      <div className="mx-0.5 h-4 w-px bg-oa-border/50" />
-
-      <button
-        type="button"
-        onClick={handleReply}
-        className="flex min-h-[48px] min-w-[48px] items-center justify-center rounded-lg text-oa-text-muted transition-colors hover:bg-oa-surface hover:text-oa-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oa-blue focus-visible:ring-offset-2"
-        aria-label="Reply to message"
-        title="Reply"
+    <Toolbar.Root
+      data-side={side}
+      className="oa-message-hover-toolbar"
+      aria-label="Message actions"
+    >
+      <ActionButton
+        label={liked ? "Remove quick reaction" : "Add quick reaction"}
+        onClick={() => toggleReaction("like")}
+        pressed={liked}
       >
-        <MessageSquareQuote className="h-3.5 w-3.5" />
-      </button>
+        <SmilePlus size={16} aria-hidden="true" />
+      </ActionButton>
 
-      <button
-        type="button"
-        onClick={onTogglePin}
-        disabled={!onTogglePin}
-        className={`flex min-h-[48px] min-w-[48px] items-center justify-center rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oa-blue focus-visible:ring-offset-2 disabled:opacity-40 ${
-          pinned ? "bg-oa-amber/10 text-oa-amber" : "text-oa-text-muted hover:bg-oa-surface hover:text-oa-text"
-        }`}
-        aria-label={pinned ? "Unpin message" : "Pin message"}
-        aria-pressed={pinned}
-        title={pinned ? "Unpin" : "Pin"}
-      >
-        <Pin className={`h-3.5 w-3.5 ${pinned ? "rotate-45" : ""}`} />
-      </button>
-
-      <div className="mx-0.5 h-4 w-px bg-oa-border/50" />
-
-      <button
-        type="button"
-        onClick={handleCopy}
-        className="flex min-h-[48px] min-w-[48px] items-center justify-center rounded-lg text-oa-text-muted transition-colors hover:bg-oa-surface hover:text-oa-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oa-blue focus-visible:ring-offset-2"
-        aria-label={copied ? "Copied" : "Copy message"}
-        title={copied ? "Copied" : "Copy message"}
-      >
-        {copied ? <Check className="h-3.5 w-3.5 text-oa-green" /> : <Copy className="h-3.5 w-3.5" />}
-      </button>
+      <ActionButton label="Reply" onClick={handleReply}>
+        <MessageSquareQuote size={16} aria-hidden="true" />
+      </ActionButton>
 
       {showRetry && onRetry && (
-        <button
-          type="button"
-          onClick={onRetry}
-          className="flex min-h-[48px] min-w-[48px] items-center justify-center rounded-lg text-oa-text-muted transition-colors hover:bg-oa-surface hover:text-oa-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oa-blue focus-visible:ring-offset-2"
-          aria-label="Retry message"
-          title="Retry"
-        >
-          <RotateCcw className="h-3.5 w-3.5" />
-        </button>
+        <ActionButton label="Retry send" onClick={onRetry}>
+          <RotateCcw size={16} aria-hidden="true" />
+        </ActionButton>
       )}
-    </div>
+
+      <DropdownMenu.Root>
+        <DropdownMenu.Trigger asChild>
+          <button
+            type="button"
+            aria-label="More message actions"
+            title="More"
+            className="oa-message-action-btn"
+          >
+            <MoreHorizontal size={16} aria-hidden="true" />
+          </button>
+        </DropdownMenu.Trigger>
+        <DropdownMenu.Portal>
+          <DropdownMenu.Content
+            side="top"
+            align={side === "right" ? "start" : "end"}
+            className="oa-message-menu"
+          >
+            <DropdownMenu.Item className="oa-message-menu-item" onSelect={handleCopy}>
+              {copied ? <Check size={15} aria-hidden="true" /> : <Copy size={15} aria-hidden="true" />}
+              {copied ? "Copied" : "Copy text"}
+            </DropdownMenu.Item>
+            <DropdownMenu.Item className="oa-message-menu-item" onSelect={onCopyLink}>
+              <Copy size={15} aria-hidden="true" />
+              Copy link
+            </DropdownMenu.Item>
+            {onTogglePin && (
+              <DropdownMenu.Item className="oa-message-menu-item" onSelect={onTogglePin}>
+                <Pin size={15} aria-hidden="true" className={pinned ? "rotate-45" : ""} />
+                {pinned ? "Unpin message" : "Pin message"}
+              </DropdownMenu.Item>
+            )}
+            <DropdownMenu.Separator className="oa-message-menu-separator" />
+            <DropdownMenu.Item className="oa-message-menu-item" disabled>
+              Edit message
+            </DropdownMenu.Item>
+            <DropdownMenu.Item className="oa-message-menu-item danger" disabled>
+              Delete message
+            </DropdownMenu.Item>
+          </DropdownMenu.Content>
+        </DropdownMenu.Portal>
+      </DropdownMenu.Root>
+    </Toolbar.Root>
   );
 }

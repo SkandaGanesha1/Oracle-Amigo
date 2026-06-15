@@ -1,11 +1,10 @@
-import { Bot, Inbox, ShieldCheck, FileText, ListChecks, ScrollText, Settings, Wifi, Clock, Search, Calendar, HardDrive, Ban, Bell, CheckCircle2, Database, Shield, SlidersHorizontal, type LucideIcon } from "lucide-react";
+import { Bot, ShieldCheck, FileText, ListChecks, ScrollText, Settings, Wifi, Clock, Search, Calendar, HardDrive, Ban, Bell, CheckCircle2, Database, Shield, SlidersHorizontal, type LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import { useSection } from "./SectionContext";
 import { useA2ATasks, useAgentRuns, useAuditEvents, useCloudStatus, useContacts, useConversations, usePendingApprovals, useReceivedFiles, useTransfers } from "../hooks/queries";
 import { useSidebar } from "../components/SidebarContext";
 import { SidebarToggle } from "../components/SidebarToggle";
 import { useDensityPreference } from "../lib/uiPreferences";
-import { IntentInbox } from "../features/inbox/IntentInbox";
 import type { AgentStatusMessage } from "../api/types";
 
 interface SidebarShellProps {
@@ -68,12 +67,6 @@ function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function InboxSidebar() {
-  const { sidebarOpen } = useSidebar();
-  if (!sidebarOpen) return <SidebarShell label="Inbox" icon={Inbox} collapsed />;
-  return <IntentInbox />;
 }
 
 function AgentsSidebar() {
@@ -227,7 +220,7 @@ export function SectionSidebar() {
     return null;
   }
 
-  if (section === "inbox") return <InboxSidebar />;
+  if (section === "inbox") return null;
   if (section === "agents") return <AgentsSidebar />;
   if (section === "approvals") return <ApprovalsSidebar />;
   if (section === "files") return <FilesSidebar />;

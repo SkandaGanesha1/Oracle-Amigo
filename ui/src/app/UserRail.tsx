@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type Key, type ReactNode } from "
 import { useLocation, useNavigate } from "react-router-dom";
 import { Badge, Button, Drawer, Dropdown } from "@heroui/react";
 import { Cpu, FileText, Inbox, ListChecks, LoaderCircle, LogOut, ScrollText, Search, Settings, ShieldCheck, User as UserIcon, X } from "lucide-react";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import oracleLogoUrl from "../../../UI_images/oracle_logo.png";
 import { OracleAvatar } from "../components/primitives/OracleAvatar";
 import { useCloudStatus, useContacts, useConversations, useDirectorySearch, useLogout, usePendingApprovals, useStartConversation } from "../hooks/queries";
@@ -76,6 +77,7 @@ export function UserRail() {
 
       <RailIconButton
         label="Inbox"
+        detail={inboxBadge > 0 ? `${inboxBadge} item${inboxBadge === 1 ? "" : "s"} need attention` : "No pending inbox items"}
         active={location.pathname.startsWith("/inbox")}
         onClick={() => navigate("/inbox")}
         badge={inboxBadge}
@@ -87,6 +89,7 @@ export function UserRail() {
 
       <RailIconButton
         label="Search directory"
+        detail="Find people and start chats"
         active={searchOpen}
         onClick={() => setSearchOpen((value) => !value)}
       >
@@ -135,57 +138,77 @@ function RailIconButton({
   active,
   badge = 0,
   children,
+  detail,
   label,
   onClick
 }: {
   active: boolean;
   badge?: number;
   children: ReactNode;
+  detail?: string;
   label: string;
   onClick: () => void;
 }) {
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="group relative flex min-h-[54px] w-full items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oa-blue focus-visible:ring-offset-2"
-      aria-label={label}
-      aria-current={active ? "page" : undefined}
-      title={label}
-    >
-      <span className={`absolute left-[-8px] w-1 rounded-r-full bg-white transition-all ${active ? "h-10" : "h-0 group-hover:h-5"}`} />
-      <Badge.Anchor className="relative inline-flex">
-        {children}
-        {badge > 0 && (
-          <Badge color="danger" size="sm" placement="top-right" className="oa-rail-count-badge">
-            {badge > 99 ? "99+" : badge}
-          </Badge>
-        )}
-      </Badge.Anchor>
-    </button>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          onClick={onClick}
+          className="group relative flex min-h-[54px] w-full items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oa-blue focus-visible:ring-offset-2"
+          aria-label={label}
+          aria-current={active ? "page" : undefined}
+        >
+          <span className={`absolute left-[-8px] w-1 rounded-r-full bg-white transition-all ${active ? "h-10" : "h-0 group-hover:h-5"}`} />
+          <Badge.Anchor className="relative inline-flex">
+            {children}
+            {badge > 0 && (
+              <Badge color="danger" size="sm" placement="top-right" className="oa-rail-count-badge">
+                {badge > 99 ? "99+" : badge}
+              </Badge>
+            )}
+          </Badge.Anchor>
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="right" sideOffset={10} className="oa-rail-tooltip">
+        <RailLabelTooltip label={label} detail={detail} />
+      </TooltipContent>
+    </Tooltip>
   );
 }
 
 function RailUserButton({ active, onClick, user }: { active: boolean; onClick: () => void; user: RailUser }) {
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="group relative flex min-h-[54px] w-full items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oa-blue focus-visible:ring-offset-2"
-      aria-label={`Open chat with ${user.displayName}`}
-      aria-current={active ? "true" : undefined}
-      title={`${user.displayName} - ${user.presence.label}`}
-    >
-      <span className={`absolute left-[-8px] w-1 rounded-r-full bg-white transition-all ${active ? "h-10" : "h-0 group-hover:h-5"}`} />
-      <StatusAvatar
-        avatarSeed={user.avatarSeed}
-        displayName={user.displayName}
-        presence={user.presence}
-        unread={user.unread}
-        active={active}
-        local={user.isLocalAgent}
-      />
-    </button>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          onClick={onClick}
+          className="group relative flex min-h-[54px] w-full items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oa-blue focus-visible:ring-offset-2"
+          aria-label={`Open chat with ${user.displayName}`}
+          aria-current={active ? "true" : undefined}
+        >
+          <span className={`absolute left-[-8px] w-1 rounded-r-full bg-white transition-all ${active ? "h-10" : "h-0 group-hover:h-5"}`} />
+          <StatusAvatar
+            avatarSeed={user.avatarSeed}
+            displayName={user.displayName}
+            presence={user.presence}
+            unread={user.unread}
+            active={active}
+            local={user.isLocalAgent}
+          />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="right" sideOffset={10} className="oa-rail-tooltip oa-rail-tooltip-rich">
+        <RailUserTooltip
+          avatarSeed={user.avatarSeed}
+          displayName={user.displayName}
+          detail={user.email ?? user.presence.label}
+          local={user.isLocalAgent}
+          presence={user.presence}
+        />
+      </TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -254,17 +277,29 @@ function RailProfileButton({
 
   return (
     <Dropdown>
-      <Button
-        className="group relative flex min-h-[54px] w-full items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oa-blue focus-visible:ring-offset-2"
-        aria-label={`Account profile: ${displayName}`}
-        variant="ghost"
-      >
-        <StatusAvatar
-          avatarSeed={avatarSeed}
-          displayName={displayName}
-          presence={presence}
-        />
-      </Button>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            className="group relative flex min-h-[54px] w-full items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oa-blue focus-visible:ring-offset-2"
+            aria-label={`Account profile: ${displayName}`}
+            variant="ghost"
+          >
+            <StatusAvatar
+              avatarSeed={avatarSeed}
+              displayName={displayName}
+              presence={presence}
+            />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent side="right" sideOffset={10} className="oa-rail-tooltip oa-rail-tooltip-rich">
+          <RailUserTooltip
+            avatarSeed={avatarSeed}
+            displayName={displayName}
+            detail={cloudStatus?.cloud?.userEmail ?? presence.label}
+            presence={presence}
+          />
+        </TooltipContent>
+      </Tooltip>
       <Dropdown.Popover className="oa-account-dropdown min-w-44 rounded-xl border border-white/10 bg-[#2F2F2F] p-1.5 shadow-2xl">
         <Dropdown.Menu aria-label="Account actions" className="oa-account-dropdown-menu" onAction={handleAction}>
           <Dropdown.Item id="profile" textValue="Profile" className="oa-account-dropdown-item">
@@ -302,6 +337,44 @@ function RailProfileButton({
         </Dropdown.Menu>
       </Dropdown.Popover>
     </Dropdown>
+  );
+}
+
+function RailLabelTooltip({ detail, label }: { detail?: string; label: string }) {
+  return (
+    <div className="min-w-0">
+      <p className="text-sm font-semibold text-oa-text">{label}</p>
+      {detail && <p className="mt-0.5 max-w-48 truncate text-xs text-oa-text-muted">{detail}</p>}
+    </div>
+  );
+}
+
+function RailUserTooltip({
+  avatarSeed,
+  detail,
+  displayName,
+  local,
+  presence
+}: {
+  avatarSeed: string;
+  detail?: string | null;
+  displayName: string;
+  local?: boolean;
+  presence: PeerPresence;
+}) {
+  return (
+    <div className="flex min-w-0 items-center gap-3">
+      <StatusAvatar
+        avatarSeed={avatarSeed}
+        displayName={displayName}
+        local={local}
+        presence={presence}
+      />
+      <span className="min-w-0">
+        <span className="block max-w-44 truncate text-sm font-semibold text-oa-text">{displayName}</span>
+        {detail && <span className="block max-w-44 truncate text-xs text-oa-text-muted">{detail}</span>}
+      </span>
+    </div>
   );
 }
 

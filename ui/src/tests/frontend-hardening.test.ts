@@ -290,8 +290,10 @@ describe("frontend hardening source contracts", () => {
     expect(bubble).toContain("isStructuredCard");
     expect(bubble).toContain("data-side={side}");
     expect(bubble).toContain("data-card={isStructuredCard ? \"true\" : \"false\"}");
+    expect(bubble).toContain("data-grouped={groupedWithPrevious ? \"true\" : \"false\"}");
     expect(bubble).toContain("oa-message-row");
     expect(bubble).toContain("oa-message-main");
+    expect(bubble).toContain("oa-message-header");
     expect(bubble).toContain("oa-message-surface-text");
     expect(bubble).toContain("oa-message-surface-card");
     expect(bubble).toContain("This message was deleted.");
@@ -312,6 +314,7 @@ describe("frontend hardening source contracts", () => {
     expect(styles).toContain(".oa-message-content");
     expect(styles).toContain(".oa-chat-lane");
     expect(styles).toContain(".oa-message-row[data-side=\"right\"]");
+    expect(styles).toContain(".oa-message-row[data-grouped=\"true\"]");
     expect(styles).toContain(".oa-message-surface-text");
     expect(styles).toContain(".oa-message-surface-card");
     expect(chat).toContain("sendAs === \"normal\"");
@@ -352,17 +355,21 @@ describe("frontend hardening source contracts", () => {
     const rail = read("ui/src/app/UserRail.tsx");
     const shell = read("ui/src/app/AppShell.tsx");
     const section = read("ui/src/app/SectionContext.tsx");
+    const sidebar = read("ui/src/app/SectionSidebar.tsx");
     expect(routes).toContain("path=\"/inbox\"");
     expect(routes).toContain("to=\"/inbox\"");
     expect(shell).not.toContain("NavBar");
     expect(nav).not.toContain("{ id: \"inbox\"");
     expect(rail).toContain("navigate(\"/inbox\")");
     expect(section).toContain("inbox: \"Inbox\"");
+    expect(sidebar).toContain("if (section === \"inbox\") return null;");
+    expect(sidebar).not.toContain("<IntentInbox");
   });
 
   it("renders inbox as an action center backed by the inbox API", () => {
     const page = read("ui/src/pages/InboxPage.tsx");
     const actionCenter = read("ui/src/features/inbox/IntentFirstInbox.tsx");
+    const bucketRail = read("ui/src/components/inbox/InboxBucketRail.tsx");
     const inboxApi = read("ui/src/api/inboxApi.ts");
     const hooks = read("ui/src/hooks/queries.ts");
     const detail = read("ui/src/components/inbox/InboxDetailPanel.tsx");
@@ -370,6 +377,8 @@ describe("frontend hardening source contracts", () => {
     const row = read("ui/src/components/inbox/InboxItemRow.tsx");
 
     expect(page).toContain("<IntentFirstInbox />");
+    expect(actionCenter).toContain("<InboxBucketRail");
+    expect(bucketRail).toContain("Action Center");
     expect(page).not.toContain("MemoryInspector");
     expect(page).not.toContain("A2AOrchestrationGraph");
     expect(page).not.toContain("ArtifactRenderer");
@@ -471,7 +480,51 @@ describe("frontend hardening source contracts", () => {
     expect(store).toContain("oa-message-reactions-v1");
     expect(store).toContain("useSyncExternalStore");
     expect(actions).toContain("useMessageReactions(messageId)");
-    expect(actions).toContain("toggleReaction(id)");
+    expect(actions).toContain("toggleReaction(\"like\")");
+    expect(actions).toContain("oa-message-hover-toolbar");
+    expect(actions).toContain("DropdownMenu.Content");
+    expect(actions).not.toContain("min-h-[48px]");
+  });
+
+  it("uses compact chat header, composer, and document preview cards", () => {
+    const header = read("ui/src/features/chat/ConversationHeader.tsx");
+    const composer = read("ui/src/components/stream-like/MessageComposer.tsx");
+    const docCard = read("ui/src/components/stream-like/DocumentPreviewCard.tsx");
+    const fileRequest = read("ui/src/components/agentic-ai/FileRequestMessage.tsx");
+    const approval = read("ui/src/components/agentic-ai/ApprovalCardMessage.tsx");
+    const transfer = read("ui/src/components/agentic-ai/TransferProgressMessage.tsx");
+    const receipt = read("ui/src/components/agentic-ai/FileReceiptMessage.tsx");
+    const styles = read("ui/src/styles.css");
+    expect(header).toContain("oa-chat-header");
+    expect(header).toContain("oa-chat-header-identity");
+    expect(header).toContain("oa-rail-avatar-anchor");
+    expect(header).toContain("oa-rail-avatar h-10 w-10 rounded-full");
+    expect(header).toContain("oa-rail-presence-badge");
+    expect(header).toContain("local ? \"MY\" : initialsFor(displayTitle)");
+    expect(header).not.toContain("oa-chat-header-toolbar");
+    expect(header).not.toContain("oa-chat-header-search");
+    expect(header).not.toContain("oa-open-chat-search");
+    expect(header).not.toContain("presence.label");
+    expect(header).not.toContain("Phone");
+    expect(header).not.toContain("Video");
+    expect(header).not.toContain("UserPlus");
+    expect(header).not.toContain("Members");
+    expect(header).not.toContain("Notifications");
+    expect(header).not.toContain("Voice input");
+    expect(composer).toContain("oa-composer-dock");
+    expect(composer).toContain("oa-composer-frame");
+    expect(composer).toContain("oa-composer-send");
+    expect(composer).not.toContain("HuddleButton");
+    expect(composer).not.toContain("Start huddle");
+    expect(composer).not.toContain("Voice input");
+    expect(docCard).toContain("export interface ChatDocumentPreview");
+    expect(fileRequest).toContain("oa-agent-card compact");
+    expect(approval).toContain("<DocumentPreviewCard");
+    expect(transfer).toContain("<DocumentPreviewCard");
+    expect(receipt).toContain("<DocumentPreviewCard");
+    expect(styles).toContain(".oa-doc-card");
+    expect(styles).toContain(".oa-message-hover-toolbar");
+    expect(styles).toContain(".oa-composer-dock");
   });
 
   it("renders relay peer presence and incoming messages without false offline labels", () => {
@@ -487,16 +540,29 @@ describe("frontend hardening source contracts", () => {
     expect(mapper).toContain("Old agent route - switch to current agent");
     expect(timelineModel).toContain("direction !== \"incoming\"");
     expect(bubble).toContain("humanMessage.sender_label");
-    expect(bubble).toContain("showRetry={isOutgoingHuman}");
+    expect(bubble).toContain("showRetry={isOutgoingHuman && String(deliveryStatus).toLowerCase().includes(\"fail\")}");
     expect(hooks).toContain("queryKeys.contacts");
   });
 
   it("uses an Oracle Amigo user rail without raw agent rows", () => {
     const shell = read("ui/src/app/AppShell.tsx");
+    const providers = read("ui/src/app/AppProviders.tsx");
     const rail = read("ui/src/app/UserRail.tsx");
     const model = read("ui/src/app/userRailModel.ts");
     expect(shell).toContain("<UserRail />");
+    expect(providers).toContain("TooltipProvider");
+    expect(providers).toContain('from "@/components/ui/tooltip"');
     expect(rail).toContain("oa-user-rail");
+    expect(rail).toContain('from "@/components/ui/tooltip"');
+    expect(rail).toContain("<Tooltip>");
+    expect(rail).toContain("<TooltipTrigger asChild>");
+    expect(rail).toContain('<TooltipContent side="right" sideOffset={10}');
+    expect(rail).toContain("RailLabelTooltip");
+    expect(rail).toContain("RailUserTooltip");
+    expect(rail).toContain("detail={user.email ?? user.presence.label}");
+    expect(rail).toContain("detail={cloudStatus?.cloud?.userEmail ?? presence.label}");
+    expect(rail).not.toContain("title={label}");
+    expect(rail).not.toContain("title={`${user.displayName} - ${user.presence.label}`}");
     expect(rail).toContain("Badge.Anchor");
     expect(rail).toContain("Search directory");
     expect(model).toContain("buildRailUsers");
@@ -605,9 +671,10 @@ describe("frontend hardening source contracts", () => {
 
   it("exposes real transfer card actions without fake downloads", () => {
     const transfer = read("ui/src/components/agentic-ai/TransferProgressMessage.tsx");
-    expect(transfer).toContain("Copy SHA-256 hash");
+    expect(transfer).toContain("<DocumentPreviewCard");
+    expect(transfer).toContain("Copy hash");
     expect(transfer).toContain("View in Files");
-    expect(transfer).toContain("ContextMenu.Root");
+    expect(transfer).toContain("copyHash");
     expect(transfer).not.toContain("/download");
   });
 

@@ -375,6 +375,7 @@ export function MessageBubble({ message, onRetry, grouped = false, meta }: Messa
           id={`message-${message.id}`}
           data-side={side}
           data-card={isStructuredCard ? "true" : "false"}
+          data-grouped={groupedWithPrevious ? "true" : "false"}
           layout
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
@@ -385,15 +386,17 @@ export function MessageBubble({ message, onRetry, grouped = false, meta }: Messa
           ].join(" ")}
         >
           {!isOutgoing && !isCentered && !groupedWithPrevious && !isAgentPhase && !isThinkingBar && (
-            <OracleAvatar
-              seed={message.kind}
-              initials={label.slice(0, 2).toUpperCase()}
-              size="sm"
-              className="mt-1 h-8 w-8 shrink-0 ring-2 ring-oa-blue/20"
-            />
+            <div className="oa-message-avatar-slot">
+              <OracleAvatar
+                seed={message.kind}
+                initials={label.slice(0, 2).toUpperCase()}
+                size="sm"
+                className="h-9 w-9 ring-2 ring-oa-blue/20"
+              />
+            </div>
           )}
           {!isOutgoing && !isCentered && groupedWithPrevious && !isAgentPhase && !isThinkingBar && (
-            <div className="h-8 w-8 shrink-0" aria-hidden="true" />
+            <div className="oa-message-avatar-spacer" aria-hidden="true" />
           )}
 
           <div
@@ -403,9 +406,9 @@ export function MessageBubble({ message, onRetry, grouped = false, meta }: Messa
             ].join(" ")}
           >
             {!groupedWithPrevious && !isAgentPhase && !isThinkingBar && !isCentered && (
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-semibold text-oa-text-secondary">{isOutgoing ? "You" : label}</span>
-                <span className="text-[10px] text-oa-text-muted">{time}</span>
+              <div className="oa-message-header">
+                <span className="oa-message-author">{isOutgoing ? "You" : label}</span>
+                <span className="oa-message-time">{time}</span>
                 {pinned && <Pin className="h-3 w-3 rotate-45 text-oa-amber" aria-label="Pinned" />}
               </div>
             )}
@@ -516,11 +519,13 @@ export function MessageBubble({ message, onRetry, grouped = false, meta }: Messa
               <MessageActions
                 text={text}
                 onRetry={onRetry ? () => onRetry(message.id) : undefined}
-                showRetry={isOutgoingHuman}
+                showRetry={isOutgoingHuman && String(deliveryStatus).toLowerCase().includes("fail")}
                 messageId={message.id}
                 pinned={pinned}
                 onTogglePin={conversationId ? handleTogglePin : undefined}
                 onReply={handleReply}
+                side={side}
+                onCopyLink={handleCopyLink}
               />
             )}
           </div>

@@ -38,9 +38,10 @@ test.describe("Oracle Amigo routed chat frontend", () => {
     await expect(page).toHaveURL(/\/inbox$/);
     await expect(page.getByRole("button", { name: "Oracle Amigo" })).toBeVisible();
     await expect(page.getByRole("banner")).toHaveCount(0);
-    await expect(page.getByRole("navigation", { name: "Intent Inbox" })).toBeVisible();
+    await expect(page.getByRole("navigation", { name: "Intent Inbox" })).toHaveCount(0);
     await expect(page.getByRole("main", { name: "Main content" })).toBeVisible();
     await expect(page.getByRole("main", { name: "Main content" })).toContainText("Action Center");
+    await expect(page.getByRole("main", { name: "Main content" })).toContainText("Inbox");
 
     const rail = page.getByLabel("People and inbox rail");
     await expect(rail).toBeVisible();

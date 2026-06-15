@@ -11,15 +11,20 @@ import { getTimelineScroll, saveTimelineScroll, type SavedTimelineScroll } from 
 import type { ConversationReadState, TimelineMessage } from "../../api/types";
 
 function estimateMessageSize(message: TimelineMessage): number {
+  if (message.kind === "human") {
+    const lineCount = Math.ceil((message.text?.length ?? 0) / 88);
+    return Math.max(34, 28 + lineCount * 20);
+  }
+
   switch (message.kind) {
-    case "approval": return 340;
-    case "a2a_task": return 300;
-    case "transfer": return 180;
-    case "receipt": return 160;
-    case "file_request": return 140;
-    case "thinking_bar": return 220;
-    case "system_event": return 72;
-    default: return 100;
+    case "file_request": return 150;
+    case "approval": return 280;
+    case "transfer": return 220;
+    case "receipt": return 190;
+    case "a2a_task": return 220;
+    case "thinking_bar": return 92;
+    case "system_event": return 44;
+    default: return 64;
   }
 }
 

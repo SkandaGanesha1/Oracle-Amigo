@@ -36,8 +36,11 @@ describe("MainChatLayout", () => {
 
   it("renders the global UserRail via AppShell", () => {
     const source = read("ui/src/app/AppShell.tsx");
+    const providers = read("ui/src/app/AppProviders.tsx");
     expect(source).toContain("UserRail");
     expect(source).not.toContain("NavBar");
+    expect(providers).toContain('from "@/components/ui/tooltip"');
+    expect(providers).toContain("<TooltipProvider>");
   });
 
   it("persists inspector state to localStorage", () => {
@@ -97,6 +100,16 @@ describe("UserRail", () => {
     expect(source).toContain("Search directory");
     expect(source).toContain("Inbox");
     expect(source).toContain("StatusAvatar");
+    expect(source).toContain('from "@/components/ui/tooltip"');
+    expect(source).toContain("<Tooltip>");
+    expect(source).toContain("<TooltipTrigger asChild>");
+    expect(source).toContain('<TooltipContent side="right" sideOffset={10}');
+    expect(source).toContain("RailLabelTooltip");
+    expect(source).toContain("RailUserTooltip");
+    expect(source).toContain("detail={user.email ?? user.presence.label}");
+    expect(source).toContain("detail={cloudStatus?.cloud?.userEmail ?? presence.label}");
+    expect(source).not.toContain("title={label}");
+    expect(source).not.toContain("title={`${user.displayName} - ${user.presence.label}`}");
     expect(source).toContain("../../../UI_images/oracle_logo.png");
     expect(source).toContain("alt=\"Oracle\"");
     expect(source).not.toContain("<Bot");

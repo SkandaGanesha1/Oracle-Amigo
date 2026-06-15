@@ -1,13 +1,12 @@
-import { PanelRightOpen, PanelRightClose } from "lucide-react";
+import { Badge } from "@heroui/react";
 import { OracleAvatar } from "../../components/primitives/OracleAvatar";
-import { OracleBadge } from "../../components/primitives/OracleBadge";
 import type { Conversation } from "../../api/types";
-import { normalizePeerPresence, presenceBadgeColor } from "../../lib/normalizePeerPresence";
+import { normalizePeerPresence } from "../../lib/normalizePeerPresence";
 
 interface ConversationHeaderProps {
   conversation: Conversation;
-  onToggleInspector: () => void;
-  inspectorOpen: boolean;
+  onToggleInspector?: () => void;
+  inspectorOpen?: boolean;
 }
 
 function friendlifyName(title: string): string {
@@ -18,48 +17,44 @@ function friendlifyName(title: string): string {
   return title;
 }
 
-export function ConversationHeader({ conversation, onToggleInspector, inspectorOpen }: ConversationHeaderProps) {
+function initialsFor(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length >= 2) return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
+  return (parts[0] ?? "U").slice(0, 2).toUpperCase();
+}
+
+function isLocalConversation(conversation: Conversation): boolean {
+  return conversation.id === "local-agent" || conversation.title.toLowerCase().includes("local agent");
+}
+
+export function ConversationHeader({ conversation }: ConversationHeaderProps) {
   const presence = normalizePeerPresence(conversation);
-  const badgeColor = presenceBadgeColor(presence);
   const displayTitle = friendlifyName(conversation.title);
+  const local = isLocalConversation(conversation);
+  const initials = local ? "MY" : initialsFor(displayTitle);
 
   return (
-    <header className="glass-panel flex h-14 shrink-0 items-center gap-3 border-x-0 border-t-0 px-4">
-      <div className="flex items-center gap-3 min-w-0">
-        <div className="shrink-0">
-          <OracleBadge color={badgeColor} anchor placement="bottom-right">
-            <OracleAvatar
-              seed={displayTitle}
-              initials={displayTitle.slice(0, 2).toUpperCase()}
-              size="sm"
-              className="h-9 w-9"
-            />
-          </OracleBadge>
-        </div>
-        <div className="flex min-w-0 flex-col">
-          <span className="truncate text-sm font-semibold text-oa-text">
+    <header className="oa-chat-header glass-panel">
+      <div className="oa-chat-header-identity">
+        <Badge.Anchor className="oa-rail-avatar-anchor relative inline-flex h-10 w-10 overflow-visible">
+          <OracleAvatar
+            seed={local ? "local-agent" : displayTitle}
+            initials={initials}
+            size="md"
+            className="oa-rail-avatar h-10 w-10 rounded-full ring-2 ring-transparent"
+          />
+          <Badge
+            color={presence.status === "online" ? "success" : "danger"}
+            size="md"
+            placement="bottom-right"
+            className={`oa-rail-presence-badge ${presence.status === "online" ? "oa-rail-presence-online" : "oa-rail-presence-offline"}`}
+          />
+        </Badge.Anchor>
+        <div className="min-w-0">
+          <div className="truncate text-[15px] font-semibold text-oa-chat-text">
             {displayTitle}
-          </span>
-          {presence.label && (
-            <span className="text-xs text-oa-text-muted">
-              {presence.label}
-            </span>
-          )}
+          </div>
         </div>
-      </div>
-
-      <div className="ml-auto flex items-center gap-1">
-        <button
-          type="button"
-          onClick={onToggleInspector}
-          className="flex min-h-[48px] min-w-[48px] items-center justify-center rounded-lg text-oa-text-muted transition-colors hover:bg-oa-surface hover:text-oa-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oa-blue focus-visible:ring-offset-2"
-          aria-label={inspectorOpen ? "Close inspector" : "Open inspector"}
-          aria-expanded={inspectorOpen}
-          aria-controls="right-inspector-panel"
-          title={inspectorOpen ? "Close inspector" : "Open inspector"}
-        >
-          {inspectorOpen ? <PanelRightClose className="h-4 w-4" /> : <PanelRightOpen className="h-4 w-4" />}
-        </button>
       </div>
     </header>
   );
