@@ -14,11 +14,12 @@ The launcher does not implement relay, directory, approval, storage, or file-tra
 6. Rust-side global shortcut handling emits `voice:stop-and-submit` on `Ctrl+Space` release.
 7. The launcher stops microphone capture, posts the transcript to `POST /voice/commands` with `mode: "auto_execute"`, then calls `POST /voice/commands/:id/confirm`.
 8. Remote file requests reuse the existing cloud relay file-request path and still require the remote user approval before transfer.
+9. The chat UI can list prior commands with `GET /voice/commands`, inspect a command with `GET /voice/commands/:id`, and subscribe to command-specific SSE with `GET /voice/commands/:id/events`.
 
 ## Security Boundaries
 
 - No raw audio is persisted.
-- Command records store transcripts, parse output, preview metadata, safe status, conversation id, and relay task id.
+- Command records store transcripts, parse output, preview metadata, safe status, conversation id, mission id, and relay task id.
 - Raw local paths, tokens, bearer headers, and secret-looking values are redacted from command errors.
 - Tauri shell permissions allow only the local-agent startup command, not arbitrary shell execution.
 - `Ctrl+Space` is the default push-to-talk shortcut.

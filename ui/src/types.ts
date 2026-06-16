@@ -684,11 +684,43 @@ export interface MissionStep {
   details?: Record<string, unknown>;
 }
 
+export interface MissionParticipant {
+  id: string;
+  label: string;
+  role: "requester" | "owner" | "agent" | "recipient";
+  type: "user" | "local_agent" | "remote_agent" | "system";
+  verified?: boolean;
+}
+
+export interface MissionArtifact {
+  id: string;
+  type: "file" | "message" | "audit" | "run";
+  name: string;
+  status?: string;
+  url?: string | null;
+}
+
+export interface MissionRisk {
+  level: "low" | "medium" | "high" | "critical";
+  score: number;
+  reasons: string[];
+}
+
 export interface Mission {
   id: string;
+  source?: "chat" | "approval" | "transfer" | "agent_run" | "a2a" | "voice" | "audit";
   title: string;
   description: string;
   status: MissionStatus;
+  participants?: MissionParticipant[];
+  risk?: MissionRisk;
+  dataMovement?: {
+    leavesDevice: boolean;
+    direction: "none" | "incoming" | "outgoing" | "bidirectional";
+    scope: string;
+    expiresAt?: string | null;
+    revocable: boolean;
+  };
   createdAt: string;
   updatedAt: string;
   requesterName: string;
@@ -697,11 +729,105 @@ export interface Mission {
   recipientName: string;
   recipientAgentName: string;
   steps: MissionStep[];
+  artifacts?: MissionArtifact[];
+  approvals?: string[];
+  transfers?: string[];
+  agentRunIds?: string[];
+  a2aTaskIds?: string[];
+  voiceCommandId?: string | null;
+  failure?: { message: string; retryable: boolean } | null;
+  retry?: { count: number; lastRetriedAt?: string | null } | null;
   activeStepIndex: number;
   consentRecordId: string | null;
-  conversationId: string;
+  conversationId: string | null;
   artifactCount: number;
   transferCount: number;
+}
+
+export interface RealtimeEvent {
+  kind: string;
+  entityType: "mission" | "approval" | "transfer" | "agent_run" | "conversation" | "inbox" | "voice_command" | "policy" | "notification" | string;
+  entityId: string;
+  operation: "created" | "updated" | "deleted" | "snapshot" | string;
+  payload: Record<string, unknown>;
+  timestamp: string;
+}
+
+export interface VoiceCommandRecord {
+  id: string;
+  transcript: string;
+  source: string;
+  locale: string | null;
+  inputMode: "typed" | "speech" | null;
+  confidence: number | null;
+  parserProvider: "rule" | "llm" | "fallback" | null;
+  parsedIntent: string;
+  parsed: Record<string, unknown>;
+  preview: {
+    title: string;
+    summary?: string;
+    error?: string;
+    requiresConfirmation?: boolean;
+    [key: string]: unknown;
+  };
+  status: "preview_required" | "confirmed" | "submitted" | "running" | "completed" | "failed" | "cancelled";
+  conversationId: string | null;
+  missionId: string | null;
+  relayTaskId: string | null;
+  errorMessage: string | null;
+  createdAt: string;
+  updatedAt: string;
+  confirmedAt: string | null;
+  completedAt: string | null;
+}
+
+export interface VoiceCommandListResult {
+  commands: VoiceCommandRecord[];
+  pageInfo: { offset: number; limit: number; hasMore: boolean };
+}
+
+export interface VoiceCommandRealtimeEvent extends RealtimeEvent {
+  entityType: "voice_command";
+  payload: { command?: VoiceCommandRecord; commands?: VoiceCommandRecord[] };
+}
+
+export interface AgentProfileDetail {
+  id: string;
+  displayName: string;
+  email?: string | null;
+  did?: string;
+  registryTrustLevel?: RegistryTrustLevel;
+  skills: SkillManifest[];
+  presence?: PeerPresence;
+  contact?: Contact;
+  registry?: RegistryAgent;
+}
+
+export interface UserAgentSettings {
+  privacy: {
+    showOnline: boolean;
+    shareDiagnostics: boolean;
+    safeMode: boolean;
+    maskFileNames: boolean;
+  };
+  notifications: {
+    enabled: boolean;
+    approvals: boolean;
+    transfers: boolean;
+    errors: boolean;
+  };
+  autonomy: {
+    autoApproveLowRisk: boolean;
+    autoRetry: boolean;
+    confirmFileAccess: boolean;
+    confirmExternal: boolean;
+    maxRetries: number;
+  };
+  fileAccess: {
+    confirmBeforeSend: boolean;
+    showPreview: boolean;
+    autoVerify: boolean;
+  };
 }
 
 export interface ConsentRecord {

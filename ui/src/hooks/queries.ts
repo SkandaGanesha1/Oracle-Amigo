@@ -3,11 +3,11 @@ import { AlertTriangle, Bot, CheckCircle2, Clock3, ShieldAlert } from "lucide-re
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, mapApproval } from "../api/client";
 import { fileIndexApi } from "../api/client";
-import type { ChatSendRequest, ChatSendResult, Conversation, ConversationMessagesResult, CreateConversationRequest, FileCandidateApprovalCard, RegistryTrustLevel, TimelineMessage, ConsentRecord, WorkflowEvent, CloudStatus, MissionThreadMessage, PolicyRule } from "../api/types";
+import type { ChatSendRequest, ChatSendResult, Conversation, ConversationMessagesResult, CreateConversationRequest, FileCandidateApprovalCard, RegistryTrustLevel, TimelineMessage, ConsentRecord, WorkflowEvent, CloudStatus, MissionThreadMessage, PolicyRule, UserAgentSettings } from "../api/types";
 import type { InboxItemsParams, InboxServerAction } from "../api/inboxApi";
 import type { ActionableInboxItem, TriageGroup, UniversalSearchResult } from "../types/agentic";
 import { generateHumanReadableTitle } from "../lib/agentic-utils";
-import { RealtimeLifecycle, SseTransport } from "../realtime/RealtimeTransport";
+import { SseTransport } from "../realtime/RealtimeTransport";
 import { toast } from "../components/primitives/OracleToast";
 
 const QUEUE_KEY = "oa-queued-messages";
@@ -166,6 +166,9 @@ export const queryKeys = {
   notifications: ["notifications"] as const,
   biometricCapability: ["biometric", "capability"] as const,
   missions: ["missions"] as const,
+  voiceCommands: ["voice", "commands"] as const,
+  voiceCommand: (id: string) => ["voice", "commands", id] as const,
+  userAgentSettings: ["settings", "user-agent"] as const,
   consent: (id: string) => ["consent", id] as const,
   trustGraph: ["trust", "graph"] as const,
   inboxItems: (params: InboxItemsParams) => ["inbox", "items", params] as const,
@@ -548,19 +551,35 @@ function useSendChatMutation(conversationId: string, sendAs: ChatSendRequest["se
       const queryKey = queryKeys.conversationMessages(conversationId);
       await queryClient.cancelQueries({ queryKey });
       const previous = queryClient.getQueryData<ConversationMessagesResult>(queryKey);
-      const optimistic: TimelineMessage = {
-        kind: "human",
-        id: messageId,
-        conversation_id: conversationId,
-        sender_user_id: null,
-        sender_agent_instance_id: null,
-        receiver_agent_instance_id: null,
-        direction: "outgoing",
-        sender_label: "You",
-        text: input.text,
-        created_at: new Date().toISOString(),
-        delivery_status: "local_pending"
-      };
+      const createdAt = new Date().toISOString();
+      const optimistic: TimelineMessage = sendAs === "file_request"
+        ? {
+          kind: "file_request",
+          id: messageId,
+          origin_side: "local",
+          author_label: "You",
+          task_id: messageId,
+          requester: "You",
+          target: "Peer",
+          natural_language_request: input.text,
+          query: input.text,
+          status: "submitted",
+          created_at: createdAt,
+          details: {}
+        }
+        : {
+          kind: "human",
+          id: messageId,
+          conversation_id: conversationId,
+          sender_user_id: null,
+          sender_agent_instance_id: null,
+          receiver_agent_instance_id: null,
+          direction: "outgoing",
+          sender_label: "You",
+          text: input.text,
+          created_at: createdAt,
+          delivery_status: "local_pending"
+        };
       queryClient.setQueryData<ConversationMessagesResult>(queryKey, {
         conversationId,
         messages: [...(previous?.messages ?? []), optimistic],
@@ -580,7 +599,7 @@ function useSendChatMutation(conversationId: string, sendAs: ChatSendRequest["se
           queryClient.setQueryData<ConversationMessagesResult>(context.queryKey, {
             ...current,
             messages: current.messages.map((msg) =>
-              msg.id === context.messageId && msg.kind === "human"
+              msg.id === context.messageId && (msg.kind === "human" || msg.kind === "file_request")
                 ? { ...msg, delivery_status: "failed" as const }
                 : msg
             )
@@ -607,7 +626,7 @@ function useSendChatMutation(conversationId: string, sendAs: ChatSendRequest["se
           queryClient.setQueryData<ConversationMessagesResult>(context.queryKey, {
             ...current,
             messages: current.messages.map((msg) =>
-              msg.id === context.messageId && msg.kind === "human"
+              msg.id === context.messageId && (msg.kind === "human" || msg.kind === "file_request")
                 ? { ...msg, delivery_status: result.delivery_status, relay_task_id: result.relay_task_id ?? null }
                 : msg
             )
@@ -1242,6 +1261,84 @@ export function useMissions() {
   });
 }
 
+export function useVoiceCommands(limit = 50, offset = 0) {
+  return useQuery({
+    queryKey: queryKeys.voiceCommands,
+    queryFn: () => api.voiceCommands(limit, offset),
+    refetchInterval: 5000
+  });
+}
+
+export function useVoiceCommand(commandId: string | null) {
+  return useQuery({
+    queryKey: queryKeys.voiceCommand(commandId ?? "none"),
+    queryFn: () => api.voiceCommand(commandId!),
+    enabled: Boolean(commandId),
+    refetchInterval: (query) => {
+      const status = query.state.data?.command?.status;
+      return status === "running" || status === "submitted" || status === "confirmed" ? 1000 : false;
+    }
+  });
+}
+
+export function useCreateVoiceCommand() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: api.createVoiceCommand,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.voiceCommands });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.missions });
+    }
+  });
+}
+
+export function useConfirmVoiceCommand() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { commandId: string; idempotencyKey?: string }) => api.confirmVoiceCommand(input.commandId, { idempotency_key: input.idempotencyKey }),
+    onSuccess: (data) => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.voiceCommands });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.voiceCommand(data.command.id) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.missions });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.conversations });
+    }
+  });
+}
+
+export function useCancelVoiceCommand() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (commandId: string) => api.cancelVoiceCommand(commandId),
+    onSuccess: (data) => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.voiceCommands });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.voiceCommand(data.command.id) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.missions });
+    }
+  });
+}
+
+export function useUserAgentSettings() {
+  return useQuery({
+    queryKey: queryKeys.userAgentSettings,
+    queryFn: api.userAgentSettings,
+    staleTime: 30000
+  });
+}
+
+export function useUpdateUserAgentSettings() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (settings: UserAgentSettings) => api.updateUserAgentSettings(settings),
+    onSuccess: () => {
+      toast.success("Settings saved");
+      void queryClient.invalidateQueries({ queryKey: queryKeys.userAgentSettings });
+    },
+    onError: (error) => {
+      toast.danger(error instanceof Error ? error.message : "Failed to save settings");
+    }
+  });
+}
+
 export function useInboxTriage() {
   const { approvalCards } = usePendingApprovals();
   const { data: convsData } = useConversations();
@@ -1437,7 +1534,7 @@ export function useTrustGraph() {
 export function useRealtimePolling() {
   const queryClient = useQueryClient();
   useEffect(() => {
-    const transport = new RealtimeLifecycle([
+    const fallback = [
       { queryKey: [...queryKeys.conversations], intervalMs: 3000 },
       { queryKey: [...queryKeys.contacts], intervalMs: 3000 },
       { queryKey: [...queryKeys.relayInbox], intervalMs: 3000 },
@@ -1448,8 +1545,10 @@ export function useRealtimePolling() {
       { queryKey: [...queryKeys.auditEvents], intervalMs: 7000 },
       { queryKey: [...queryKeys.missions], intervalMs: 3000 },
       { queryKey: [...queryKeys.trustGraph], intervalMs: 10000 },
-      { queryKey: [...queryKeys.cloudStatus], intervalMs: 10000 }
-    ]);
+      { queryKey: [...queryKeys.cloudStatus], intervalMs: 10000 },
+      { queryKey: [...queryKeys.voiceCommands], intervalMs: 5000 }
+    ];
+    const transport = new SseTransport("/events", fallback);
     transport.start(queryClient);
     return () => transport.stop();
   }, [queryClient]);

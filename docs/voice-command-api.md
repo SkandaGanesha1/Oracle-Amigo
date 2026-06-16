@@ -5,8 +5,10 @@ The local agent exposes a voice command API for the separate Oracle Amigo Quick 
 ## Endpoints
 
 - `GET /voice/status`
+- `GET /voice/commands`
 - `POST /voice/commands`
 - `GET /voice/commands/:id`
+- `GET /voice/commands/:id/events`
 - `POST /voice/commands/:id/confirm`
 - `POST /voice/commands/:id/cancel`
 
@@ -23,6 +25,8 @@ The local agent exposes a voice command API for the separate Oracle Amigo Quick 
 ```
 
 The response stores a safe command record and returns a preview. The push-to-talk launcher immediately calls `POST /voice/commands/:id/confirm` after capture. Remote file requests then enter the existing relay flow; the remote user still approves before any file transfer.
+
+`GET /voice/commands` returns recent command history with `commands` and `pageInfo`. Each command stores its linked `conversationId`, `missionId`, and `relayTaskId` when execution creates downstream work. `GET /voice/commands/:id/events` streams command lifecycle events, while `/events` emits normalized `voice_command_update` snapshots for the main React Query cache.
 
 ## Execution Rules
 

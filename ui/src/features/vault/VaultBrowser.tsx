@@ -59,7 +59,9 @@ export function VaultBrowser() {
   const { data: rootsData } = useFileIndexRoots();
   const { data: vaultRootsData } = useVaultRoots();
   const { data: indexedData } = useIndexedFiles(50, 0);
-  const { data: searchResults } = useFileSearch("");
+  const [searchQuery, setSearchQuery] = useState("");
+  const normalizedSearchQuery = searchQuery.trim();
+  const { data: searchResults } = useFileSearch(normalizedSearchQuery);
   const { data: filesData, isLoading } = useReceivedFiles();
   const { data: transfersData } = useTransfers();
   const { approvalCards } = usePendingApprovals();
@@ -79,7 +81,6 @@ export function VaultBrowser() {
   const indexed = indexedData?.items ?? [];
   const transfers = transfersData?.transfers ?? [];
 
-  const [searchQuery, setSearchQuery] = useState("");
   const [previewFile, setPreviewFile] = useState<StoredFile | null>(null);
   const [showIndexRoots, setShowIndexRoots] = useState(true);
   const [showTransfers, setShowTransfers] = useState(false);
@@ -94,12 +95,13 @@ export function VaultBrowser() {
     return files.filter((f) => f.originalFileName.toLowerCase().includes(q));
   }, [files, searchQuery]);
 
+  const indexedDisplay = normalizedSearchQuery ? (searchResults ?? []) : indexed;
   const indexedWithSensitivity = useMemo(() => {
-    return indexed.map((file) => ({
+    return indexedDisplay.map((file) => ({
       ...file,
       sensitivity: detectFileSensitivity(file.fileName, file.displayPath),
     }));
-  }, [indexed]);
+  }, [indexedDisplay]);
 
   const handleRevoke = (fileId: string) => {
     const match = approvalCards.find((a) =>
@@ -267,13 +269,15 @@ export function VaultBrowser() {
         <section className="rounded-xl border border-oa-border bg-oa-surface/80 overflow-hidden">
           <div className="flex items-center gap-2 px-4 py-3">
             <Shield className="h-4 w-4 text-oa-purple" />
-            <h2 className="text-sm font-semibold text-oa-text">Indexed Files</h2>
-            <span className="ml-auto text-[10px] text-oa-text-muted">{indexed.length} files</span>
+            <h2 className="text-sm font-semibold text-oa-text">{normalizedSearchQuery ? "Search Results" : "Indexed Files"}</h2>
+            <span className="ml-auto text-[10px] text-oa-text-muted">
+              {indexedWithSensitivity.length} {normalizedSearchQuery ? "matches" : "files"}
+            </span>
           </div>
           <div className="border-t border-oa-border px-4 pb-4">
             {indexedWithSensitivity.length === 0 ? (
               <p className="mt-3 rounded-lg border border-dashed border-oa-border bg-oa-bg-elevated p-3 text-xs text-oa-text-muted">
-                No files indexed yet. Add roots and run index.
+                {normalizedSearchQuery ? "No indexed files match this search." : "No files indexed yet. Add roots and run index."}
               </p>
             ) : (
               <div className="mt-3 space-y-1.5 max-h-64 overflow-y-auto">

@@ -268,6 +268,13 @@ function ensurePhaseFiveTables(db: DatabaseSync): void {
       metadata_json TEXT NOT NULL DEFAULT '{}',
       created_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS user_agent_settings (
+      profile_id TEXT PRIMARY KEY,
+      settings_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
   `);
 }
 
@@ -283,12 +290,20 @@ function ensureVoiceTables(db: DatabaseSync): void {
       transcript TEXT NOT NULL,
       source TEXT NOT NULL,
       locale TEXT,
+      input_mode TEXT,
+      stt_provider TEXT,
       stt_confidence REAL,
+      confidence REAL,
+      parser_provider TEXT,
+      file_extensions_json TEXT NOT NULL DEFAULT '[]',
+      target_user_id TEXT,
+      target_agent_instance_id TEXT,
       parsed_intent TEXT NOT NULL,
       parsed_json TEXT NOT NULL DEFAULT '{}',
       preview_json TEXT NOT NULL DEFAULT '{}',
       status TEXT NOT NULL,
       conversation_id TEXT,
+      mission_id TEXT,
       relay_task_id TEXT,
       error_message TEXT,
       created_at TEXT NOT NULL,
@@ -299,5 +314,24 @@ function ensureVoiceTables(db: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS idx_voice_commands_profile_created
       ON voice_commands(profile_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS voice_command_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      command_id TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      payload_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_voice_command_events_command_created
+      ON voice_command_events(command_id, created_at, id);
   `);
+  addColumnIfMissing(db, "voice_commands", "input_mode", "TEXT");
+  addColumnIfMissing(db, "voice_commands", "stt_provider", "TEXT");
+  addColumnIfMissing(db, "voice_commands", "confidence", "REAL");
+  addColumnIfMissing(db, "voice_commands", "parser_provider", "TEXT");
+  addColumnIfMissing(db, "voice_commands", "file_extensions_json", "TEXT NOT NULL DEFAULT '[]'");
+  addColumnIfMissing(db, "voice_commands", "target_user_id", "TEXT");
+  addColumnIfMissing(db, "voice_commands", "target_agent_instance_id", "TEXT");
+  addColumnIfMissing(db, "voice_commands", "mission_id", "TEXT");
 }

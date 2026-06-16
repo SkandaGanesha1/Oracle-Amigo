@@ -1,10 +1,21 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { z, ZodError } from "zod";
-import { VoiceCommandRequestSchema, VoiceTranscribeRequestSchema, type VoiceTranscribeRequest } from "./VoiceCommandTypes.js";
+import {
+  VoiceCommandConfirmRequestSchema,
+  VoiceCommandRequestSchema,
+  VoiceTranscribeRequestSchema,
+  type VoiceCommandRecord,
+  type VoiceTranscribeRequest
+} from "./VoiceCommandTypes.js";
 import { VoiceCommandError, VoiceCommandService } from "./VoiceCommandService.js";
 
 const CommandIdParamsSchema = z.object({
   id: z.string().trim().min(1)
+});
+
+const VoiceCommandListQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+  offset: z.coerce.number().int().min(0).max(10_000).default(0)
 });
 
 export function registerVoiceCommandRoutes(
@@ -31,7 +42,24 @@ export function registerVoiceCommandRoutes(
     try {
       const body = VoiceCommandRequestSchema.parse(request.body ?? {});
       const command = await service.createCommand(body);
-      return { command };
+      return voiceCommandResponse(command);
+    } catch (err) {
+      return sendVoiceError(reply, err);
+    }
+  });
+
+  server.get("/voice/commands", async (request, reply) => {
+    try {
+      const query = VoiceCommandListQuerySchema.parse(request.query ?? {});
+      const commands = service.listCommands(query);
+      return {
+        commands,
+        pageInfo: {
+          offset: query.offset,
+          limit: query.limit,
+          hasMore: commands.length === query.limit
+        }
+      };
     } catch (err) {
       return sendVoiceError(reply, err);
     }
@@ -41,14 +69,31 @@ export function registerVoiceCommandRoutes(
     const { id } = CommandIdParamsSchema.parse(request.params);
     const command = service.getCommand(id);
     if (!command) return reply.status(404).send({ error: "VOICE_COMMAND_NOT_FOUND", message: "Voice command not found" });
-    return { command };
+    return voiceCommandResponse(command);
+  });
+
+  server.get("/voice/commands/:id/events", async (request, reply) => {
+    const { id } = CommandIdParamsSchema.parse(request.params);
+    const command = service.getCommand(id);
+    if (!command) return reply.status(404).send({ error: "VOICE_COMMAND_NOT_FOUND", message: "Voice command not found" });
+    reply.raw.writeHead(200, {
+      "content-type": "text/event-stream",
+      "cache-control": "no-cache",
+      connection: "keep-alive"
+    });
+    for (const event of service.listEvents(id)) {
+      writeSse(reply.raw, event.eventType, event);
+    }
+    const unsubscribe = service.subscribe(id, (event) => writeSse(reply.raw, event.eventType, event));
+    request.raw.on("close", unsubscribe);
   });
 
   server.post("/voice/commands/:id/confirm", async (request, reply) => {
     try {
       const { id } = CommandIdParamsSchema.parse(request.params);
-      const command = await service.confirmCommand(id);
-      return { command };
+      const body = VoiceCommandConfirmRequestSchema.parse(request.body ?? {});
+      const command = await service.confirmCommand(id, body);
+      return voiceCommandResponse(command);
     } catch (err) {
       return sendVoiceError(reply, err);
     }
@@ -58,7 +103,7 @@ export function registerVoiceCommandRoutes(
     try {
       const { id } = CommandIdParamsSchema.parse(request.params);
       const command = service.cancelCommand(id);
-      return { command };
+      return voiceCommandResponse(command);
     } catch (err) {
       return sendVoiceError(reply, err);
     }
@@ -119,4 +164,23 @@ function sendVoiceError(reply: FastifyReply, err: unknown): void {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function voiceCommandResponse(command: VoiceCommandRecord): Record<string, unknown> {
+  return {
+    command,
+    command_id: command.id,
+    status: command.status,
+    parsed: command.parsed,
+    preview: command.preview,
+    mission_id: command.missionId,
+    conversation_id: command.conversationId,
+    relay_task_id: command.relayTaskId,
+    message: command.status === "submitted" ? "File request sent to the remote agent." : undefined
+  };
+}
+
+function writeSse(raw: NodeJS.WritableStream, event: string, data: unknown): void {
+  raw.write(`event: ${event}\n`);
+  raw.write(`data: ${JSON.stringify(data)}\n\n`);
 }

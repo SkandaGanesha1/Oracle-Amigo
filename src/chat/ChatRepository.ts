@@ -3,7 +3,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { getDb } from "../db/connection.js";
 
 export type ChatMode = "local" | "cloud_relay" | "loopback";
-export type ChatMessageType = "human" | "agent_status" | "system_event" | "file_request" | "approval" | "transfer" | "receipt";
+export type ChatMessageType = "human" | "agent_status" | "system_event" | "voice_command" | "file_request" | "approval" | "transfer" | "receipt";
 export type DeliveryStatus =
   | "local_pending"
   | "queued_at_relay"

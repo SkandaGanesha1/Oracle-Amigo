@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSendMessage, useSendFileRequest, useQueuedMessages, useRetryQueued, useCancelQueued, useLoadAroundMessage, useLoadBeforeMessages } from "../../hooks/queries";
 import { MessageTimeline } from "./MessageTimeline";
 import { ComposerDock } from "./ComposerDock";
@@ -151,7 +151,8 @@ function collapseAgentStatusMessages(messages: TimelineMessage[]): TimelineMessa
 export function ChatWindow({ conversation, messages, loading, conversationId, readState, pageInfo, onMarkRead }: ChatWindowProps) {
   const sendMessage = useSendMessage(conversationId);
   const sendFileRequest = useSendFileRequest(conversationId);
-  const [pendingSend, setPendingSend] = useState<{ text: string; sendAs: "normal" | "file_request" } | null>(null);
+  const [pendingSend, setPendingSend] = useState<{ text: string; sendAs: "normal" | "file_request"; clientMessageId: string } | null>(null);
+  const confirmingSendRef = useRef(false);
   const [jumpToMessageId, setJumpToMessageId] = useState<string | null>(null);
   const queuedMessages = useQueuedMessages(conversationId);
   const retryQueued = useRetryQueued(conversationId);
@@ -178,15 +179,17 @@ export function ChatWindow({ conversation, messages, loading, conversationId, re
       await sendMessage.mutateAsync({ text, clientMessageId: crypto.randomUUID() });
       return;
     }
-    setPendingSend({ text, sendAs });
+    setPendingSend({ text, sendAs, clientMessageId: crypto.randomUUID() });
   }, [sendMessage]);
 
   const handleConfirmSend = useCallback(async () => {
-    if (!pendingSend) return;
+    if (!pendingSend || confirmingSendRef.current) return;
+    confirmingSendRef.current = true;
     const sender = pendingSend.sendAs === "file_request" ? sendFileRequest : sendMessage;
     try {
-      await sender.mutateAsync({ text: pendingSend.text });
+      await sender.mutateAsync({ text: pendingSend.text, clientMessageId: pendingSend.clientMessageId });
     } finally {
+      confirmingSendRef.current = false;
       setPendingSend(null);
     }
   }, [pendingSend, sendMessage, sendFileRequest]);

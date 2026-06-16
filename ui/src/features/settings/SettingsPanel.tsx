@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   useAgentDiagnostics,
   useCloudStatus,
@@ -8,8 +8,11 @@ import {
   useEvaluatePolicyRule,
   useNotifications,
   usePolicyRules,
-  usePolicySummary
+  usePolicySummary,
+  useUpdateUserAgentSettings,
+  useUserAgentSettings
 } from "../../hooks/queries";
+import type { UserAgentSettings } from "../../api/types";
 import { useDensityPreference } from "../../lib/uiPreferences";
 import { setPrivacyMode } from "../../lib/usePrivacyMode";
 import { useTheme, Theme } from "../../components/primitives/ThemeProvider";
@@ -45,6 +48,21 @@ function Toggle({ enabled, onChange, label }: { enabled: boolean; onChange: (v: 
         <span className={`absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${enabled ? "translate-x-4" : ""}`} />
       </button>
     </label>
+  );
+}
+
+function SettingsSaveButton({ onSave, pending }: { onSave: () => void; pending: boolean }) {
+  return (
+    <div className="flex justify-end border-t border-oa-border/50 px-3 py-3">
+      <button
+        type="button"
+        onClick={onSave}
+        disabled={pending}
+        className="inline-flex min-h-[40px] items-center rounded-lg border border-oa-border bg-oa-blue/10 px-3 text-xs font-medium text-oa-blue transition hover:bg-oa-blue/15 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oa-blue"
+      >
+        {pending ? "Saving..." : "Save settings"}
+      </button>
+    </div>
   );
 }
 
@@ -213,7 +231,9 @@ export function SettingsPanel() {
   const { data: cloudData, isLoading: cloudLoading } = useCloudStatus();
   const { data: diagData } = useAgentDiagnostics();
   const { data: policySummary } = usePolicySummary();
+  const { data: persistedSettings } = useUserAgentSettings();
   const evaluatePolicy = useEvaluateCommandPolicy();
+  const updateUserAgentSettings = useUpdateUserAgentSettings();
   const [activeSection, setActiveSection] = useState("account");
   const { density, setDensity } = useDensityPreference();
   const { theme, setTheme } = useTheme();
@@ -242,6 +262,60 @@ export function SettingsPanel() {
     privacySafeMode: false,
     showDevDiagnostics: false,
   });
+
+  useEffect(() => {
+    if (!persistedSettings?.settings) return;
+    const value = persistedSettings.settings;
+    setSettings((current) => ({
+      ...current,
+      privacyShowOnline: value.privacy.showOnline,
+      privacyShareDiagnostics: value.privacy.shareDiagnostics,
+      privacySafeMode: value.privacy.safeMode,
+      notificationsEnabled: value.notifications.enabled,
+      notifyApprovals: value.notifications.approvals,
+      notifyTransfers: value.notifications.transfers,
+      notifyErrors: value.notifications.errors,
+      autoApproveLowRisk: value.autonomy.autoApproveLowRisk,
+      autonomyAutoRetry: value.autonomy.autoRetry,
+      autonomyConfirmFileAccess: value.autonomy.confirmFileAccess,
+      autonomyConfirmExternal: value.autonomy.confirmExternal,
+      autonomyMaxRetries: value.autonomy.maxRetries,
+      fileAccessConfirmBeforeSend: value.fileAccess.confirmBeforeSend,
+      fileAccessShowPreview: value.fileAccess.showPreview,
+      fileAccessAutoVerify: value.fileAccess.autoVerify,
+    }));
+    setPrivacyMode(value.privacy.safeMode);
+  }, [persistedSettings]);
+
+  const saveBackendSettings = () => {
+    const next: UserAgentSettings = {
+      privacy: {
+        showOnline: settings.privacyShowOnline,
+        shareDiagnostics: settings.privacyShareDiagnostics,
+        safeMode: settings.privacySafeMode,
+        maskFileNames: settings.privacySafeMode
+      },
+      notifications: {
+        enabled: settings.notificationsEnabled,
+        approvals: settings.notifyApprovals,
+        transfers: settings.notifyTransfers,
+        errors: settings.notifyErrors
+      },
+      autonomy: {
+        autoApproveLowRisk: settings.autoApproveLowRisk,
+        autoRetry: settings.autonomyAutoRetry,
+        confirmFileAccess: settings.autonomyConfirmFileAccess,
+        confirmExternal: settings.autonomyConfirmExternal,
+        maxRetries: settings.autonomyMaxRetries
+      },
+      fileAccess: {
+        confirmBeforeSend: settings.fileAccessConfirmBeforeSend,
+        showPreview: settings.fileAccessShowPreview,
+        autoVerify: settings.fileAccessAutoVerify
+      }
+    };
+    updateUserAgentSettings.mutate(next);
+  };
 
   if (cloudLoading) {
     return (
@@ -374,6 +448,7 @@ export function SettingsPanel() {
               <Toggle enabled={settings.privacyShareDiagnostics} onChange={(v) => setSettings((s) => ({ ...s, privacyShareDiagnostics: v }))} label="Share anonymous diagnostics" />
               <Toggle enabled={settings.privacySafeMode} onChange={(v) => { setSettings((s) => ({ ...s, privacySafeMode: v })); setPrivacyMode(v); }} label="Privacy-safe mode (mask filenames)" />
             </div>
+            <SettingsSaveButton onSave={saveBackendSettings} pending={updateUserAgentSettings.isPending} />
           </SettingSection>
         )}
 
@@ -386,6 +461,7 @@ export function SettingsPanel() {
                 <Toggle enabled={settings.notifyTransfers} onChange={(v) => setSettings((s) => ({ ...s, notifyTransfers: v }))} label="File transfers" />
                 <Toggle enabled={settings.notifyErrors} onChange={(v) => setSettings((s) => ({ ...s, notifyErrors: v }))} label="Errors and failures" />
               </div>
+              <SettingsSaveButton onSave={saveBackendSettings} pending={updateUserAgentSettings.isPending} />
             </SettingSection>
             <NotificationEventsPanel />
           </div>
@@ -418,6 +494,7 @@ export function SettingsPanel() {
                 </div>
               </div>
             </div>
+            <SettingsSaveButton onSave={saveBackendSettings} pending={updateUserAgentSettings.isPending} />
           </SettingSection>
         )}
 
@@ -428,6 +505,7 @@ export function SettingsPanel() {
               <Toggle enabled={settings.fileAccessShowPreview} onChange={(v) => setSettings((s) => ({ ...s, fileAccessShowPreview: v }))} label="Show file previews" />
               <Toggle enabled={settings.fileAccessAutoVerify} onChange={(v) => setSettings((s) => ({ ...s, fileAccessAutoVerify: v }))} label="Auto-verify file hashes" />
             </div>
+            <SettingsSaveButton onSave={saveBackendSettings} pending={updateUserAgentSettings.isPending} />
           </SettingSection>
         )}
 

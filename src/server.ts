@@ -163,6 +163,33 @@ const InboxBulkSchema = z.object({
   snoozedUntil: z.string().datetime().optional()
 });
 
+const UserAgentSettingsSchema = z.object({
+  privacy: z.object({
+    showOnline: z.boolean().default(true),
+    shareDiagnostics: z.boolean().default(false),
+    safeMode: z.boolean().default(false),
+    maskFileNames: z.boolean().default(true)
+  }).default({}),
+  notifications: z.object({
+    enabled: z.boolean().default(true),
+    approvals: z.boolean().default(true),
+    transfers: z.boolean().default(true),
+    errors: z.boolean().default(true)
+  }).default({}),
+  autonomy: z.object({
+    autoApproveLowRisk: z.boolean().default(false),
+    autoRetry: z.boolean().default(true),
+    confirmFileAccess: z.boolean().default(true),
+    confirmExternal: z.boolean().default(true),
+    maxRetries: z.number().int().min(1).max(5).default(3)
+  }).default({}),
+  fileAccess: z.object({
+    confirmBeforeSend: z.boolean().default(true),
+    showPreview: z.boolean().default(true),
+    autoVerify: z.boolean().default(true)
+  }).default({})
+});
+
 const SkillIdSchema = z.string().trim().regex(/^[a-z0-9][a-z0-9-]{1,63}$/);
 
 const SkillWriteSchema = z.object({
@@ -407,7 +434,8 @@ export function buildServer(
         token = await deviceEnrollment.refreshUserAccessToken().catch(() => token ?? null);
       }
       if (!token) return null;
-      const usersResponse = await new DirectoryClient(new ControlPlaneClient(cloud.controlPlaneUrl)).searchUsers(query, token);
+      const directory = new DirectoryClient(new ControlPlaneClient(cloud.controlPlaneUrl));
+      const usersResponse = await directory.searchUsers(query, token);
       const users = usersResponse.users ?? [];
       const normalized = query.trim().toLowerCase();
       const exact = users.find((user) =>
@@ -415,13 +443,62 @@ export function buildServer(
         user.display_name?.toLowerCase() === normalized
       );
       const user = exact ?? users[0] ?? null;
+      const agents = user
+        ? await directory.getUserAgents(user.user_id, token).catch(() => null)
+        : null;
+      const activeFileAgent = agents?.agents.find((agent) =>
+        (agent.status === "online" || agent.status === "active") &&
+        (agent.capabilities ?? []).includes("file.request")
+      ) ?? agents?.agents.find((agent) => (agent.capabilities ?? []).includes("file.request")) ?? null;
       return user ? {
         userId: user.user_id,
         displayName: user.display_name ?? null,
-        email: user.email ?? null
+        email: user.email ?? null,
+        activeAgentInstanceId: activeFileAgent?.agent_instance_id ?? null
       } : null;
     },
-    executeRemoteFileRequest: async ({ commandId, targetUserId, targetLabel, fileQuery, idempotencyKey }) => {
+    appendVoiceCommandMessage: async (record) => {
+      const cloud = cloudStore.get();
+      const targetUser = record.preview.targetUser;
+      const conversation = targetUser
+        ? chatRepo.findCloudRelayConversationByPeerUser(targetUser.userId) ?? chatRepo.createConversation({
+          orgId: cloud?.orgId ?? null,
+          localUserId: cloud?.userId ?? null,
+          localAgentInstanceId: cloud?.agentInstanceId ?? localIdentity.agentId,
+          peerUserId: targetUser.userId,
+          peerAgentInstanceId: targetUser.activeAgentInstanceId ?? null,
+          mode: "cloud_relay",
+          title: targetUser.displayName ?? targetUser.email ?? "Remote user"
+        })
+        : chatRepo.getOrCreateLocalConversation(cloud?.agentInstanceId ?? localIdentity.agentId);
+      if (targetUser) {
+        chatRepo.updateConversationPeer(conversation.id, {
+          peerUserId: targetUser.userId,
+          peerAgentInstanceId: targetUser.activeAgentInstanceId ?? conversation.peer_agent_instance_id,
+          title: targetUser.displayName ?? targetUser.email ?? conversation.title
+        });
+      }
+      chatRepo.appendMessage({
+        id: `msg_voice_origin_${record.id}`,
+        conversationId: conversation.id,
+        taskId: record.id,
+        senderUserId: cloud?.userId ?? null,
+        senderAgentInstanceId: cloud?.agentInstanceId ?? localIdentity.agentId,
+        receiverAgentInstanceId: targetUser?.activeAgentInstanceId ?? conversation.peer_agent_instance_id,
+        messageType: "voice_command",
+        text: record.transcript,
+        payload: {
+          voice_command_id: record.id,
+          transcript: record.transcript,
+          parsed: record.parsed,
+          preview: record.preview,
+          status: record.status,
+          target_user_id: targetUser?.userId ?? null
+        },
+        deliveryStatus: "delivered"
+      });
+    },
+    executeRemoteFileRequest: async ({ commandId, targetUserId, targetLabel, fileQuery, fileExtensions, idempotencyKey }) => {
       const cloud = cloudStore.get();
       if (!cloud?.deviceAccessToken || !cloud.agentInstanceId) {
         return { status: "failed", errorMessage: "This device is not enrolled for cloud relay." };
@@ -436,7 +513,10 @@ export function buildServer(
         return { status: "failed", errorMessage: "No active remote agent is available for this user." };
       }
 
-      const text = `Send me ${fileQuery} file`;
+      const lowerQuery = fileQuery.toLowerCase();
+      const hasExtensionInQuery = fileExtensions.some((ext) => lowerQuery.endsWith(`.${ext.toLowerCase()}`));
+      const extensionText = fileExtensions.length && !hasExtensionInQuery ? ` ${fileExtensions.join("/")} file` : " file";
+      const text = `Send me ${fileQuery}${extensionText}`;
       const conversation = chatRepo.findCloudRelayConversationByPeerUser(targetUserId) ?? chatRepo.createConversation({
         orgId: cloud.orgId,
         localUserId: cloud.userId,
@@ -470,6 +550,8 @@ export function buildServer(
           query: text,
           source: "voice-launcher",
           voice_command_id: commandId,
+          mission_id: a2aTaskId,
+          file_extensions: fileExtensions,
           status: "submitted"
         },
         deliveryStatus: "local_pending"
@@ -481,7 +563,7 @@ export function buildServer(
             to_agent_instance_id: toAgentInstanceId,
             a2a_task_id: a2aTaskId,
             type: "file.request",
-            payload: { kind: "file_request", text, requestText: text, voice_command_id: commandId },
+            payload: { kind: "file_request", text, requestText: text, voice_command_id: commandId, mission_id: a2aTaskId },
             idempotency_key: idempotencyKey
           }, fresh.deviceAccessToken!)
         );
@@ -491,7 +573,8 @@ export function buildServer(
           relay_accepted_at: relay.accepted_at,
           to_agent_instance_id: toAgentInstanceId,
           peer_user_id: targetUserId,
-          voice_command_id: commandId
+          voice_command_id: commandId,
+          mission_id: a2aTaskId
         });
         chatRepo.appendMessage({
           conversationId: conversation.id,
@@ -500,10 +583,10 @@ export function buildServer(
           receiverAgentInstanceId: toAgentInstanceId,
           messageType: "agent_status",
           text: "Waiting for remote approval",
-          payload: { relay_task_id: relay.relay_task_id, phase: "input_required", voice_command_id: commandId },
+          payload: { relay_task_id: relay.relay_task_id, phase: "input_required", voice_command_id: commandId, mission_id: a2aTaskId },
           deliveryStatus: "queued_at_relay"
         });
-        return { status: "submitted", conversationId: conversation.id, relayTaskId: relay.relay_task_id };
+        return { status: "submitted", conversationId: conversation.id, missionId: a2aTaskId, relayTaskId: relay.relay_task_id };
       } catch (err) {
         const relayError = normalizeRelaySendError(err);
         chatRepo.markMessageStatus(messageId, "failed", relayError.message);
@@ -669,6 +752,22 @@ export function buildServer(
     session: protocol.createPeerSession({ agentId: protocol.createLocalIdentity().agentId, did: protocol.createLocalIdentity().did, publicKey: protocol.createLocalIdentity().publicKey, trustLevel: "local" })
   }));
 
+  server.get("/settings/user-agent", localOnly, async () => {
+    return sanitizeFacadePayload({ settings: loadUserAgentSettings(defaultProfileId()) });
+  });
+
+  server.put("/settings/user-agent", localOnly, async (request) => {
+    const incoming = parseBody(UserAgentSettingsSchema, request.body ?? {});
+    const settings = saveUserAgentSettings(defaultProfileId(), incoming);
+    appendAuditEvent({
+      actorAgentId: protocol.createLocalIdentity().agentId,
+      taskId: "user-agent-settings",
+      eventType: "USER_AGENT_SETTINGS_UPDATED",
+      detailsJson: { sections: Object.keys(incoming) }
+    });
+    return sanitizeFacadePayload({ settings });
+  });
+
   server.get("/search/universal", localOnly, async (request) => {
     const query = parseBody(UniversalSearchQuerySchema, request.query ?? {});
     const types = query.types
@@ -676,6 +775,18 @@ export function buildServer(
       .map((item) => item.trim())
       .filter(Boolean) as Parameters<typeof universalSearch.search>[0]["types"];
     return sanitizeFacadePayload(universalSearch.search({ query: query.q, types, limit: query.limit }));
+  });
+
+  server.get("/missions", localOnly, async () => {
+    return sanitizeFacadePayload({ missions: buildMissionProjections({ chatRepo, protocol, agentRuns: agentRuns.listRuns(), voiceCommands }) });
+  });
+
+  server.get("/missions/:missionId", localOnly, async (request, reply) => {
+    const { missionId } = request.params as { missionId: string };
+    const mission = buildMissionProjections({ chatRepo, protocol, agentRuns: agentRuns.listRuns(), voiceCommands })
+      .find((candidate) => candidate.id === missionId);
+    if (!mission) return reply.status(404).send({ error: "MISSION_NOT_FOUND", message: "Mission not found" });
+    return sanitizeFacadePayload({ mission });
   });
 
   server.get("/missions/:missionId/thread", localOnly, async (request) => {
@@ -716,6 +827,38 @@ export function buildServer(
       writeSse(reply.raw, "thread_message", sanitizeFacadePayload(message));
     });
     request.raw.on("close", unsubscribe);
+  });
+
+  server.get("/events", localOnly, async (request, reply) => {
+    reply.raw.writeHead(200, {
+      "content-type": "text/event-stream",
+      "cache-control": "no-cache",
+      connection: "keep-alive"
+    });
+
+    const emitSnapshot = () => {
+      const timestamp = new Date().toISOString();
+      writeSse(reply.raw, "message", sanitizeFacadePayload({
+        kind: "mission_update",
+        entityType: "mission",
+        entityId: "*",
+        operation: "snapshot",
+        payload: { missions: buildMissionProjections({ chatRepo, protocol, agentRuns: agentRuns.listRuns(), voiceCommands }).slice(0, 100) },
+        timestamp
+      }));
+      writeSse(reply.raw, "message", sanitizeFacadePayload({
+        kind: "voice_command_update",
+        entityType: "voice_command",
+        entityId: "*",
+        operation: "snapshot",
+        payload: { commands: voiceCommands.listCommands({ limit: 25 }) },
+        timestamp
+      }));
+    };
+
+    emitSnapshot();
+    const timer = setInterval(emitSnapshot, 5000);
+    request.raw.on("close", () => clearInterval(timer));
   });
 
   server.post("/redactions/preview", localOnly, async (request, reply) => {
@@ -3946,6 +4089,52 @@ interface InboxItemState {
   updatedAt: string;
 }
 
+type UserAgentSettings = z.infer<typeof UserAgentSettingsSchema>;
+type MissionProjectionStatus = "active" | "awaiting_approval" | "completed" | "failed" | "cancelled";
+type MissionProjectionSource = "chat" | "approval" | "transfer" | "agent_run" | "a2a" | "voice" | "audit";
+
+interface MissionProjectionStep {
+  id: string;
+  label: string;
+  kind: "search" | "reasoning" | "tool_call" | "approval" | "transfer" | "receipt" | "error";
+  status: "running" | "completed" | "failed" | "skipped";
+  description: string;
+  durationMs?: number;
+  details?: Record<string, unknown>;
+}
+
+interface MissionProjection {
+  id: string;
+  source: MissionProjectionSource;
+  title: string;
+  description: string;
+  status: MissionProjectionStatus;
+  participants: Array<{ id: string; label: string; role: "requester" | "owner" | "agent" | "recipient"; type: "user" | "local_agent" | "remote_agent" | "system"; verified?: boolean }>;
+  risk: { level: "low" | "medium" | "high" | "critical"; score: number; reasons: string[] };
+  dataMovement: { leavesDevice: boolean; direction: "none" | "incoming" | "outgoing" | "bidirectional"; scope: string; expiresAt?: string | null; revocable: boolean };
+  steps: MissionProjectionStep[];
+  artifacts: Array<{ id: string; type: "file" | "message" | "audit" | "run"; name: string; status?: string; url?: string | null }>;
+  approvals: string[];
+  transfers: string[];
+  agentRunIds: string[];
+  a2aTaskIds: string[];
+  voiceCommandId?: string | null;
+  conversationId: string | null;
+  failure?: { message: string; retryable: boolean } | null;
+  retry?: { count: number; lastRetriedAt?: string | null } | null;
+  createdAt: string;
+  updatedAt: string;
+  requesterName: string;
+  requesterAgentName: string;
+  requesterAgentVerified: boolean;
+  recipientName: string;
+  recipientAgentName: string;
+  activeStepIndex: number;
+  consentRecordId: string | null;
+  artifactCount: number;
+  transferCount: number;
+}
+
 const INBOX_BUCKETS: InboxBucket[] = [
   "needs_my_approval",
   "agent_working",
@@ -4201,6 +4390,343 @@ function dedupeInboxItems(items: InboxItem[]): InboxItem[] {
     seen.add(item.id);
     return true;
   });
+}
+
+function defaultUserAgentSettings(): UserAgentSettings {
+  return UserAgentSettingsSchema.parse({});
+}
+
+function loadUserAgentSettings(profileId: string): UserAgentSettings {
+  const row = getDb().prepare("SELECT settings_json FROM user_agent_settings WHERE profile_id = ?").get(profileId) as { settings_json?: string } | undefined;
+  if (!row?.settings_json) return defaultUserAgentSettings();
+  return UserAgentSettingsSchema.parse(parseRecordJson(row.settings_json));
+}
+
+function saveUserAgentSettings(profileId: string, settings: UserAgentSettings): UserAgentSettings {
+  const parsed = UserAgentSettingsSchema.parse(settings);
+  const now = new Date().toISOString();
+  getDb().prepare(`
+    INSERT INTO user_agent_settings (profile_id, settings_json, created_at, updated_at)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(profile_id) DO UPDATE SET
+      settings_json = excluded.settings_json,
+      updated_at = excluded.updated_at
+  `).run(profileId, JSON.stringify(parsed), now, now);
+  return parsed;
+}
+
+function buildMissionProjections(input: {
+  chatRepo: ChatRepository;
+  protocol: PersonalAgentProtocol;
+  agentRuns: AgentRunResult[];
+  voiceCommands: VoiceCommandService;
+}): MissionProjection[] {
+  const missions = new Map<string, MissionProjection>();
+  const conversations = input.chatRepo.listConversations();
+  const messagesByConversation = new Map(conversations.map((conversation) => [conversation.id, input.chatRepo.getMessages(conversation.id)]));
+
+  const ensureMission = (id: string, seed: Partial<MissionProjection> & Pick<MissionProjection, "title" | "description" | "source" | "createdAt" | "updatedAt">): MissionProjection => {
+    const existing = missions.get(id);
+    if (existing) {
+      existing.updatedAt = maxIso(existing.updatedAt, seed.updatedAt);
+      existing.createdAt = minIso(existing.createdAt, seed.createdAt);
+      existing.status = strongerMissionStatus(existing.status, seed.status ?? existing.status);
+      if (seed.failure) existing.failure = seed.failure;
+      return existing;
+    }
+    const mission: MissionProjection = {
+      id,
+      source: seed.source,
+      title: seed.title,
+      description: seed.description,
+      status: seed.status ?? "active",
+      participants: seed.participants ?? [],
+      risk: seed.risk ?? { level: "low", score: 10, reasons: ["Local agent activity"] },
+      dataMovement: seed.dataMovement ?? { leavesDevice: false, direction: "none", scope: "local", revocable: false },
+      steps: seed.steps ?? [],
+      artifacts: seed.artifacts ?? [],
+      approvals: seed.approvals ?? [],
+      transfers: seed.transfers ?? [],
+      agentRunIds: seed.agentRunIds ?? [],
+      a2aTaskIds: seed.a2aTaskIds ?? [],
+      voiceCommandId: seed.voiceCommandId ?? null,
+      conversationId: seed.conversationId ?? null,
+      failure: seed.failure ?? null,
+      retry: seed.retry ?? { count: 0, lastRetriedAt: null },
+      createdAt: seed.createdAt,
+      updatedAt: seed.updatedAt,
+      requesterName: seed.requesterName ?? "My local agent",
+      requesterAgentName: seed.requesterAgentName ?? "Oracle Amigo",
+      requesterAgentVerified: seed.requesterAgentVerified ?? true,
+      recipientName: seed.recipientName ?? "Me",
+      recipientAgentName: seed.recipientAgentName ?? "My Local Agent",
+      activeStepIndex: 0,
+      consentRecordId: seed.consentRecordId ?? null,
+      artifactCount: seed.artifactCount ?? 0,
+      transferCount: seed.transferCount ?? 0
+    };
+    missions.set(id, mission);
+    return mission;
+  };
+
+  for (const task of wfListTasks()) {
+    const conversation = findConversationByTask(conversations, messagesByConversation, task.id);
+    const status = normalizeMissionStatus(`${task.status} ${task.protocolState}`);
+    const mission = ensureMission(task.id, {
+      source: "a2a",
+      title: missionTitleFromMetadata(task.metadataJson, task.type, task.id),
+      description: missionDescriptionFromMetadata(task.metadataJson, task.type),
+      status,
+      createdAt: task.createdAt,
+      updatedAt: task.updatedAt,
+      conversationId: conversation?.id ?? task.contextId,
+      a2aTaskIds: [task.id],
+      steps: workflowStepsForTask(task.id)
+    });
+    addUnique(mission.a2aTaskIds, task.id);
+    if (mission.steps.length === 0) {
+      mission.steps.push({
+        id: `task:${task.id}`,
+        label: task.type.replaceAll(".", " "),
+        kind: "tool_call",
+        status: status === "completed" ? "completed" : status === "failed" ? "failed" : "running",
+        description: task.protocolState
+      });
+    }
+  }
+
+  for (const approval of input.protocol.listApprovals()) {
+    const conversation = findConversationByTask(conversations, messagesByConversation, approval.taskId);
+    const pending = approval.status === "pending" && new Date(approval.expiresAt).getTime() > Date.now();
+    const failed = approval.status === "rejected" || approval.status === "expired" || !pending && approval.status === "pending";
+    const fileName = approval.boundFilePath ? basename(approval.boundFilePath) : "Approval candidate";
+    const mission = ensureMission(approval.taskId, {
+      source: "approval",
+      title: pending ? `Approval needed: ${fileName}` : `Approval ${approval.status}: ${fileName}`,
+      description: approval.approvalType.replaceAll(".", " "),
+      status: pending ? "awaiting_approval" : failed ? "failed" : "completed",
+      createdAt: approval.createdAt,
+      updatedAt: approval.decidedAt ?? approval.createdAt,
+      conversationId: conversation?.id ?? null,
+      consentRecordId: approval.id,
+      participants: [
+        { id: approval.requesterAgentId, label: approvalRequesterDisplayName(approval.id, approval.requesterAgentId), role: "requester", type: "remote_agent", verified: true },
+        { id: approval.ownerAgentId, label: "My local agent", role: "owner", type: "local_agent", verified: true }
+      ],
+      risk: {
+        level: pending ? "high" : failed ? "medium" : "low",
+        score: pending ? 72 : failed ? 55 : 25,
+        reasons: ["Human consent required", approval.boundFilePath ? "Local file selected" : "No final file selected"]
+      },
+      dataMovement: { leavesDevice: true, direction: "outgoing", scope: approval.approvalType, expiresAt: approval.expiresAt, revocable: approval.status === "approved" },
+      approvals: [approval.id],
+      steps: [{
+        id: `approval:${approval.id}`,
+        label: "Human approval",
+        kind: "approval",
+        status: pending ? "running" : failed ? "failed" : "completed",
+        description: approval.approvalType.replaceAll(".", " ")
+      }],
+      requesterName: approvalRequesterDisplayName(approval.id, approval.requesterAgentId),
+      requesterAgentName: approvalRequesterDisplayName(approval.id, approval.requesterAgentId),
+      recipientName: "Me",
+      recipientAgentName: "My Local Agent"
+    });
+    addUnique(mission.approvals, approval.id);
+    mission.consentRecordId ??= approval.id;
+  }
+
+  for (const row of getDb().prepare("SELECT * FROM transfers ORDER BY created_at DESC LIMIT 200").all() as Array<Record<string, unknown>>) {
+    const taskId = String(row.task_id ?? row.transfer_id ?? row.id);
+    const transferId = String(row.transfer_id ?? row.id);
+    const fileName = String(row.file_name ?? "Transferred file");
+    const status = normalizeMissionStatus(String(row.status ?? ""));
+    const mission = ensureMission(taskId, {
+      source: "transfer",
+      title: `Transfer: ${fileName}`,
+      description: `${formatBytes(Number(row.size_bytes ?? 0))} tracked transfer.`,
+      status,
+      createdAt: String(row.created_at ?? new Date().toISOString()),
+      updatedAt: String(row.completed_at ?? row.created_at ?? new Date().toISOString()),
+      dataMovement: { leavesDevice: true, direction: "bidirectional", scope: "file.transfer", revocable: status !== "completed" },
+      transfers: [transferId],
+      artifacts: [{ id: transferId, type: "file", name: fileName, status: String(row.status ?? "created") }],
+      steps: [{
+        id: `transfer:${transferId}`,
+        label: "File transfer",
+        kind: "transfer",
+        status: status === "failed" ? "failed" : status === "completed" ? "completed" : "running",
+        description: String(row.status ?? "created")
+      }]
+    });
+    addUnique(mission.transfers, transferId);
+    addArtifact(mission, { id: transferId, type: "file", name: fileName, status: String(row.status ?? "created") });
+  }
+
+  for (const run of input.agentRuns.slice(0, 100)) {
+    const mission = ensureMission(`run:${run.runId}`, {
+      source: "agent_run",
+      title: run.query,
+      description: run.finalAnswer?.message ?? "Local agent run",
+      status: run.status === "running" ? "active" : run.status === "failed" ? "failed" : "completed",
+      createdAt: run.createdAt,
+      updatedAt: run.updatedAt,
+      agentRunIds: [run.runId],
+      artifacts: [{ id: run.runId, type: "run", name: run.query, status: run.status }],
+      steps: run.steps.map((step) => ({
+        id: `run:${run.runId}:${step.id}`,
+        label: step.label,
+        kind: step.executionTarget === "oci-llm" ? "reasoning" : "tool_call",
+        status: step.status === "skipped" ? "skipped" : step.status,
+        description: step.stderr ?? step.stdout ?? step.executionTarget,
+        durationMs: step.durationMs,
+        details: step.command ? { command: redactLocalPathText(step.command) } : undefined
+      })),
+      failure: run.status === "failed" ? { message: run.finalAnswer?.message ?? "Agent run failed", retryable: true } : null
+    });
+    addUnique(mission.agentRunIds, run.runId);
+  }
+
+  for (const command of input.voiceCommands.listCommands({ limit: 100 })) {
+    const missionId = command.missionId ?? command.relayTaskId ?? command.id;
+    const status: MissionProjectionStatus =
+      command.status === "failed" ? "failed" :
+      command.status === "cancelled" ? "cancelled" :
+      command.status === "completed" || command.status === "submitted" ? "completed" :
+      command.status === "preview_required" ? "awaiting_approval" : "active";
+    const mission = ensureMission(missionId, {
+      source: "voice",
+      title: command.preview.title,
+      description: command.preview.summary ?? command.transcript,
+      status,
+      createdAt: command.createdAt,
+      updatedAt: command.updatedAt,
+      voiceCommandId: command.id,
+      conversationId: command.conversationId,
+      dataMovement: command.parsed.intent === "remote_file_request"
+        ? { leavesDevice: true, direction: "outgoing", scope: "relay.file_request", revocable: command.status !== "completed" }
+        : { leavesDevice: false, direction: "none", scope: "local.voice_command", revocable: false },
+      risk: command.parsed.intent === "remote_file_request"
+        ? { level: "high", score: 70, reasons: ["Voice command can initiate a relay request", "Explicit confirmation required"] }
+        : { level: "low", score: 20, reasons: ["Local command preview"] },
+      steps: [{
+        id: `voice:${command.id}`,
+        label: "Voice command",
+        kind: "tool_call",
+        status: status === "failed" ? "failed" : status === "awaiting_approval" ? "running" : "completed",
+        description: command.transcript,
+        details: { intent: command.parsed.intent, parserProvider: command.parserProvider, confidence: command.confidence }
+      }],
+      failure: command.errorMessage ? { message: command.errorMessage, retryable: command.status === "failed" } : null
+    });
+    mission.voiceCommandId = command.id;
+    if (command.conversationId) mission.conversationId = command.conversationId;
+  }
+
+  for (const mission of missions.values()) {
+    mission.steps = dedupeMissionSteps(mission.steps);
+    mission.artifacts = dedupeMissionArtifacts(mission.artifacts);
+    mission.status = inferMissionStatus(mission);
+    mission.activeStepIndex = Math.max(0, mission.steps.findIndex((step) => step.status === "running"));
+    mission.artifactCount = mission.artifacts.length;
+    mission.transferCount = mission.transfers.length;
+  }
+
+  return [...missions.values()].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+}
+
+function workflowStepsForTask(taskId: string): MissionProjectionStep[] {
+  const rows = getDb().prepare(`
+    SELECT * FROM workflow_events WHERE task_id = ? ORDER BY created_at ASC, id ASC
+  `).all(taskId) as Array<Record<string, unknown>>;
+  return rows.map((row, index) => {
+    const payload = parseRecordJson(row.payload_json);
+    const status = /failed|rejected|error/i.test(String(row.state_to ?? row.event_type ?? "")) ? "failed" : "completed";
+    return {
+      id: `workflow:${taskId}:${String(row.id ?? index)}`,
+      label: String(row.event_type ?? "Workflow event").replaceAll("_", " ").toLowerCase(),
+      kind: status === "failed" ? "error" : "tool_call",
+      status,
+      description: String(row.state_to ?? row.state_from ?? "Workflow updated"),
+      details: payload
+    };
+  });
+}
+
+function missionTitleFromMetadata(metadata: Record<string, unknown>, type: string, id: string): string {
+  const candidate = metadata.title ?? metadata.requestText ?? metadata.text ?? metadata.query ?? metadata.fileQuery;
+  return typeof candidate === "string" && candidate.trim() ? candidate.trim() : `${type.replaceAll(".", " ")} ${shortId(id)}`;
+}
+
+function missionDescriptionFromMetadata(metadata: Record<string, unknown>, type: string): string {
+  const candidate = metadata.description ?? metadata.requestText ?? metadata.text ?? metadata.query ?? metadata.fileQuery;
+  return typeof candidate === "string" && candidate.trim() ? candidate.trim() : type.replaceAll(".", " ");
+}
+
+function normalizeMissionStatus(value: string): MissionProjectionStatus {
+  const text = value.toLowerCase();
+  if (/cancel/.test(text)) return "cancelled";
+  if (/fail|error|reject|expired/.test(text)) return "failed";
+  if (/complete|completed|done|stored|available|submitted/.test(text)) return "completed";
+  if (/approval|input-required|input_required|pending/.test(text)) return "awaiting_approval";
+  return "active";
+}
+
+function inferMissionStatus(mission: MissionProjection): MissionProjectionStatus {
+  if (mission.status === "failed" || mission.status === "cancelled") return mission.status;
+  if (mission.approvals.length > 0 && mission.steps.some((step) => step.kind === "approval" && step.status === "running")) return "awaiting_approval";
+  if (mission.steps.some((step) => step.status === "failed")) return "failed";
+  if (mission.steps.length > 0 && mission.steps.every((step) => step.status === "completed" || step.status === "skipped")) return mission.status === "awaiting_approval" ? "awaiting_approval" : "completed";
+  return mission.status;
+}
+
+function strongerMissionStatus(a: MissionProjectionStatus, b: MissionProjectionStatus): MissionProjectionStatus {
+  const rank: Record<MissionProjectionStatus, number> = { failed: 5, awaiting_approval: 4, active: 3, cancelled: 2, completed: 1 };
+  return rank[b] > rank[a] ? b : a;
+}
+
+function addUnique(values: string[], value: string): void {
+  if (value && !values.includes(value)) values.push(value);
+}
+
+function addArtifact(mission: MissionProjection, artifact: MissionProjection["artifacts"][number]): void {
+  if (!mission.artifacts.some((candidate) => candidate.id === artifact.id)) mission.artifacts.push(artifact);
+}
+
+function dedupeMissionSteps(steps: MissionProjectionStep[]): MissionProjectionStep[] {
+  const seen = new Set<string>();
+  return steps.filter((step) => {
+    if (seen.has(step.id)) return false;
+    seen.add(step.id);
+    return true;
+  });
+}
+
+function dedupeMissionArtifacts(artifacts: MissionProjection["artifacts"]): MissionProjection["artifacts"] {
+  const seen = new Set<string>();
+  return artifacts.filter((artifact) => {
+    if (seen.has(artifact.id)) return false;
+    seen.add(artifact.id);
+    return true;
+  });
+}
+
+function minIso(a: string, b: string): string {
+  return new Date(a).getTime() <= new Date(b).getTime() ? a : b;
+}
+
+function maxIso(a: string, b: string): string {
+  return new Date(a).getTime() >= new Date(b).getTime() ? a : b;
+}
+
+function parseRecordJson(value: unknown): Record<string, unknown> {
+  if (typeof value !== "string" || !value) return {};
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+  } catch {
+    return {};
+  }
 }
 
 function findConversationByTask(

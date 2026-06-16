@@ -5,6 +5,7 @@ export type RealtimeEventKind =
   | "approval_update"
   | "transfer_update"
   | "conversation_update"
+  | "voice_command_update"
   | "agent_status"
   | "cloud_status"
   | "unknown";
@@ -63,6 +64,7 @@ function queryKeyFromKind(kind: string): unknown[] {
   if (kind === "approval_update") return ["approvals", "pending"];
   if (kind === "transfer_update") return ["files", "received"];
   if (kind === "conversation_update") return ["chat", "conversations"];
+  if (kind === "voice_command_update") return ["voice", "commands"];
   if (kind === "cloud_status") return ["cloud-status"];
   return ["missions"];
 }

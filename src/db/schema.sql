@@ -412,6 +412,13 @@ CREATE TABLE IF NOT EXISTS notification_events (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS user_agent_settings (
+  profile_id TEXT PRIMARY KEY,
+  settings_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS voice_commands (
   id TEXT PRIMARY KEY,
   profile_id TEXT NOT NULL,
@@ -422,12 +429,20 @@ CREATE TABLE IF NOT EXISTS voice_commands (
   transcript TEXT NOT NULL,
   source TEXT NOT NULL,
   locale TEXT,
+  input_mode TEXT,
+  stt_provider TEXT,
   stt_confidence REAL,
+  confidence REAL,
+  parser_provider TEXT,
+  file_extensions_json TEXT NOT NULL DEFAULT '[]',
+  target_user_id TEXT,
+  target_agent_instance_id TEXT,
   parsed_intent TEXT NOT NULL,
   parsed_json TEXT NOT NULL DEFAULT '{}',
   preview_json TEXT NOT NULL DEFAULT '{}',
   status TEXT NOT NULL,
   conversation_id TEXT,
+  mission_id TEXT,
   relay_task_id TEXT,
   error_message TEXT,
   created_at TEXT NOT NULL,
@@ -438,3 +453,14 @@ CREATE TABLE IF NOT EXISTS voice_commands (
 
 CREATE INDEX IF NOT EXISTS idx_voice_commands_profile_created
   ON voice_commands(profile_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS voice_command_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  command_id TEXT NOT NULL,
+  event_type TEXT NOT NULL,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_voice_command_events_command_created
+  ON voice_command_events(command_id, created_at, id);

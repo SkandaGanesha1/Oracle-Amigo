@@ -9,17 +9,6 @@ interface FileReceiptMessageProps {
   message: FileReceiptMessageType;
 }
 
-function formatAccessExpiry(now: number, receivedAt: string, expiresInHours = 24): string {
-  const received = new Date(receivedAt).getTime();
-  const expiresAt = received + expiresInHours * 60 * 60 * 1000;
-  const remaining = expiresAt - now;
-  if (remaining <= 0) return "Expired";
-  const hours = Math.floor(remaining / (60 * 60 * 1000));
-  const minutes = Math.floor((remaining % (60 * 60 * 1000)) / (60 * 1000));
-  if (hours > 0) return `${hours}h ${minutes}m`;
-  return `${minutes}m`;
-}
-
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -34,9 +23,7 @@ function formatAgentName(id: string): string {
 }
 
 export function FileReceiptMessage({ message }: FileReceiptMessageProps) {
-  const now = Date.now();
   const navigate = useNavigate();
-  const accessExpiry = formatAccessExpiry(now, message.received_at);
   const { approvalCards } = usePendingApprovals();
   const consentAction = useConsentAction();
   const [confirmingRevoke, setConfirmingRevoke] = useState(false);
@@ -75,7 +62,9 @@ export function FileReceiptMessage({ message }: FileReceiptMessageProps) {
         <div className="min-w-0">
           <div className="oa-agent-card-kicker">Secure file receipt</div>
           <h3 className="oa-agent-card-title">{message.hash_verified ? "File shared successfully" : "Verification needs review"}</h3>
-          <p className="oa-agent-card-subtitle">Sent to {recipientLabel}&rsquo;s verified agent · Access {accessExpiry}</p>
+          <p className="oa-agent-card-subtitle">
+            {message.hash_verified ? "Hash verified and stored locally" : "Hash verification needs review"}
+          </p>
         </div>
         <span className={`oa-doc-chip ${message.hash_verified ? "success" : "warning"}`}>
           {message.hash_verified ? "Verified" : "Needs review"}
@@ -92,14 +81,6 @@ export function FileReceiptMessage({ message }: FileReceiptMessageProps) {
           </button>
         }
       />
-
-      <div className="oa-agent-card-panel">
-        <div className="oa-doc-chip-row">
-          <span className="oa-doc-chip">Recipient: {recipientLabel}</span>
-          <span className="oa-doc-chip">Time-bound access</span>
-          <span className="oa-doc-chip warning">Expires: {accessExpiry}</span>
-        </div>
-      </div>
 
       {canRevoke && !confirmingRevoke && (
         <button

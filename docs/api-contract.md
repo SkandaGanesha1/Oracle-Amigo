@@ -4,6 +4,27 @@ Date: 2026-06-07
 
 All control-plane product APIs use the `/v1` prefix. Local-agent `/cloud/*` and `/relay/*` routes are local facade routes only; they translate UI requests into this control-plane contract.
 
+## Local Agent Agentic Facade
+
+These routes are local-agent routes, not control-plane routes. They are same-origin/local protected and are the canonical UI contract for the agentic control surface.
+
+| Method | Route | Purpose |
+|---|---|---|
+| `GET` | `/missions` | Return canonical mission projections joined from workflow tasks, approvals, transfers, agent runs, voice commands, and linked chat conversations. |
+| `GET` | `/missions/:missionId` | Return one canonical mission projection. |
+| `GET` | `/missions/:missionId/thread` | List side-thread messages for a mission. |
+| `POST` | `/missions/:missionId/thread` | Add a mission side-thread message. |
+| `GET` | `/missions/:missionId/thread/events` | Stream mission-thread messages over SSE. |
+| `POST` | `/missions/:taskId/pause` | Pause an A2A-backed mission task. |
+| `POST` | `/missions/:taskId/resume` | Resume an A2A-backed mission task. |
+| `POST` | `/missions/:taskId/cancel` | Cancel an A2A-backed mission task. |
+| `POST` | `/missions/:taskId/retry` | Retry an A2A-backed mission task. |
+| `GET` | `/events` | Stream normalized realtime SSE snapshots for missions and voice commands, with polling fallback on the frontend. |
+| `GET` | `/settings/user-agent` | Load persisted user-agent privacy, notification, autonomy, and file-access settings. |
+| `PUT` | `/settings/user-agent` | Replace persisted user-agent settings after Zod validation and append an audit event. |
+
+Mission projections include `id`, `source`, `status`, `participants`, `risk`, `dataMovement`, `steps`, `artifacts`, `approvals`, `transfers`, `agentRunIds`, `a2aTaskIds`, `voiceCommandId`, linked `conversationId`, timestamps, and failure/retry metadata. Sensitive command traces and local paths remain redacted before they are returned to the UI.
+
 ## Auth
 
 | Method | Route | Auth | Purpose |

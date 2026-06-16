@@ -23,6 +23,9 @@ The product chat UI lives in `ui/` and builds into `public/`. It does not share 
 - `RightInspectorPanel`: split-view inspector with activity, agent, files, alerts, settings, and chat context tabs for trust/risk/data/audit review.
 - `ApprovalCenter`: approve/reject/feedback and exact candidate metadata.
 - Chat approval cards embed biometric approval plus redaction/watermark controls before a file transfer decision.
+- `MissionsPage`: reads canonical `/missions` projections instead of grouping A2A tasks and agent runs client-side. Mission controls only call pause/resume/cancel/retry when a server projection has an A2A task ID.
+- `VaultBrowser`: uses `/files/search` for typed search terms and falls back to indexed-file listing when no query is present.
+- `SettingsPanel`: hydrates privacy, notification, autonomy, and file-access controls from `/settings/user-agent` and persists security-affecting changes through the same backend record.
 - `ReceivedFilesView`: received files, hash, received time, open/download and verify actions.
 - `AuditTimeline`: local audit event filtering and IDs.
 - `SettingsPanel`: control plane, enrollment, heartbeat, relay, notification, storage, and privacy toggles.
@@ -41,7 +44,7 @@ Typed frontend API modules:
 - `ui/src/api/auditApi.ts`
 - `ui/src/api/types.ts`
 
-Hooks are in `ui/src/hooks/queries.ts` and include cloud status, current profile, directory, contacts, conversations, messages, send, file request, approvals, files, audit, diagnostics, and realtime polling.
+Hooks are in `ui/src/hooks/queries.ts` and include cloud status, current profile, directory, contacts, conversations, messages, send, file request, approvals, files, audit, diagnostics, missions, voice commands, user-agent settings, and realtime transport startup.
 
 ## Realtime
 
@@ -52,7 +55,7 @@ Hooks are in `ui/src/hooks/queries.ts` and include cloud status, current profile
 - `SseTransport`
 - `WebSocketTransport`
 
-Polling is used today. WebSocket is intentionally not hardcoded.
+The app starts `SseTransport` against same-origin `/events` and keeps the existing polling intervals as fallback. `/events` emits normalized `mission_update` and `voice_command_update` snapshots in phase one; targeted cache hydration can be added per event kind, while query invalidation remains the safe default.
 
 ## Message Types
 

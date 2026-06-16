@@ -52,6 +52,7 @@ export function ThinkingBar({ state, privacyMasked = true, className }: Thinking
       aria-live="polite"
       aria-label="Continuous agent thinking"
     >
+      {privacyMasked && <span className="sr-only">Private details masked</span>}
       <button
         type="button"
         onClick={() => setExpanded((current) => !current)}

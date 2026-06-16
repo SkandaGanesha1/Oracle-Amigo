@@ -1,4 +1,4 @@
-import type { FileCandidateApprovalCard, Mission, MissionStep, MissionStatus, TrustRelationship, TrustLevel, Conversation } from "../types";
+import type { FileCandidateApprovalCard, TrustRelationship, TrustLevel, UserAgentSettings, VoiceCommandListResult, VoiceCommandRecord } from "../types";
 import type { MissionsListResult, ConsentActionRequest, TrustGraphResult } from "./types";
 import { localAgentClient } from "./localAgentClient";
 import { cloudAuthApi } from "./cloudAuthApi";
@@ -22,61 +22,6 @@ import { policyRulesApi } from "./policyRulesApi";
 import { notificationsApi } from "./notificationsApi";
 import { biometricApi } from "./biometricApi";
 import { inboxApi } from "./inboxApi";
-
-function buildMissionsFromConversations(data: { conversations: Conversation[] }): Mission[] {
-  return (data.conversations ?? []).flatMap((conv) => {
-    const missions: Mission[] = [];
-    const approvalMessages = (conv.messages ?? []).filter((m) => m.kind === "approval");
-    const agentStatusMessages = (conv.messages ?? []).filter((m) => m.kind === "agent_status");
-    const transferMessages = (conv.messages ?? []).filter((m) => m.kind === "transfer" || m.kind === "receipt");
-
-    if (approvalMessages.length === 0 && agentStatusMessages.length === 0) return [];
-
-    for (const msg of approvalMessages) {
-      if (msg.kind !== "approval") continue;
-      const card = msg.card;
-      const steps: MissionStep[] = [
-        { id: `search-${msg.id}`, label: "Search", kind: "search", status: "completed", description: `Agent searched for: ${card.request_text}` },
-        { id: `approval-${msg.id}`, label: "Approval", kind: "approval", status: card.status === "pending" ? "running" : "completed", description: `Approval ${card.status}` },
-        { id: `transfer-${msg.id}`, label: "Transfer", kind: "transfer", status: "skipped", description: "Awaiting approval" },
-      ];
-      const hasTransfer = transferMessages.some((t) =>
-        (t.kind === "transfer" || t.kind === "receipt") &&
-        t.task_id === card.task_id
-      );
-      if (hasTransfer) steps[2].status = "completed";
-
-      const fileName = card.candidates[0]?.file_name ?? card.request_text;
-      missions.push({
-        id: `mission-${msg.id}`,
-        title: `File Request: ${fileName}`,
-        description: card.request_text,
-        status: card.status === "pending" ? "awaiting_approval" as MissionStatus : card.status === "expired" ? "failed" as MissionStatus : "completed" as MissionStatus,
-        createdAt: msg.created_at,
-        updatedAt: msg.created_at,
-        requesterName: formatRequesterName(card.requester),
-        requesterAgentName: formatRequesterName(card.requester),
-        requesterAgentVerified: false,
-        recipientName: "Me",
-        recipientAgentName: "My Local Agent",
-        steps,
-        activeStepIndex: steps.findIndex((s) => s.status === "running"),
-        consentRecordId: card.approval_id,
-        conversationId: conv.id,
-        artifactCount: 0,
-        transferCount: hasTransfer ? 1 : 0,
-      });
-    }
-
-    return missions;
-  });
-}
-
-function formatRequesterName(id: string): string {
-  if (/^ag[ei][_-]/i.test(id.trim())) return "Remote agent";
-  if (id.length > 20 && id.includes("_")) return "Remote agent";
-  return id;
-}
 
 export const api = {
   health: () => localAgentClient.get<{
@@ -176,10 +121,22 @@ export const api = {
   relayInboxStatus: relayApi.inboxStatus,
   relayTaskStatus: relayApi.taskStatus,
 
-  missions: async (): Promise<MissionsListResult> => {
-    const convs = await chatApi.conversations();
-    return { missions: buildMissionsFromConversations(convs) };
-  },
+  missions: () => localAgentClient.get<MissionsListResult>("/missions"),
+  mission: (missionId: string) => localAgentClient.get<{ mission: MissionsListResult["missions"][number] }>(`/missions/${encodeURIComponent(missionId)}`),
+
+  voiceStatus: () => localAgentClient.get<Record<string, unknown>>("/voice/status"),
+  voiceCommands: (limit = 50, offset = 0) => localAgentClient.get<VoiceCommandListResult>(`/voice/commands?limit=${limit}&offset=${offset}`),
+  voiceCommand: (id: string) => localAgentClient.get<{ command: VoiceCommandRecord }>(`/voice/commands/${encodeURIComponent(id)}`),
+  createVoiceCommand: (input: { transcript: string; source: string; locale?: string; input_mode?: "typed" | "speech"; sttConfidence?: number }) =>
+    localAgentClient.post<{ command: VoiceCommandRecord }>(`/voice/commands`, input),
+  confirmVoiceCommand: (id: string, input: { idempotency_key?: string } = {}) =>
+    localAgentClient.post<{ command: VoiceCommandRecord }>(`/voice/commands/${encodeURIComponent(id)}/confirm`, input),
+  cancelVoiceCommand: (id: string) =>
+    localAgentClient.post<{ command: VoiceCommandRecord }>(`/voice/commands/${encodeURIComponent(id)}/cancel`, {}),
+  voiceCommandEventsUrl: (id: string) => `/voice/commands/${encodeURIComponent(id)}/events`,
+
+  userAgentSettings: () => localAgentClient.get<{ settings: UserAgentSettings }>("/settings/user-agent"),
+  updateUserAgentSettings: (settings: UserAgentSettings) => localAgentClient.put<{ settings: UserAgentSettings }>("/settings/user-agent", settings),
 
   // Mission control endpoints
   pauseMission: async (taskId: string) => {
