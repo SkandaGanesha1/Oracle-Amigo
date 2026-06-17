@@ -464,3 +464,28 @@ CREATE TABLE IF NOT EXISTS voice_command_events (
 
 CREATE INDEX IF NOT EXISTS idx_voice_command_events_command_created
   ON voice_command_events(command_id, created_at, id);
+
+-- Tracks incoming file-request approvals on the RECEIVER side.
+-- Created by ReceiverAgentOrchestrator when a relay file.request arrives.
+CREATE TABLE IF NOT EXISTS receiver_approvals (
+  id TEXT PRIMARY KEY,
+  profile_id TEXT NOT NULL,
+  relay_task_id TEXT NOT NULL,
+  a2a_task_id TEXT NOT NULL,
+  requester_agent_instance_id TEXT NOT NULL,
+  requester_user_id TEXT,
+  file_query TEXT NOT NULL,
+  candidates_json TEXT NOT NULL DEFAULT '[]',
+  status TEXT NOT NULL DEFAULT 'pending',     -- pending | approved | rejected | transferred | failed
+  selected_file_path TEXT,
+  error_message TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  decided_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_receiver_approvals_profile_status
+  ON receiver_approvals(profile_id, status, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_receiver_approvals_relay_task
+  ON receiver_approvals(relay_task_id);

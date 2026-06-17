@@ -5,6 +5,8 @@ import { readFile } from "node:fs/promises";
 import { basename, extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
+import fastifyMetrics from "fastify-metrics";
+import { register as promRegister } from "prom-client";
 import { z, ZodError } from "zod";
 import { SandboxTool } from "./agent-tools/SandboxTool.js";
 import {
@@ -76,9 +78,13 @@ import { PeerRoutingService } from "./runtime/PeerRoutingService.js";
 import { ApprovalTransferOrchestrator } from "./runtime/ApprovalTransferOrchestrator.js";
 import { resolveFileRequestCandidates, toApprovalCandidatePayload } from "./runtime/FileRequestCandidateResolver.js";
 import { getDeviceTokenRecoveryStatus, structuredEnrollmentError, withRecoveredDeviceToken } from "./runtime/CloudTokenRecovery.js";
-import { ChatRepository, type ChatConversationRecord, type ChatMessageRecord, type ChatMessageReaction, type ConversationReadState, type DeliveryStatus, type RelayDeliveryReceipt } from "./chat/ChatRepository.js";
+import { ChatRepository, type ChatConversationRecord, type ChatMessageRecord, type ChatMessageReaction, type ChatRepositoryEvent, type ConversationReadState, type DeliveryStatus, type RelayDeliveryReceipt } from "./chat/ChatRepository.js";
 import { VoiceCommandService } from "./voice/VoiceCommandService.js";
 import { registerVoiceCommandRoutes } from "./voice/VoiceCommandRoutes.js";
+import { HybridVoiceCommandParser } from "./voice/HybridVoiceCommandParser.js";
+import { getLlmProvider } from "./oci/LlmProvider.js";
+import { registerReceiverApprovalRoutes } from "./runtime/ReceiverApprovalRoutes.js";
+import { ReceiverAgentOrchestrator } from "./runtime/ReceiverAgentOrchestrator.js";
 import { assertPublicHttpsUrl, constantTimeEqual, hasValidLocalUiSession, isPrivateOrMetadataHost, LOCAL_UI_SESSION_COOKIE, requireLocalApiToken, setLocalUiSessionCookie, signApprovalCallback, verifyApprovalCallbackSignature } from "./security/SecurityGuards.js";
 import { createHandshakeContext, verifyHandshakeOffer, verifyHandshakeResponse } from "./security/AnpHandshakeAdapter.js";
 
@@ -357,7 +363,9 @@ const ApprovalCallbackSchema = z.object({
   idempotencyKey: z.string().trim().min(1).max(200).optional(),
   idempotency_key: z.string().trim().min(1).max(200).optional(),
   nonce: z.string().trim().min(16).max(128),
-  signature: z.string().trim().regex(/^[a-fA-F0-9]{64}$/)
+  signature: z.string().trim().regex(/^[a-fA-F0-9]{64}$/),
+  candidateId: z.string().trim().min(1).max(200).optional(),
+  candidate_id: z.string().trim().min(1).max(200).optional()
 });
 
 const DEFAULT_DEV_ORG_SLUG = "local-dev";
@@ -370,9 +378,60 @@ export function buildServer(
   reasoner?: AgentReasoner
 ) {
   const logger = createLogger();
+
+  // Load or generate a persistent ui_session_secret in user_agent_settings SQLite table
+  try {
+    const db = getDb();
+    const profileId = defaultProfileId();
+    let uiSessionSecret: string | undefined;
+
+    const row = db.prepare("SELECT settings_json FROM user_agent_settings WHERE profile_id = ?").get(profileId) as { settings_json?: string } | undefined;
+    let currentSettings: Record<string, unknown> = {};
+    if (row?.settings_json) {
+      try {
+        currentSettings = JSON.parse(row.settings_json);
+        if (currentSettings && typeof currentSettings === "object" && typeof currentSettings.ui_session_secret === "string") {
+          uiSessionSecret = currentSettings.ui_session_secret;
+        }
+      } catch {
+        // ignore JSON parsing errors
+      }
+    }
+
+    if (!uiSessionSecret) {
+      uiSessionSecret = randomBytes(32).toString("hex");
+      currentSettings.ui_session_secret = uiSessionSecret;
+      const now = new Date().toISOString();
+      db.prepare(`
+        INSERT INTO user_agent_settings (profile_id, settings_json, created_at, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(profile_id) DO UPDATE SET
+          settings_json = excluded.settings_json,
+          updated_at = excluded.updated_at
+      `).run(profileId, JSON.stringify(currentSettings), now, now);
+    }
+
+    if (!process.env.LOCAL_AGENT_UI_SESSION_SECRET) {
+      process.env.LOCAL_AGENT_UI_SESSION_SECRET = uiSessionSecret;
+    }
+  } catch (err) {
+    logger.error("Failed to load/initialize persistent LOCAL_AGENT_UI_SESSION_SECRET", { err });
+  }
+
   const server = Fastify({ logger: false, rewriteUrl: getA2Av1UrlRewriter() });
+
+  // Prometheus metrics (controlled by env var, enabled by default)
+  const agentMetricsEnabled = process.env.METRICS_ENABLED !== "false";
+  if (agentMetricsEnabled) {
+    promRegister.clear();
+    server.register(fastifyMetrics as never, {
+      endpoint: process.env.METRICS_ENDPOINT ?? "/metrics",
+      defaultMetrics: { enabled: true },
+      routeMetrics: { enabled: true }
+    });
+  }
+
   const localOnly = { preHandler: requireLocalApiToken };
-  // A2A v1.0.0 uses `application/a2a+json` as its content type
   server.addContentTypeParser("application/a2a+json", { parseAs: "string" }, (_req, body, done) => {
     try { done(null, body ? JSON.parse(body as string) : {}); } catch (err) { done(err as Error, undefined); }
   });
@@ -399,7 +458,11 @@ export function buildServer(
   const notificationEvents = new NotificationEventStore(getDb());
   const approvalCallbackSecret = process.env.APPROVAL_CALLBACK_SECRET && process.env.APPROVAL_CALLBACK_SECRET.length >= 32
     ? process.env.APPROVAL_CALLBACK_SECRET
-    : randomBytes(32).toString("base64url");
+    : (() => {
+        const generated = randomBytes(32).toString("base64url");
+        process.env.APPROVAL_CALLBACK_SECRET = generated;
+        return generated;
+      })();
 
   const createApprovalCallbackAuth = (approvalId: string, taskId: string) => {
     const nonce = randomBytes(16).toString("base64url");
@@ -414,6 +477,45 @@ export function buildServer(
     return redactLocalPaths(redacted);
   };
 
+  const chatRealtimePayload = (event: ChatRepositoryEvent) => {
+    const conversation = event.conversation ?? chatRepo.getConversation(event.conversationId);
+    return sanitizeFacadePayload({
+      conversationId: event.conversationId,
+      messageId: event.messageId ?? null,
+      messageType: event.message?.message_type ?? null,
+      deliveryStatus: event.message?.delivery_status ?? null,
+      preview: event.message ? safeMessagePreview(event.message) : null,
+      createdAt: event.message?.created_at ?? null,
+      updatedAt: event.message?.updated_at ?? event.timestamp,
+      unreadCount: conversation?.unread_count ?? 0
+    });
+  };
+
+  const chatRealtimeEvent = (event: ChatRepositoryEvent) => {
+    const messageOperation = event.operation === "message_updated" ? "updated" : "created";
+    return sanitizeFacadePayload({
+      kind: event.operation === "message_created" ? "message_created" : "conversation_update",
+      entityType: event.operation === "message_created" ? "message" : "conversation",
+      entityId: event.messageId ?? event.conversationId,
+      operation: event.operation === "message_created" ? messageOperation : event.operation,
+      payload: chatRealtimePayload(event),
+      timestamp: event.timestamp
+    });
+  };
+
+  const chatSnapshotRealtimeEvent = () => sanitizeFacadePayload({
+    kind: "conversation_update",
+    entityType: "conversation",
+    entityId: "*",
+    operation: "snapshot",
+    payload: {
+      conversationId: "*",
+      conversationCount: chatRepo.listConversations().length,
+      updatedAt: new Date().toISOString()
+    },
+    timestamp: new Date().toISOString()
+  });
+
   // Eagerly init identity with resolved db path so handlers don't re-read process.env
   const dbPath = resolveDbPath();
   const identity = generateOrLoadIdentity("Local User", dbPath);
@@ -426,6 +528,7 @@ export function buildServer(
   const voiceCommands = new VoiceCommandService({
     db: getDb(),
     getCloudIdentity: () => cloudStore.get(),
+    parser: new HybridVoiceCommandParser(getLlmProvider()),
     resolveUser: async (query) => {
       const cloud = cloudStore.get();
       if (!cloud?.controlPlaneUrl) return null;
@@ -505,7 +608,7 @@ export function buildServer(
       }
       const target = await peerRouting.resolveTarget({
         peerUserId: targetUserId,
-        capability: "file.request",
+        capability: "file.request.search",
         cloud
       });
       const toAgentInstanceId = target.agentInstanceId;
@@ -607,6 +710,7 @@ export function buildServer(
       inbox: inboxPoller.status()
     };
   });
+  registerReceiverApprovalRoutes(server, getDb());
   const remoteDispatcher = new RemoteTaskDispatcher(protocol, getDb(), defaultProfileId(), chatRepo, fileSearch);
   const heartbeatService = new HeartbeatService(cloudStore, defaultProfileId());
   const inboxPoller = new InboxPoller(cloudStore, remoteDispatcher, defaultProfileId());
@@ -854,11 +958,18 @@ export function buildServer(
         payload: { commands: voiceCommands.listCommands({ limit: 25 }) },
         timestamp
       }));
+      writeSse(reply.raw, "message", chatSnapshotRealtimeEvent());
     };
 
     emitSnapshot();
+    const unsubscribeChat = chatRepo.subscribe((event) => {
+      writeSse(reply.raw, "message", chatRealtimeEvent(event));
+    });
     const timer = setInterval(emitSnapshot, 5000);
-    request.raw.on("close", () => clearInterval(timer));
+    request.raw.on("close", () => {
+      clearInterval(timer);
+      unsubscribeChat();
+    });
   });
 
   server.post("/redactions/preview", localOnly, async (request, reply) => {
@@ -3477,7 +3588,59 @@ export function buildServer(
       return { ok: false, status: "invalid", error: "Invalid approval callback signature" };
     }
     const current = protocol.getApproval(body.approvalId);
-    if (!current) return { ok: false, status: "not-found" };
+    if (!current) {
+      const receiverOrchestrator = new ReceiverAgentOrchestrator(getDb());
+      const receiverApproval = receiverOrchestrator.getApproval(body.approvalId);
+      if (receiverApproval) {
+        if (action === "approve") {
+          let selectedPath = body.candidateId
+            ? (() => {
+                const candidates = JSON.parse(receiverApproval.candidatesJson) as Array<Record<string, unknown>>;
+                const match = candidates.find((c) => c.candidate_id === body.candidateId || c.candidateId === body.candidateId);
+                return typeof match?.path === "string" ? match.path : null;
+              })()
+            : null;
+          if (!selectedPath) {
+            const candidates = JSON.parse(receiverApproval.candidatesJson) as Array<Record<string, unknown>>;
+            if (candidates[0] && typeof candidates[0].path === "string") {
+              selectedPath = candidates[0].path;
+            }
+          }
+          if (!selectedPath) {
+            return { ok: false, approvalId: receiverApproval.id, taskId: receiverApproval.a2aTaskId, error: "NO_FILE_PATH_SELECTED" };
+          }
+          receiverOrchestrator.approveTransfer(receiverApproval.id, selectedPath);
+          setImmediate(async () => {
+            try {
+              const approval = receiverOrchestrator.getApproval(receiverApproval.id);
+              if (approval) {
+                await approvalTransfers.transferReceiverApproval(approval);
+                receiverOrchestrator.markTransferred(receiverApproval.id);
+              }
+            } catch (err) {
+              const message = err instanceof Error ? err.message : String(err);
+              console.error(`[ReceiverApproval] Callback transfer failed:`, message);
+              receiverOrchestrator.markFailed(receiverApproval.id, message);
+            }
+          });
+          return {
+            ok: true,
+            approvalId: receiverApproval.id,
+            taskId: receiverApproval.a2aTaskId,
+            status: "approved"
+          };
+        } else if (action === "reject") {
+          receiverOrchestrator.rejectTransfer(receiverApproval.id, body.feedback || "Rejected by receiver");
+          return {
+            ok: true,
+            approvalId: receiverApproval.id,
+            taskId: receiverApproval.a2aTaskId,
+            status: "rejected"
+          };
+        }
+      }
+      return { ok: false, status: "not-found" };
+    }
     if (current.taskId !== body.taskId) {
       return { ok: false, status: "task-mismatch" };
     }

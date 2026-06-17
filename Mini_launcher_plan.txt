@@ -1,772 +1,834 @@
-Your screenshot shows two separate things:
+Direct diagnosis
 
-1. Tauri dev is failing because cargo is not available:
-   failed to run 'cargo metadata'
-   program not found
+The right architecture is already partially present in your repo:
 
-2. The release exe is launching, but the UI is still wrong:
-   too large
-   centered
-   too many controls
-   not push-to-talk
-   transcript is inside an input box
-   not positioned like ChatGPT’s small overlay
+apps/voice-launcher/     → QuickVoice desktop mini app
+src/voice/               → backend voice command layer
+src/server.ts            → wires VoiceCommandService + registerVoiceCommandRoutes
+local agent server       → should remain the brain
+control plane relay      → routes requests to remote agents
+remote local agent       → searches files and asks approval
 
-The implementation should become:
+The README says Quick Voice already exists as a Tauri v2 + React mini-launcher, opens with Ctrl+Space, defaults to http://127.0.0.1:3399, supports typed command previews, microphone permission/waveform UI, and exposes voice APIs such as GET /voice/status, POST /voice/commands, GET /voice/commands/:id, POST /voice/commands/:id/confirm, and POST /voice/commands/:id/cancel. It also says remote file commands create a preview first, then confirmation submits the relay file request.
 
-Hold Ctrl + Space
-→ small black overlay appears above Windows taskbar on right side
-→ mic starts immediately
-→ white waveform animates
-→ live transcript appears above the waveform
-→ release Ctrl + Space
-→ mic stops
-→ overlay hides
-→ final transcript is sent to Oracle Amigo local agent
-→ local agent parses and executes the command through existing relay/A2A flow
-1. Fix your current dev error first
+But the current backend voice flow appears to be rule-parser-first, not LLM-parser-first. In the accessible VoiceCommandService.ts, createCommand() calls:
 
-Your terminal error:
+parseVoiceCommand(request.transcript)
 
-failed to run 'cargo metadata'
-program not found
+and validates the result. I do not see an LLM parser being called in that path. That explains your symptom: the transcript may reach /voice/commands, but it is not being sent to an LLM for structured extraction.
 
-means Rust/Cargo is not installed or not in PATH.
+The server wiring shows VoiceCommandService is created in src/server.ts, with resolveUser() using the cloud directory and executeRemoteFileRequest() using PeerRoutingService + RelayClient. That is good: the voice command backend is already in the correct place, inside the local agent. But the parser/execution lifecycle still needs hardening.
 
-Tauri requires Rust for tauri dev and its global shortcut plugin docs say the plugin requires Rust at least 1.77.2. The official Rust install page says Windows users should install rustup-init.exe, and Rust tools such as cargo, rustc, and rustup live under %USERPROFILE%\.cargo\bin, so the terminal may need to be restarted after install. (Tauri Global Shortcut, Rust install)
+1. Correct integration model
 
-Run this on Windows:
+Do not make oracle-amigo-quick-voice.exe own the workflow.
 
-winget install Rustlang.Rustup
+The correct model is:
 
-Then close all PowerShell/VS Code terminals and reopen.
+oracle-amigo-quick-voice.exe
+    ↓
+transcript
+    ↓
+POST http://127.0.0.1:<local-agent-port>/voice/commands
+    ↓
+Oracle Amigo local agent server
+    ↓
+LLM/rule parser creates structured JSON
+    ↓
+local agent validates requester/target/action
+    ↓
+user confirms command
+    ↓
+local agent sends A2A relay request
+    ↓
+receiver agent searches files
+    ↓
+receiver approves
+    ↓
+file transfers back
+    ↓
+requester sees mission/receipt in Agentic Chat UI
 
-Verify:
+So:
 
-cargo --version
-rustc --version
+QuickVoice = input surface
+Local Agent = brain / policy / workflow owner
+Control Plane = relay / registry / presence
+Remote Agent = executor on receiver device
+Agentic Chat UI = mission timeline and user-visible state
 
-Then run:
+This also aligns with A2A’s task/message model: A2A defines agent operations around messages, tasks, task state, artifacts, push notifications, and authenticated extended Agent Cards. Your QuickVoice command should become an Oracle Amigo mission and an A2A-style file request task, not a direct call from the launcher to the remote laptop.
 
-npm --prefix apps/voice-launcher run tauri dev
+2. Language choice: TypeScript or Python?
+Use TypeScript for the current integration
 
-Your existing release exe can run because it was already built, but tauri dev cannot rebuild without Cargo.
+For this feature, TypeScript is the correct primary implementation language.
 
-2. Correct UI target
+Use TypeScript for:
 
-Your mini app should not look like this:
+/voice/commands routes
+LLM structured parser adapter
+Zod schema validation
+directory lookup
+mission creation
+relay dispatch
+approval/transfer orchestration
+frontend updates
+tests
 
-Oracle Amigo
-Quick Voice
-Ctrl+Space dropdown
-Transcript Ready
-text input
-Mic button
-Preview button
+Why:
 
-It should look like this:
+1. Your backend is already TypeScript/Fastify.
+2. Your local agent already owns relay, directory, approval, transfer, and audit.
+3. Your frontend is React/TypeScript.
+4. Your current src/voice service is already TypeScript.
+5. Adding Python now would create cross-language deployment friction before the workflow is stable.
+Use Rust/Tauri for the .exe shell
 
-┌──────────────────────────────────────┐
-│ Ask Docin to send Harassment...      │  ← live transcript, white text
-│                                      │
-│        ▌▌▌▌▌▌▌▌▌▌▌▌                 │  ← white waveform
-│                                      │
-│        Release to send               │  ← optional small hint
-└──────────────────────────────────────┘
+Your apps/voice-launcher/package.json already uses Tauri packages:
 
-Required visual rules:
+@tauri-apps/api
+@tauri-apps/plugin-global-shortcut
+@tauri-apps/plugin-shell
 
-Background: #000000
-Waveform: white only
-Transcript: white
-No visible textbox
-No title
-No Ctrl+Space dropdown
-No Mic button
-No Preview button
-No “Transcript Ready”
-No large “Oracle Amigo Quick Voice”
-No normal app chrome if possible
-Small rounded overlay
-Right side above taskbar
-Always on top
-Hidden from taskbar
+That is the right choice for the Windows mini launcher.
 
-Recommended window size:
+Tauri’s global shortcut plugin is designed for registering system-wide shortcuts and requires explicit permissions such as global-shortcut:allow-register; the docs show registration from JavaScript with register(...).
 
-Width: 420px
-Height: 180px
-Border radius: 18px
-Position: bottom-right, 24px from right edge, 84px above taskbar
-3. Push-to-talk behavior
+Use Tauri/Rust for:
 
-Use Rust-side global shortcut handling, not only JavaScript, because the Rust plugin example exposes ShortcutState::Pressed and ShortcutState::Released. That is exactly what you need for hold-to-talk. Tauri’s docs show the Rust handler matching ShortcutState::Pressed and ShortcutState::Released, and the plugin requires explicit permissions because global shortcuts are blocked by default. (Tauri Global Shortcut)
+global Ctrl+Space
+small floating window
+always-on-top behavior
+tray behavior later
+sidecar launch later
+Windows packaging later
 
-Behavior:
+Tauri’s shell plugin is useful later if the launcher must start/monitor a local-agent sidecar or speech-to-text sidecar.
 
-Ctrl+Space pressed:
-- position window bottom-right
-- show window
-- focus window
-- emit "voice:start"
-- start microphone
-- start waveform
-- start transcript capture
+Use Python only as an optional MAS/STT microservice later
 
-Ctrl+Space released:
-- emit "voice:stop-and-submit"
-- stop microphone
-- finalize transcript
-- send transcript to local agent
-- hide window
+Use Python only if you need:
 
-Important: hide the window, do not kill the process. It must stay running in the background to catch the next shortcut.
+Whisper/faster-whisper STT
+LangGraph-heavy orchestration
+custom RAG/planning service
+advanced local ML inference
 
-4. Mic and speech recognition design
+Do not move approval, relay, transfer, or audit workflow into Python. Those must stay in the TypeScript local agent for correctness and security.
 
-For the visual waveform, use Web Audio API:
+Recommended split:
 
-navigator.mediaDevices.getUserMedia({ audio: true })
-AudioContext
-AnalyserNode
-frequency/time-domain samples
-canvas/SVG bars
+Now:
+QuickVoice.exe       → Tauri + React
+Local Agent backend  → TypeScript/Fastify
+LLM parser           → TypeScript adapter + schema validation
 
-getUserMedia() requests user permission and returns a MediaStream; browsers must show permission/recording indicators because microphone capture is privacy-sensitive. It is available in secure contexts, including localhost, but users must grant permission. (MDN getUserMedia)
+Later:
+Python MAS service   → optional STT/planning/RAG microservice only
+3. Why it is not working now
 
-For real-time transcript, use a layered adapter:
+Based on accessible code and your symptoms, these are the most likely root causes.
 
-SpeechTranscriber
-├── BrowserSpeechTranscriber      // fastest POC
-├── WhisperSidecarTranscriber     // better offline production path
-└── MockTranscriber               // tests/dev
+Root cause 1: transcript is not sent to an LLM
 
-The Web Speech API provides asynchronous speech recognition through SpeechRecognition and supports speech recognition from microphone/audio sources, but browser/WebView behavior can vary. (MDN Web Speech API)
+VoiceCommandService.createCommand() uses:
 
-For production/privacy, use whisper.cpp as a local sidecar. It is a lightweight C/C++ Whisper implementation and explicitly supports building offline voice assistant applications; it also supports voice activity detection through VAD models, which is useful for cleaner push-to-talk transcripts. (whisper.cpp)
+parseVoiceCommand(request.transcript)
 
-Recommended path:
+directly. That means the current flow is deterministic parser only. If your expectation is “send transcript to LLM and get JSON,” that path is missing or not wired.
 
-Phase 1:
-BrowserSpeechTranscriber + typed fallback
+Fix
 
-Phase 2:
-whisper.cpp sidecar
+Introduce a parser interface:
 
-Phase 3:
-streaming partial transcript + VAD + local model selection
-5. Backend flow
+export interface VoiceCommandParser {
+  parse(input: VoiceCommandParserInput): Promise<VoiceCommandParseResult>;
+}
 
-The voice launcher should call the existing Oracle Amigo local agent.
+Implement:
 
-Do not call the control plane directly from the launcher.
+RuleBasedVoiceCommandParser
+LlmVoiceCommandParser
+HybridVoiceCommandParser
 
-Correct chain:
+The hybrid parser should do:
 
-Voice Launcher
-→ Local Agent /voice/commands
-→ Local Agent parses command
-→ Local Agent resolves Docin via directory
-→ Local Agent sends /relay/send-file-request
-→ Docin agent receives A2A relay task
-→ Docin approval card appears
-→ Docin approves exact file
-→ relay transfer completes
-→ requester receives file
+1. Try rule parser.
+2. If confidence >= 0.85, use it.
+3. Otherwise call LLM parser.
+4. Validate LLM JSON with Zod.
+5. If invalid, repair once.
+6. If still invalid, return clarification_required.
 
-Add or verify these local agent routes:
+OpenAI Structured Outputs are relevant if you use OpenAI as the LLM provider, because they allow model outputs to follow a JSON schema rather than free-form text.
+
+Root cause 2: confirmCommand() marks submitted commands as completed
+
+In the accessible VoiceCommandService.ts, after executeRemoteFileRequest() returns, the code sets:
+
+completedAt: result.status === "failed" ? null : new Date().toISOString()
+
+That means if the result is "submitted", the command still gets a completedAt. This is wrong. A remote file request is not completed when it is submitted to relay. It is completed only after the receiver approves, transfer finishes, requester downloads, and hash verification succeeds.
+
+Fix
+
+Use:
+
+completedAt:
+  result.status === "completed"
+    ? new Date().toISOString()
+    : null
+
+Better: represent the command as a mission and update it asynchronously.
+
+submitted
+→ waiting_remote_agent
+→ waiting_receiver_approval
+→ transferring
+→ completed
+Root cause 3: capability mismatch may stop target resolution
+
+In src/server.ts, the voice remote file request path calls:
+
+peerRouting.resolveTarget({
+  peerUserId: targetUserId,
+  capability: "file.request",
+  cloud
+})
+
+But earlier architecture and capability names use values like:
+
+file.request.search
+file.transfer.receive
+human.approval.request
+
+If PeerRoutingService expects exact capability matching, then "file.request" may fail even when Docin’s agent supports "file.request.search".
+
+Fix
+
+Standardize capabilities:
+
+const Capability = {
+  FileRequestSearch: "file.request.search",
+  FileTransferReceive: "file.transfer.receive",
+  HumanApprovalRequest: "human.approval.request"
+} as const;
+
+Then in voice command execution:
+
+capability: Capability.FileRequestSearch
+
+Or support aliases:
+
+file.request → file.request.search
+
+but do not leave this ambiguous.
+
+Root cause 4: QuickVoice may only create a preview, not confirm
+
+The README says voice commands “create a preview first” and confirmation submits the relay file request.
+
+So if the .exe only calls:
 
 POST /voice/commands
-GET  /voice/commands/:id
+
+but never calls:
+
 POST /voice/commands/:id/confirm
-POST /voice/commands/:id/cancel
-GET  /voice/status
 
-Request:
+then the backend will parse/preview but nothing will execute.
 
-{
-  "transcript": "Ask Docin to send Harassment Certification.pdf file",
-  "source": "quick_voice",
-  "mode": "push_to_talk",
-  "locale": "en-IN"
-}
+Fix
 
-Response:
+QuickVoice must do this sequence:
 
-{
-  "command_id": "vcmd_123",
-  "intent": "remote_file_request",
-  "status": "submitted",
-  "conversation_id": "conv_123",
-  "relay_task_id": "rt_123",
-  "message": "File request sent to Docin’s agent."
-}
+POST /voice/commands
+→ show preview
+→ user confirms
+→ POST /voice/commands/:id/confirm
+→ show submitted/waiting status
 
-For your specific command:
+For high-confidence low-risk commands, you can add a user setting:
 
-Ask Docin to send Harassment Certification.pdf file
+Auto-confirm remote file requests: off by default
 
-Parser output should be:
+Keep it off initially.
 
-{
-  "intent": "remote_file_request",
-  "target_person_query": "Docin",
-  "file_query": "Harassment Certification.pdf",
-  "requires_confirmation": false,
-  "confidence": 0.94
-}
+Root cause 5: QuickVoice request payload may not match backend schema
 
-Since this is only asking Docin’s agent to find a file, not sending a local file from your device, it can be submitted immediately after release. Docin still must approve before the file is transferred.
+From VoiceCommandService, the request object seems to expect fields like:
 
-6. Window positioning
+request.transcript
+request.source
+request.locale
+request.sttConfidence
 
-For correct “right side above taskbar” behavior, do not just call center().
-
-In Rust, position the overlay near the Windows work area. The best Windows-native method is to use the work-area rectangle, which excludes the taskbar.
-
-Implement a Tauri command:
-
-#[tauri::command]
-fn show_voice_window(app: tauri::AppHandle) -> Result<(), String> {
-    let window = app.get_webview_window("voice-launcher")
-        .ok_or("voice-launcher window not found")?;
-
-    let width = 420;
-    let height = 180;
-    let margin_right = 24;
-    let margin_bottom = 24;
-
-    // Better: use Windows GetMonitorInfo rcWork.
-    // Fallback: use primary monitor size.
-    let monitor = window.primary_monitor()
-        .map_err(|e| e.to_string())?
-        .ok_or("no primary monitor")?;
-
-    let pos = monitor.position();
-    let size = monitor.size();
-
-    let x = pos.x + size.width as i32 - width - margin_right;
-    let y = pos.y + size.height as i32 - height - 96 - margin_bottom;
-
-    window.set_size(tauri::Size::Physical(tauri::PhysicalSize { width, height }))
-        .map_err(|e| e.to_string())?;
-
-    window.set_position(tauri::Position::Physical(tauri::PhysicalPosition { x, y }))
-        .map_err(|e| e.to_string())?;
-
-    window.show().map_err(|e| e.to_string())?;
-    window.set_focus().map_err(|e| e.to_string())?;
-
-    Ok(())
-}
-
-Then improve later with GetMonitorInfoW and rcWork to handle taskbar position accurately.
-
-7. Tauri window config
-
-In apps/voice-launcher/src-tauri/tauri.conf.json:
+If QuickVoice sends a nested object like:
 
 {
-  "app": {
-    "windows": [
-      {
-        "label": "voice-launcher",
-        "title": "Oracle Amigo Quick Voice",
-        "width": 420,
-        "height": 180,
-        "resizable": false,
-        "decorations": false,
-        "alwaysOnTop": true,
-        "skipTaskbar": true,
-        "visible": false,
-        "transparent": false,
-        "center": false
-      }
-    ]
+  "transcript": "...",
+  "stt": {
+    "confidence": 0.91
   }
 }
 
-Use decorations: false once stable. During debugging, you can temporarily keep decorations on.
+but your backend schema expects:
 
-8. Minimal black UI implementation
-
-Your React app should become this structure:
-
-export default function App() {
-  return (
-    <main className="voice-shell">
-      <TranscriptLine text={transcript || interimTranscript} />
-      <WhiteWaveform level={audioLevel} active={isListening} />
-      <div className="voice-hint">
-        {isListening ? "Release Ctrl+Space to send" : "Hold Ctrl+Space to speak"}
-      </div>
-    </main>
-  );
+{
+  "transcript": "...",
+  "sttConfidence": 0.91
 }
 
-CSS:
+then the route may reject or silently ignore confidence.
 
-html,
-body,
-#root {
-  width: 100%;
-  height: 100%;
-  margin: 0;
-  background: #000000;
-  overflow: hidden;
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+Fix
+
+Standardize the request schema:
+
+export const VoiceCommandRequestSchema = z.object({
+  transcript: z.string().trim().min(1).max(4000),
+  source: z.enum(["quickvoice", "agentic_chat", "test"]).default("quickvoice"),
+  locale: z.string().optional(),
+  inputMode: z.enum(["speech", "typed"]).default("speech"),
+  stt: z.object({
+    provider: z.string().optional(),
+    confidence: z.number().min(0).max(1).optional()
+  }).optional(),
+  sttConfidence: z.number().min(0).max(1).optional()
+});
+
+Normalize internally:
+
+const sttConfidence =
+  request.sttConfidence ?? request.stt?.confidence ?? null;
+Root cause 6: STT may not actually be implemented
+
+The README says QuickVoice supports microphone permission/waveform UI and typed command previews. That does not necessarily mean speech-to-text is complete.
+
+If the UI captures audio and animates the waveform but never produces a transcript, then /voice/commands will never receive anything.
+
+Fix
+
+Implement STT behind an interface:
+
+interface SpeechTranscriber {
+  start(): Promise<void>;
+  stop(): Promise<TranscriptResult>;
+  onPartial(callback: (partial: string) => void): void;
 }
 
-.voice-shell {
-  width: 100%;
-  height: 100%;
-  background: #000000;
-  color: #ffffff;
-  display: grid;
-  grid-template-rows: 1fr 76px 28px;
-  align-items: center;
-  justify-items: center;
-  padding: 20px 24px 16px;
-  box-sizing: border-box;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 18px;
-}
-
-.transcript-line {
-  width: 100%;
-  color: #ffffff;
-  font-size: 18px;
-  line-height: 1.35;
-  text-align: center;
-  white-space: normal;
-  overflow: hidden;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-}
-
-.waveform {
-  width: 220px;
-  height: 64px;
-}
-
-.wave-bar {
-  fill: #ffffff;
-  opacity: 0.95;
-}
-
-.voice-hint {
-  color: rgba(255, 255, 255, 0.56);
-  font-size: 12px;
-  letter-spacing: 0.02em;
-}
-
-No visible textbox. No buttons.
-
-9. White waveform component
-
-Example SVG bars:
-
-function WhiteWaveform({ level, active }: { level: number; active: boolean }) {
-  const bars = 21;
-
-  return (
-    <svg className="waveform" viewBox="0 0 220 64" aria-hidden="true">
-      {Array.from({ length: bars }).map((_, i) => {
-        const center = Math.abs(i - Math.floor(bars / 2));
-        const base = 12 + (bars / 2 - center) * 2.2;
-        const motion = active ? Math.sin(Date.now() / 120 + i * 0.6) * 10 * level : 0;
-        const h = Math.max(8, base + motion);
-        const x = 10 + i * 10;
-        const y = 32 - h / 2;
-
-        return (
-          <rect
-            key={i}
-            className="wave-bar"
-            x={x}
-            y={y}
-            width="5"
-            height={h}
-            rx="2.5"
-          />
-        );
-      })}
-    </svg>
-  );
-}
-
-For smoother animation, drive it through requestAnimationFrame and Web Audio AnalyserNode.
-
-10. Push-to-talk lifecycle
-
-Correct lifecycle:
-
-Pressed:
-- clear previous transcript
-- show window
-- start mic
-- start STT
-- start waveform
-
-While held:
-- stream interim transcript into top text
-- waveform reacts to amplitude
-
-Released:
-- stop mic
-- stop STT
-- finalize transcript
-- if transcript non-empty:
-    POST /voice/commands
-- hide window
-- show result in main Oracle Amigo chat
-
-Important:
-
-Do not close the process.
-Do not keep mic alive after release.
-Do not submit empty transcript.
-Do not store raw audio.
-11. Advanced Codex/OpenCode prompt
-
-Paste this into Codex/OpenCode from your repo root:
-
-You are working inside the Oracle Amigo repository.
-
-Goal:
-Redesign and fix apps/voice-launcher so it behaves like a compact ChatGPT-style push-to-talk desktop overlay for Windows.
-
-Current problems:
-- oracle-amigo-quick-voice.exe launches in the center.
-- Window is too large.
-- UI shows Oracle Amigo Quick Voice title.
-- UI shows Ctrl+Space dropdown.
-- UI shows Transcript Ready pill.
-- UI shows textbox.
-- UI shows Mic and Preview buttons.
-- Background is not pure black.
-- Waveform is not pure white.
-- It does not behave as hold-to-talk.
-- It should open while Ctrl+Space is held and hide when Ctrl+Space is released.
-- Final transcript should be sent to the existing Oracle Amigo local agent backend.
-
-Important:
-Do not duplicate backend logic.
-Voice launcher is only an input surface.
-Oracle Amigo local agent remains the brain.
-
-Expected UX:
-1. User holds Ctrl+Space.
-2. Small overlay appears on Windows bottom-right above taskbar.
-3. Mic starts automatically.
-4. UI is pure black #000000.
-5. White waveform animates while user speaks.
-6. Live transcript appears above waveform in white text.
-7. User releases Ctrl+Space.
-8. Mic stops.
-9. Overlay hides.
-10. Final transcript is sent to local agent.
-11. Local agent parses and executes command.
-
-Example command:
-“Ask Docin to send Harassment Certification.pdf file”
-
-Expected backend flow:
-voice launcher
-→ POST /voice/commands
-→ local agent parses remote_file_request
-→ resolves Docin through directory
-→ sends /relay/send-file-request
-→ Docin agent receives A2A request
-→ Docin approves exact file
-→ file transfers through relay
-→ requester receives file in Agentic App Storage
-
-Phase 0: Fix dev tooling docs
-- Detect if cargo is missing.
-- Add docs/voice-launcher-windows-setup.md.
-- Explain that tauri dev requires Rust/Cargo.
-- Add instructions:
-  winget install Rustlang.Rustup
-  restart terminal
-  cargo --version
-  rustc --version
-  npm --prefix apps/voice-launcher run tauri dev
-
-Phase 1: Tauri window behavior
-Modify apps/voice-launcher/src-tauri/tauri.conf.json:
-- width: 420
-- height: 180
-- resizable: false
-- decorations: false
-- alwaysOnTop: true
-- skipTaskbar: true
-- visible: false
-- transparent: false
-- center: false
-- title: Oracle Amigo Quick Voice
-
-Implement Rust-side global shortcut handling using tauri-plugin-global-shortcut.
-Use Rust handler because it provides Pressed and Released events.
-
-On Ctrl+Space Pressed:
-- position window bottom-right above taskbar
-- show window
-- focus window
-- emit "voice:start"
-
-On Ctrl+Space Released:
-- emit "voice:stop-and-submit"
-- hide window after transcript finalization or short timeout
-
-If Ctrl+Space conflicts, keep config-ready support for:
-- Ctrl+Space default
-- Ctrl+Shift+Space fallback
-but UI should not show a dropdown.
-
-Phase 2: Window positioning
-Implement a Rust command/helper:
-show_voice_window()
-
-It should:
-- calculate primary monitor work area
-- position window bottom-right
-- margin right: 24px
-- margin bottom above taskbar: 24px
-- fallback if monitor lookup fails
-
-Prefer Windows work-area APIs if available; otherwise use Tauri monitor size with safe bottom offset.
-
-Phase 3: Minimal UI
-Replace apps/voice-launcher/src/App.tsx with a minimal overlay UI:
-- no title
-- no buttons
-- no input box
-- no preview button
-- no mic button
-- no Ctrl+Space dropdown
-- no Transcript Ready label
-
-Components:
-- VoiceOverlay
-- TranscriptLine
-- WhiteWaveform
-- HiddenStatusForScreenReader
-
-Layout:
-- transcript at top
-- waveform center
-- small hint below:
-  “Release to send”
-  or hide hint if user wants absolute minimal mode
-
-CSS:
-- body background #000000
-- shell background #000000
-- transcript color #ffffff
-- waveform bars #ffffff
-- no gradients
-- no blue/cyan/purple accents
-- border subtle rgba(255,255,255,0.12)
-- border radius 18px
-
-Phase 4: Mic capture and waveform
-Implement:
-useMicCapture()
-useAudioLevel()
-useWaveformAnimation()
-
-Use:
-navigator.mediaDevices.getUserMedia({ audio: true })
-AudioContext
-AnalyserNode
-requestAnimationFrame
-
-Rules:
-- ask permission only when needed
-- start mic on voice:start
-- stop all tracks on voice:stop-and-submit
-- do not keep mic alive when hidden
-- do not save raw audio
-- show error if mic permission denied
-
-Phase 5: Speech transcription
-Implement a SpeechTranscriber interface:
-- start()
-- stop()
-- onInterimTranscript()
-- onFinalTranscript()
-
-Implement:
-BrowserSpeechTranscriber
-- uses window.SpeechRecognition or webkitSpeechRecognition if available
-- continuous = true
-- interimResults = true
-- language = en-IN or configurable
+Implement in phases:
 
 MockTranscriber
-- for tests
+BrowserSpeechTranscriber
+WhisperSidecarTranscriber
+CloudSttTranscriber later
 
-WhisperSidecarTranscriber placeholder
-- for future offline STT
-- do not block this implementation on whisper.cpp
+For privacy-sensitive local desktop, whisper.cpp is a strong future sidecar option because it is a local C/C++ implementation of Whisper and can run on desktop without sending raw audio to the cloud.
 
-If browser speech recognition is unavailable:
-- show a tiny error:
-  “Speech recognition unavailable”
-- allow typed fallback only in development mode
-- production UI should not show a big textbox
+4. Correct end-to-end workflow for your example
 
-Phase 6: Voice command local-agent integration
-Implement or verify:
-apps/voice-launcher/src/lib/localAgentVoiceClient.ts
+User says in oracle-amigo-quick-voice.exe:
 
-It must call:
-POST /voice/commands
+Ask Docin to send me Harassment Certificate pdf file
+Step 1: QuickVoice
+Ctrl+Space opens launcher
+mic starts
+waveform animates
+speech becomes transcript
 
-Request:
+QuickVoice sends:
+
+POST http://127.0.0.1:3399/voice/commands
+
+Body:
+
 {
-  transcript,
-  source: "quick_voice",
-  mode: "push_to_talk",
-  locale: "en-IN"
+  "transcript": "Ask Docin to send me Harassment Certificate pdf file",
+  "source": "quickvoice",
+  "inputMode": "speech",
+  "locale": "en-IN",
+  "stt": {
+    "provider": "whisper-local",
+    "confidence": 0.91
+  }
+}
+Step 2: Local agent parses command
+
+Output JSON:
+
+{
+  "schema_version": "voice-command.v1",
+  "intent": "remote_file_request",
+  "requester_reference": "current_user",
+  "target_person_query": "Docin",
+  "file_query": "Harassment Certificate",
+  "file_extensions": ["pdf"],
+  "confidence": 0.94,
+  "requires_confirmation": true,
+  "missing_fields": [],
+  "original_transcript": "Ask Docin to send me Harassment Certificate pdf file"
 }
 
-If /voice/commands does not exist, add local-agent backend routes:
-POST /voice/commands
-GET /voice/commands/:id
+Important:
+
+LLM does not decide requester.
+Requester is always current enrolled local user.
+Step 3: Local agent resolves Docin
+DirectoryClient.searchUsers("Docin")
+PeerRoutingService.resolveTarget(peerUserId, "file.request.search")
+
+If more than one Docin exists:
+
+return ambiguous_target
+show picker in QuickVoice
+Step 4: Preview shown
+
+QuickVoice displays:
+
+Request file from Docin
+
+You said:
+“Ask Docin to send me Harassment Certificate pdf file”
+
+Oracle Amigo will:
+- ask Docin’s agent to find a PDF matching “Harassment Certificate”
+- send the request through relay
+- wait for Docin approval before any file is sent
+
+[Send request] [Edit] [Cancel]
+Step 5: Confirm
+
+QuickVoice calls:
+
 POST /voice/commands/:id/confirm
-POST /voice/commands/:id/cancel
+Step 6: Local agent sends relay request
+
+It creates:
+
+conversation
+mission
+file_request message
+A2A-style relay task
+
+Then:
+
+Control plane relay → Docin local agent inbox
+Step 7: Docin’s agent works
+
+Docin’s local agent:
+
+receives file request
+parses exact filename/extension
+searches indexed files
+shows approval card
+
+Docin approves.
+
+Step 8: Transfer
+Docin agent computes SHA-256
+uploads file through relay
+requester agent downloads
+requester verifies SHA-256
+file stored in Vault / Agentic App Storage
+receipt appears
+5. Backend changes to implement
+5.1 Add parser abstraction
+
+Create:
+
+src/voice/VoiceCommandParserInterface.ts
+src/voice/RuleBasedVoiceCommandParser.ts
+src/voice/LlmVoiceCommandParser.ts
+src/voice/HybridVoiceCommandParser.ts
+Parser interface
+export interface VoiceCommandParserInput {
+  transcript: string;
+  locale?: string | null;
+  currentUser: {
+    userId: string;
+    displayName?: string | null;
+    email?: string | null;
+  } | null;
+  knownContacts?: Array<{
+    userId: string;
+    displayName?: string | null;
+    email?: string | null;
+  }>;
+}
+
+export interface VoiceCommandParser {
+  parse(input: VoiceCommandParserInput): Promise<VoiceCommandParseResult>;
+}
+5.2 Add LLM structured parser
+src/voice/LlmVoiceCommandParser.ts
+
+Rules:
+
+- accepts transcript
+- returns strict JSON
+- never executes
+- never invents requester
+- validates with Zod
+- retries once on malformed JSON
+
+Use schema:
+
+const VoiceCommandLLMSchema = z.object({
+  schema_version: z.literal("voice-command.v1"),
+  intent: z.enum([
+    "remote_file_request",
+    "local_file_search",
+    "show_pending_approvals",
+    "open_chat",
+    "show_received_files",
+    "unknown"
+  ]),
+  requester_reference: z.literal("current_user"),
+  target_person_query: z.string().nullable(),
+  file_query: z.string().nullable(),
+  file_extensions: z.array(z.string()).default([]),
+  confidence: z.number().min(0).max(1),
+  requires_confirmation: z.boolean(),
+  missing_fields: z.array(z.string()).default([]),
+  original_transcript: z.string()
+});
+5.3 Use the existing OCI GenAI provider config
+
+Environment:
+
+OCI_GENAI_MODEL_ID="openai.gpt-5.2"
+OCI_GENAI_SERVICE_ENDPOINT="https://inference.generativeai.us-chicago-1.oci.oraclecloud.com"
+OCI_GENAI_COMPARTMENT_ID="..."
+OCI_AUTH_TYPE="API_KEY"
+OCI_CONFIG_FILE="C:\\Users\\Skanda Ganesha L\\.oci\\config"
+OCI_CONFIG_PROFILE="DEFAULT"
+OCI_EMBEDDING_MODEL_ID="openai.text-embedding-3-large"
+
+Use the existing shared abstraction in `src/oci/LlmProvider.ts`. Do not add a direct OpenAI API key path for QuickVoice. Tests should use a mock `LlmProvider`.
+5.4 Update VoiceCommandService
+
+Current:
+
+parseVoiceCommand(request.transcript)
+
+Change to:
+
+const parsed = await this.deps.parser.parse({
+  transcript: request.transcript,
+  locale: request.locale,
+  currentUser: cloud ? {
+    userId: cloud.userId,
+    displayName: cloud.displayName,
+    email: cloud.userEmail
+  } : null,
+  knownContacts
+});
+
+Add parser dependency:
+
+export interface VoiceCommandServiceDeps {
+  db: DatabaseSync;
+  parser: VoiceCommandParser;
+  getCloudIdentity: () => LocalCloudIdentity | null;
+  resolveUser: ...
+  executeRemoteFileRequest: ...
+}
+5.5 Fix status lifecycle bug
+
+Change:
+
+completedAt: result.status === "failed" ? null : new Date().toISOString()
+
+to:
+
+completedAt:
+  result.status === "completed"
+    ? new Date().toISOString()
+    : null
+
+Use better statuses:
+
+type VoiceCommandStatus =
+  | "captured"
+  | "parsed"
+  | "preview_required"
+  | "confirmed"
+  | "submitted"
+  | "waiting_remote_agent"
+  | "waiting_receiver_approval"
+  | "transferring"
+  | "completed"
+  | "failed"
+  | "cancelled";
+5.6 Fix capability mismatch
+
+Change:
+
+capability: "file.request"
+
+to:
+
+capability: "file.request.search"
+
+or support aliases centrally:
+
+normalizeCapability("file.request") === "file.request.search"
+5.7 Add voice mission updates to chat UI
+
+When voice command is created:
+
+append voice_command message
+
+When confirmed:
+
+append mission card
+
+When submitted:
+
+append file_request message
+
+When status changes:
+
+append/update mission timeline
+6. QuickVoice changes to implement
+6.1 Ensure it calls the right backend sequence
+
+QuickVoice must call:
+
+POST /voice/commands
+→ show preview
+→ POST /voice/commands/:id/confirm
+
+If it only calls /voice/commands, nothing should execute by design.
+
+6.2 Add local-agent health check
+
+On window open:
+
 GET /voice/status
 
-Implement src/voice:
-- VoiceCommandParser.ts
-- VoiceCommandService.ts
-- VoiceCommandRoutes.ts
-- VoiceCommandTypes.ts
+If local agent offline:
 
-Parser must support:
-1. Ask {person} to send me {file}
-2. Request {file} from {person}
-3. Find {file}
-4. Show pending approvals
-5. Open chat with {person}
+Oracle Amigo local agent is not running.
+[Start local agent] [Retry]
+6.3 Add transcript debug view
 
-For:
-“Ask Docin to send Harassment Certification.pdf file”
+For debugging:
 
-Return:
+Transcript:
+Ask Docin to send me Harassment Certificate pdf file
+
+Parser:
+remote_file_request
+target: Docin
+file: Harassment Certificate
+extensions: pdf
+
+Status:
+preview_required
+6.4 Add error states
+No transcript detected
+LLM unavailable
+Could not parse command
+Target not found
+Multiple people named Docin
+Remote agent offline
+Not enrolled
+Control plane unavailable
+7. Microservice architecture if you use Python MAS
+
+Use Python only for model-heavy work.
+
+oracle-amigo-quick-voice.exe
+    ↓
+TypeScript Local Agent
+    ↓
+Python MAS Service, optional
+Python MAS service responsibilities
+speech-to-text
+LLM parsing
+risk summary
+mission summary
+RAG answer
+TypeScript local agent responsibilities
+current user identity
+directory lookup
+target verification
+policy
+confirmation
+A2A relay
+approval
+transfer
+audit
+storage
+chat updates
+Python FastAPI endpoints
+POST /stt/transcribe
+POST /commands/parse
+POST /missions/summarize
+POST /risk/summarize
+Example request
 {
-  intent: "remote_file_request",
-  target_person_query: "Docin",
-  file_query: "Harassment Certification.pdf",
-  confidence: 0.94,
-  requires_confirmation: false
+  "transcript": "Ask Docin to send me Harassment Certificate pdf file",
+  "current_user": {
+    "display_name": "Skanda Ganesha L"
+  },
+  "contacts": [
+    {
+      "display_name": "Docin",
+      "email": "docin1116@gmail.com"
+    }
+  ]
+}
+Example response
+{
+  "intent": "remote_file_request",
+  "target_person_query": "Docin",
+  "file_query": "Harassment Certificate",
+  "file_extensions": ["pdf"],
+  "confidence": 0.94
 }
 
-For remote_file_request:
-- resolve Docin through DirectoryClient
-- choose active agent with file.request.search capability
-- create/find conversation
-- call existing relay send file request flow
-- append message/task into chat timeline
-- return relay_task_id
+But again: Python must not execute the command. It only parses/plans.
 
-Phase 7: Submit on key release
-When voice:stop-and-submit fires:
-- stop mic
-- finalize transcript
-- trim text
-- if empty, hide and do nothing
-- if non-empty, POST /voice/commands
-- hide overlay immediately after local agent accepts command
-- if request fails, optionally show Windows/local notification or log error
-- main Oracle Amigo chat should show the command/task
+8. Test plan
 
-Phase 8: Database
-Add voice_commands table if missing:
-id
-profile_id
-org_id
-user_id
-agent_id
-agent_instance_id
+Add these tests.
+
+Parser tests
+“Ask Docin to send me Harassment Certificate pdf file”
+→ remote_file_request
+→ target_person_query = Docin
+→ file_query = Harassment Certificate
+→ extensions = ["pdf"]
+
+“Request NonPO invoice india.pdf from Docin”
+→ remote_file_request
+
+“Show pending approvals”
+→ show_pending_approvals
+
+“Open chat with Docin”
+→ open_chat
+LLM fallback tests
+rule parser low confidence calls LLM
+LLM invalid JSON is repaired once
+LLM output with invented requester is rejected
+LLM output missing target returns clarification_required
+Service tests
+POST /voice/commands creates preview
+POST /voice/commands/:id/confirm submits relay request
+confirm without preview fails
+target not found returns preview error
+multiple targets returns ambiguous target
+capability mismatch returns remote agent unavailable
+E2E test
+
+Create:
+
+npm run test:e2e:voice-file-request
+
+It must prove:
+
+Skanda QuickVoice transcript:
+Ask Docin to send me Harassment Certificate pdf file
+
+→ parser returns remote_file_request
+→ preview created
+→ confirm submits relay request
+→ Docin agent receives request
+→ Docin searches indexed files
+→ Docin approval appears
+→ Docin approves
+→ Skanda receives file
+→ SHA-256 verified
+→ voice command mission completed
+9. Exact implementation order
+Phase 1: Verify current flow
+
+Run:
+
+npm run dev
+npm run dev:voice-launcher
+
+Then manually test:
+
+curl -X POST http://127.0.0.1:3399/voice/commands \
+  -H "Content-Type: application/json" \
+  -d "{\"transcript\":\"Ask Docin to send me Harassment Certificate pdf file\",\"source\":\"quickvoice\"}"
+
+Expected:
+
+preview_required
+intent remote_file_request
+target Docin
+file Harassment Certificate
+
+Then:
+
+curl -X POST http://127.0.0.1:3399/voice/commands/<id>/confirm \
+  -H "Content-Type: application/json" \
+  -d "{\"idempotency_key\":\"manual-confirm-001\"}"
+
+If first command works but confirm fails, the bug is relay/directory/capability.
+
+If first command returns unknown/failed, the bug is parser.
+
+If QuickVoice UI never calls the endpoint, the bug is launcher/client.
+
+Phase 2: Add LLM parser
+VoiceCommandParser interface
+HybridVoiceCommandParser
+LlmVoiceCommandParser
+Zod validation
+Phase 3: Fix execution lifecycle
+status updates
+no premature completedAt
+mission updates
+capability name fix
+Phase 4: Update QuickVoice UI
+health check
 transcript
-parsed_intent
-parsed_json
+preview
+confirm
 status
-conversation_id
-relay_task_id
-created_at
-confirmed_at
-completed_at
-error_message
+open in Oracle Amigo
+Phase 5: Add E2E
+test:e2e:voice-file-request
+10. Final architecture recommendation
 
-States:
-captured
-transcribed
-parsed
-submitted
-running
-completed
-failed
-cancelled
+Use this architecture:
 
-Phase 9: Security and privacy
-Rules:
-- no always-listening
-- mic only active while Ctrl+Space is held
-- visible mic state while overlay is visible
-- stop mic on release, Esc, blur timeout, or app hide
-- no raw audio persistence
-- store transcript only as command history
-- do not send local files from voice command without approval
-- remote file request is allowed, but remote user still approves
-- redact transcripts from debug logs unless verbose mode enabled
+QuickVoice.exe:
+Tauri + React + TypeScript
 
-Phase 10: Tests
-Add tests:
-- Ctrl+Space press emits start
-- Ctrl+Space release emits stop-and-submit
-- window positioning returns bottom-right coordinates
-- transcript renders above waveform
-- no textbox/buttons/title in normal UI
-- parser extracts Docin and Harassment Certification.pdf
-- empty transcript does not submit
-- remote_file_request calls local-agent voice command endpoint
-- local agent voice command calls relay send-file-request
-- mic stop stops all tracks
+Local Agent:
+TypeScript + Fastify
 
-Phase 11: Scripts
-Add or verify:
-dev:voice-launcher
-build:voice-launcher
-tauri:voice-dev
-tauri:voice-build
+LLM parsing:
+TypeScript adapter with structured JSON + Zod validation
 
-Acceptance:
-- npm --prefix apps/voice-launcher run tauri dev works after Rust/Cargo install
-- Ctrl+Space press opens small overlay bottom-right above taskbar
-- overlay is #000000
-- waveform is white
-- transcript is white and appears above waveform
-- no textbox, no title, no buttons, no preview/dropdown
-- releasing Ctrl+Space hides overlay
-- transcript is sent to local agent
-- “Ask Docin to send Harassment Certification.pdf file” becomes a relay file request
-- full Oracle Amigo chat shows the task
-12. What to do now, in order
-1. Install Rust/Cargo and fix tauri dev.
-2. Change the overlay window size and position.
-3. Replace the current UI with pure black + transcript + white waveform.
-4. Move shortcut handling to Rust so you can detect Pressed/Released.
-5. Start mic on Pressed, stop/submit on Released.
-6. Add /voice/commands in local agent if missing.
-7. Parse “Ask Docin to send X file” into remote_file_request.
-8. Reuse existing /relay/send-file-request flow.
-9. Add tests.
+STT:
+Typed command fallback now
+Browser/WebView STT or whisper.cpp sidecar next
 
-The key design rule:
+MAS:
+Role-based TypeScript services now
+Optional Python FastAPI microservice later for STT/LLM/RAG
 
-Quick Voice is not a chat window. It is a temporary push-to-talk command surface. The full Oracle Amigo chat remains the place where the task, approval, transfer, and receipt are shown.
+Do not move the core MAS workflow to Python yet. Your current MAS should be implemented as TypeScript service roles:
+
+VoiceInputAgent
+CommandUnderstandingAgent
+DirectoryResolutionAgent
+RequesterAgent
+RelayAgent
+ReceiverAgent
+FileSearchAgent
+ApprovalAgent
+TransferAgent
+AuditAgent
+
+These can be classes/services, not autonomous processes.

@@ -6,8 +6,10 @@ import { SectionContext, inferSection } from "./SectionContext";
 import { CommandPalette } from "../components/CommandPalette";
 import { useDensityPreference } from "../lib/uiPreferences";
 import { UserRail } from "./UserRail";
+import { useRealtimePolling } from "../hooks/queries";
 
 export function AppShell() {
+  useRealtimePolling();
   const location = useLocation();
   const section = inferSection(location.pathname);
   const { density } = useDensityPreference();

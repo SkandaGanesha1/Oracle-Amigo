@@ -4,7 +4,9 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { _resetDb, getDb } from "../src/db/connection.js";
 import { VoiceCommandService } from "../src/voice/VoiceCommandService.js";
+import { HybridVoiceCommandParser } from "../src/voice/HybridVoiceCommandParser.js";
 import type { LocalCloudIdentity } from "../src/cloud/LocalCloudIdentityStore.js";
+import type { LlmProvider, LlmStructuredRequest } from "../src/oci/LlmProvider.js";
 
 let tmpRoot: string;
 
@@ -48,6 +50,7 @@ describe("voice command service", () => {
 
     const confirmed = await service.confirmCommand(command.id);
     expect(confirmed.status).toBe("submitted");
+    expect(confirmed.completedAt).toBeNull();
     expect(confirmed.relayTaskId).toBe("relay_1");
     expect(executeRemoteFileRequest).toHaveBeenCalledWith(expect.objectContaining({
       targetUserId: "usr_docin",
@@ -114,7 +117,54 @@ describe("voice command service", () => {
     expect(command.transcript).toContain("Local path hidden");
     expect(command.transcript).not.toContain("Secrets");
   });
+
+  it("uses validated LLM fallback for low-confidence voice commands", async () => {
+    const llm = new FakeVoiceLlmProvider({
+      schema_version: "voice-command.v1",
+      intent: "remote_file_request",
+      requester_reference: "current_user",
+      target_person_query: "Docin",
+      file_query: "Harassment Certificate",
+      file_extensions: ["pdf"],
+      confidence: 0.93,
+      requires_confirmation: true,
+      missing_fields: [],
+      original_transcript: "Please get that harassment certificate from Docin"
+    });
+    const service = new VoiceCommandService({
+      db: getDb(),
+      parser: new HybridVoiceCommandParser(llm, 0.99),
+      getCloudIdentity: () => cloudIdentity(),
+      resolveUser: async (query) => query === "Docin"
+        ? { userId: "usr_docin", displayName: "Docin", email: "docin@example.com" }
+        : null,
+      executeRemoteFileRequest: vi.fn()
+    });
+
+    const command = await service.createCommand({
+      transcript: "Please get that harassment certificate from Docin",
+      source: "voice-launcher",
+      mode: "preview_then_execute"
+    });
+
+    expect(command.parsed.parserProvider).toBe("llm");
+    expect(command.parsed.requesterReference).toBe("current_user");
+    expect(command.parsed.targetPersonQuery).toBe("Docin");
+    expect(command.parsed.fileQuery).toBe("Harassment Certificate");
+    expect(command.parsed.fileExtensions).toEqual(["pdf"]);
+  });
 });
+
+class FakeVoiceLlmProvider implements LlmProvider {
+  constructor(private readonly output: unknown) {}
+  isAvailable(): boolean { return true; }
+  async generateStructured<T>(request: LlmStructuredRequest<T>): Promise<T> {
+    return request.schema.parse(this.output);
+  }
+  async generateEmbeddings(): Promise<Float32Array[]> {
+    return [];
+  }
+}
 
 function cloudIdentity(): LocalCloudIdentity {
   return {

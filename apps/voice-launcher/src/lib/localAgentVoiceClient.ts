@@ -4,6 +4,7 @@ export type VoiceLauncherState =
   | "listening"
   | "transcribing"
   | "sending"
+  | "preview_required"
   | "completed"
   | "failed";
 
@@ -55,13 +56,25 @@ export class LocalAgentVoiceClient {
   }
 
   async createCommand(transcript: string, sttConfidence?: number): Promise<VoiceCommandRecord> {
+    return this.createCommandWithOptions(transcript, {
+      mode: "preview_then_execute",
+      sttConfidence
+    });
+  }
+
+  async createCommandPreview(
+    transcript: string,
+    options: { locale?: string; sttConfidence?: number; inputMode?: "speech" | "typed" } = {}
+  ): Promise<VoiceCommandRecord> {
     const response = await this.request<{ command: VoiceCommandRecord }>("/voice/commands", {
       method: "POST",
       body: JSON.stringify({
         transcript,
         source: "voice-launcher",
-        mode: "auto_execute",
-        sttConfidence
+        mode: "preview_then_execute",
+        locale: options.locale,
+        input_mode: options.inputMode ?? "speech",
+        sttConfidence: options.sttConfidence
       })
     });
     return response.command;

@@ -704,7 +704,16 @@ describe("persisted chat API", () => {
   });
 
   it("stores inbound relay message.send as an incoming peer chat message", async () => {
-    const dispatcher = new RemoteTaskDispatcher(new PersonalAgentProtocol());
+    const chatRepo = new ChatRepository();
+    const realtimeEvents: Array<{ operation: string; conversationId: string; messageId?: string }> = [];
+    const unsubscribe = chatRepo.subscribe((event) => {
+      realtimeEvents.push({
+        operation: event.operation,
+        conversationId: event.conversationId,
+        messageId: event.messageId
+      });
+    });
+    const dispatcher = new RemoteTaskDispatcher(new PersonalAgentProtocol(), getDb(), defaultProfileId(), chatRepo);
     const result = await dispatcher.dispatch({
       relay_task_id: "relay-msg-1",
       from_agent_instance_id: "agi-peer",
@@ -717,9 +726,15 @@ describe("persisted chat API", () => {
       delivered_at: null,
       ack_at: null
     });
+    unsubscribe();
     expect(result.status).toBe("created");
-    const conversation = new ChatRepository().findCloudRelayConversationByPeerAgent("agi-peer");
+    const conversation = chatRepo.findCloudRelayConversationByPeerAgent("agi-peer");
     expect(conversation).toBeTruthy();
+    expect(realtimeEvents).toContainEqual(expect.objectContaining({
+      operation: "message_created",
+      conversationId: conversation!.id,
+      messageId: expect.any(String)
+    }));
     const server = buildServer();
 
     const messages = await server.inject({ method: "GET", url: `/chat/conversations/${conversation!.id}/messages` });
@@ -737,6 +752,46 @@ describe("persisted chat API", () => {
       status_text: "hello from peer"
     }));
     await server.close();
+  });
+
+  it("emits chat realtime events for voice-triggered inbound file requests through the injected repository", async () => {
+    const chatRepo = new ChatRepository();
+    const realtimeEvents: Array<{ operation: string; conversationId: string; messageId?: string }> = [];
+    const unsubscribe = chatRepo.subscribe((event) => {
+      realtimeEvents.push({
+        operation: event.operation,
+        conversationId: event.conversationId,
+        messageId: event.messageId
+      });
+    });
+    const dispatcher = new RemoteTaskDispatcher(new PersonalAgentProtocol(), getDb(), defaultProfileId(), chatRepo);
+
+    const result = await dispatcher.dispatch({
+      relay_task_id: "relay-voice-file-1",
+      from_agent_instance_id: "agi-peer",
+      to_agent_instance_id: "agi-local",
+      a2a_task_id: "task-voice-file-1",
+      type: "file.request",
+      payload: { kind: "file_request", text: "Send me offer letter.pdf", voice_command_id: "voice-1" },
+      status: "delivered",
+      created_at: new Date().toISOString(),
+      delivered_at: null,
+      ack_at: null
+    });
+    unsubscribe();
+
+    expect(result.status).toBe("created");
+    const conversation = chatRepo.findCloudRelayConversationByPeerAgent("agi-peer");
+    expect(conversation).toBeTruthy();
+    expect(realtimeEvents).toContainEqual(expect.objectContaining({
+      operation: "message_created",
+      conversationId: conversation!.id,
+      messageId: expect.any(String)
+    }));
+    expect(chatRepo.getMessages(conversation!.id)).toContainEqual(expect.objectContaining({
+      message_type: "approval",
+      text: expect.stringContaining("Send me offer letter.pdf")
+    }));
   });
 
   it("stores inbound relay messages in the existing peer-user conversation", async () => {

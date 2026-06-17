@@ -29,10 +29,12 @@ export default defineConfig({
     port: 5173,
     proxy: {
       "/agent": localAgentTarget,
+      "/a2a": localAgentTarget,
       "/audit": localAgentTarget,
       "/approvals": localAgentTarget,
       "/chat": localAgentTarget,
       "/cloud": localAgentTarget,
+      "/events": localAgentTarget,
       "/health": localAgentTarget,
       "/manifest.webmanifest": localAgentTarget,
       "/search": localAgentTarget,

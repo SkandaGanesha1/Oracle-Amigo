@@ -11,6 +11,7 @@ import { LocalCloudIdentityStore, defaultProfileId } from "../cloud/LocalCloudId
 import { RelayClient } from "../cloud/RelayClient.js";
 import { getTask } from "../workflow/TaskWorkflow.js";
 import type { ApprovalRecord } from "../protocol/PersonalAgentProtocol.js";
+import type { ReceiverApprovalRecord } from "./ReceiverAgentOrchestrator.js";
 import { withRecoveredDeviceToken } from "./CloudTokenRecovery.js";
 
 export interface ApprovalTransferResult {
@@ -138,6 +139,98 @@ export class ApprovalTransferOrchestrator {
       });
       return { status: "failed", transferId: null, reason: message };
     }
+  }
+
+  async transferReceiverApproval(approval: ReceiverApprovalRecord): Promise<ApprovalTransferResult> {
+    if (!approval.selectedFilePath) {
+      throw new Error("No file path selected for transfer");
+    }
+    const identity = this.store.get(this.profileId);
+    if (!identity?.deviceAccessToken || !identity.agentInstanceId) {
+      throw new Error("Cloud enrollment is required before transfer upload");
+    }
+
+    // Hash file
+    const bytes = await readFile(approval.selectedFilePath);
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    const sizeBytes = bytes.length;
+    const fileName = basename(approval.selectedFilePath);
+
+    // Send status starting
+    await withRecoveredDeviceToken(this.store, this.profileId, async (fresh) =>
+      new RelayClient(new ControlPlaneClient(fresh.controlPlaneUrl)).send({
+        to_agent_instance_id: approval.requesterAgentInstanceId,
+        a2a_task_id: approval.a2aTaskId,
+        type: "file.request.status",
+        payload: {
+          kind: "file_request_status",
+          original_relay_task_id: approval.relayTaskId,
+          task_id: approval.a2aTaskId,
+          approval_id: approval.id,
+          status: "transfer_starting",
+          text: "Transfer starting"
+        },
+        idempotency_key: `file-request-status:${approval.relayTaskId}:transfer_starting:${approval.id}`
+      }, fresh.deviceAccessToken!)
+    ).catch(() => {});
+
+    // Init upload
+    const init = await withRecoveredDeviceToken(this.store, this.profileId, async (fresh) =>
+      new FileRelayClient(new ControlPlaneClient(fresh.controlPlaneUrl)).init({
+        to_agent_instance_id: approval.requesterAgentInstanceId,
+        file_name: fileName,
+        file_size: sizeBytes,
+        sha256,
+        relay_task_id: approval.relayTaskId
+      }, fresh.deviceAccessToken!)
+    );
+
+    // Upload content
+    await withRecoveredDeviceToken(this.store, this.profileId, async (fresh) =>
+      new FileRelayClient(new ControlPlaneClient(fresh.controlPlaneUrl)).upload(init.transfer_id, bytes, fresh.deviceAccessToken!)
+    );
+
+    // Notify requester
+    await withRecoveredDeviceToken(this.store, this.profileId, async (fresh) =>
+      new RelayClient(new ControlPlaneClient(fresh.controlPlaneUrl)).send({
+        to_agent_instance_id: approval.requesterAgentInstanceId,
+        a2a_task_id: approval.a2aTaskId,
+        type: "file.transfer.available",
+        payload: {
+          transfer_id: init.transfer_id,
+          relay_task_id: approval.relayTaskId,
+          approval_id: approval.id,
+          task_id: approval.a2aTaskId,
+          file_name: fileName,
+          file_size: sizeBytes,
+          sha256,
+          from_agent_instance_id: identity.agentInstanceId
+        },
+        idempotency_key: `transfer-available:${approval.id}`
+      }, fresh.deviceAccessToken!)
+    );
+
+    // Record timeline entry on the receiver side too so they see it in their chat history
+    this.appendTransferTimeline({
+      taskId: approval.a2aTaskId,
+      ownerAgentId: identity.agentInstanceId,
+      requesterAgentId: approval.requesterAgentInstanceId
+    } as any, init.transfer_id, fileName, sizeBytes, sha256);
+
+    appendAuditEvent({
+      actorAgentId: identity.agentInstanceId,
+      taskId: approval.a2aTaskId,
+      eventType: "CLOUD_TRANSFER_UPLOADED",
+      detailsJson: {
+        transferId: init.transfer_id,
+        relayTaskId: approval.relayTaskId,
+        fileName,
+        sizeBytes,
+        sha256
+      }
+    });
+
+    return { status: "completed", transferId: init.transfer_id };
   }
 
   private getJob(approvalId: string): Record<string, unknown> | undefined {

@@ -74,7 +74,8 @@ beforeAll(async () => {
     ARGON2_MEMORY_COST: "19456",
     ARGON2_TIME_COST: "2",
     ARGON2_PARALLELISM: "1",
-    CONTROL_PLANE_ENV: "test"
+    CONTROL_PLANE_ENV: "test",
+    METRICS_ENABLED: "false"
   });
   closeAll();
   app = await buildApp();

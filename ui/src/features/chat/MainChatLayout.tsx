@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import { AnimatePresence } from "framer-motion";
 import { useParams, useNavigate } from "react-router-dom";
 import { AlertTriangle, Search, MessageSquareText, ListTodo, RefreshCw } from "lucide-react";
-import { useConversations, useConversationMessages, useCreateThreadReply, useUpdateConversationReadState } from "../../hooks/queries";
+import { useActiveConversationRealtime, useConversations, useConversationMessages, useCreateThreadReply, useUpdateConversationReadState } from "../../hooks/queries";
 import { ApiRequestError } from "../../api/localAgentClient";
 import { api } from "../../api/client";
 import { ConversationHeader } from "./ConversationHeader";
@@ -150,6 +150,7 @@ export function MainChatLayout() {
   const activeConversation = conversationsData?.conversations?.find((c) => c.id === conversationId) ?? messagesData?.conversation ?? null;
   const messages = messagesData?.messages ?? [];
   const readState = messagesData?.readState ?? activeConversation?.readState ?? null;
+  useActiveConversationRealtime(conversationId ?? null, refetchMessages);
 
   const handleMarkRead = useCallback((messageId: string) => {
     if (!conversationId || updateReadState.isPending) return;

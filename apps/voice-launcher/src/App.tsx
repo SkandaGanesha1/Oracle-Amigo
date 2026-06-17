@@ -41,6 +41,7 @@ export default function App() {
 
   const visibleText = [hold.transcript, hold.interimTranscript].filter(Boolean).join(" ");
   const statusText = startupError || hold.error || statusFor(hold.state);
+  const command = hold.command;
 
   return (
     <main className="voice-shell" aria-live="polite">
@@ -52,6 +53,41 @@ export default function App() {
         <p className={startupError || hold.error ? "voice-hint voice-hint-error" : "voice-hint"}>
           {statusText}
         </p>
+        {command && (
+          <div className="voice-debug-panel">
+            <div className="voice-debug-row">
+              <span>Command</span>
+              <strong>{shortId(command.id)}</strong>
+            </div>
+            <div className="voice-debug-row">
+              <span>Status</span>
+              <strong>{command.status}</strong>
+            </div>
+            <div className="voice-debug-row">
+              <span>Parser</span>
+              <strong>{String(command.parsed?.confidence ?? "-")}</strong>
+            </div>
+            <div className="voice-debug-row">
+              <span>Target</span>
+              <strong>{command.preview?.targetUser?.displayName ?? command.preview?.targetUser?.email ?? "-"}</strong>
+            </div>
+            <div className="voice-debug-row">
+              <span>Relay</span>
+              <strong>{command.relayTaskId ? shortId(command.relayTaskId) : "-"}</strong>
+            </div>
+            {command.errorMessage && <p className="voice-debug-error">{command.errorMessage}</p>}
+            {hold.state === "preview_required" && !command.preview?.error && (
+              <div className="voice-actions">
+                <button type="button" onClick={() => void hold.confirm()}>
+                  {command.preview?.actionLabel ?? "Confirm"}
+                </button>
+                <button type="button" className="secondary" onClick={hold.cancel}>
+                  Cancel
+                </button>
+              </div>
+            )}
+          </div>
+        )}
       </section>
     </main>
   );
@@ -93,6 +129,11 @@ function statusFor(state: string): string {
   if (state === "listening") return "Release to send";
   if (state === "transcribing") return "Finishing transcript";
   if (state === "sending") return "Sending";
+  if (state === "preview_required") return "Review and confirm";
   if (state === "failed") return "Command failed";
   return "Hold Ctrl+Space to speak";
+}
+
+function shortId(value: string): string {
+  return value.length <= 14 ? value : `${value.slice(0, 6)}...${value.slice(-4)}`;
 }

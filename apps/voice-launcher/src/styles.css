@@ -44,10 +44,12 @@ body {
   width: min(360px, calc(100vw - 48px));
   max-width: 100%;
   display: grid;
-  grid-template-rows: 58px 44px 18px;
+  grid-template-rows: 58px 44px 18px minmax(0, auto);
   align-items: center;
   justify-items: center;
   row-gap: 8px;
+  max-height: calc(100vh - 28px);
+  overflow: hidden;
 }
 
 .transcript-line {
@@ -139,5 +141,67 @@ body {
 }
 
 .voice-hint-error {
+  color: #ffffff;
+}
+
+.voice-debug-panel {
+  width: 100%;
+  max-height: 106px;
+  overflow: auto;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+  padding-top: 8px;
+  display: grid;
+  gap: 4px;
+}
+
+.voice-debug-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: rgba(255, 255, 255, 0.58);
+  font-size: 10px;
+  line-height: 1.2;
+}
+
+.voice-debug-row strong {
+  min-width: 0;
+  max-width: 220px;
+  color: #ffffff;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.voice-debug-error {
+  margin: 2px 0 0;
+  color: #ffffff;
+  font-size: 10px;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.voice-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.voice-actions button {
+  min-height: 28px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 8px;
+  background: #ffffff;
+  color: #000000;
+  padding: 0 10px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.voice-actions button.secondary {
+  background: transparent;
   color: #ffffff;
 }

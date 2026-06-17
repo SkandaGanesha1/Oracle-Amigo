@@ -2070,7 +2070,9 @@ function messageText(message: TimelineMessage): string {
   if (message.kind === "transfer") return `${message.file_name} is ${message.status} (${message.progress_percent}%).`;
   if (message.kind === "receipt") return `${message.file_name} receipt ${message.hash_verified ? "verified" : "needs review"}.`;
   if (message.kind === "thinking_bar") return message.state.summary;
-  return `${message.task_id} is ${message.internal_state}.`;
+  if (message.kind === "a2a_task") return `${message.task_id} is ${message.internal_state}.`;
+  if (message.kind === "voice_command") return `Voice command: ${message.voice_record.transcript}`;
+  return "";
 }
 
 function messageActivityLoader(message: TimelineMessage) {

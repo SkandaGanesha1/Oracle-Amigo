@@ -135,6 +135,13 @@ export function toApprovalCandidatePayload(candidate: FileRequestCandidate) {
   };
 }
 
+export function toReceiverApprovalCandidatePayload(candidate: FileRequestCandidate) {
+  return {
+    ...toApprovalCandidatePayload(candidate),
+    path: candidate.boundFilePath
+  };
+}
+
 async function fromLiveMatches(matches: FileSearchMatch[], fileSearch: FileSearchService): Promise<FileRequestCandidate[]> {
   const candidates: FileRequestCandidate[] = [];
   for (const match of matches) {

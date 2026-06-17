@@ -8,7 +8,11 @@ const ConfigSchema = z.object({
   // Path to the built admin SPA. In dev, the Vite dev server serves on :5174 directly so this
   // adapter is only used in production. Default points at the ui-admin dist output.
   ADMIN_STATIC_ROOT: z.string().default("public"),
-  ADMIN_PORTAL_LOG_LEVEL: z.enum(["info", "debug", "warn", "error"]).default("info")
+  ADMIN_PORTAL_LOG_LEVEL: z.enum(["info", "debug", "warn", "error"]).default("info"),
+
+  // Prometheus metrics
+  METRICS_ENABLED: z.enum(["true", "false"]).default("true"),
+  METRICS_ENDPOINT: z.string().default("/metrics")
 });
 
 export type AdminPortalConfig = z.infer<typeof ConfigSchema>;

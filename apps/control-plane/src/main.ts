@@ -1,8 +1,9 @@
 import "dotenv/config";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import Fastify, { type FastifyInstance } from "fastify";
 import cookie from "@fastify/cookie";
+import fastifyMetrics from "fastify-metrics";
 import { loadConfig } from "./config.js";
 import { getDb } from "./db/connection.js";
 import { runMigrations, ensureDefaultOrganization } from "./db/migrations.js";
@@ -53,6 +54,140 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
     app.log.error({ err, url: req.url, method: req.method }, "request failed");
     reply.code(500).send({ error: "INTERNAL_ERROR", message: err.message });
   });
+
+  // Prometheus metrics (unless explicitly disabled)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let metricsGauges: Record<string, any> | null = null;
+
+  if (cfg.METRICS_ENABLED === "true") {
+    await app.register(fastifyMetrics as never, {
+      endpoint: cfg.METRICS_ENDPOINT,
+      defaultMetrics: { enabled: true },
+      routeMetrics: { enabled: true }
+    });
+
+    const client = app.metrics.client;
+    const gaugeOpts = { registers: [client.register] };
+
+    const usersGauge = new client.Gauge({
+      name: "control_plane_users_total",
+      help: "Total users by status",
+      labelNames: ["status"],
+      ...gaugeOpts
+    });
+    const devicesGauge = new client.Gauge({
+      name: "control_plane_devices_total",
+      help: "Total devices by status",
+      labelNames: ["status"],
+      ...gaugeOpts
+    });
+    const presenceOnlineGauge = new client.Gauge({
+      name: "control_plane_presence_online",
+      help: "Number of online devices (heartbeat within stale threshold)",
+      ...gaugeOpts
+    });
+    const sessionsActiveGauge = new client.Gauge({
+      name: "control_plane_sessions_active",
+      help: "Number of active admin sessions",
+      ...gaugeOpts
+    });
+    const dbSizeGauge = new client.Gauge({
+      name: "control_plane_db_size_bytes",
+      help: "SQLite database file size in bytes",
+      ...gaugeOpts
+    });
+    const relayTasksTotal = new client.Gauge({
+      name: "control_plane_relay_tasks_total",
+      help: "Total relay tasks by status and type",
+      labelNames: ["status", "type"],
+      ...gaugeOpts
+    });
+    const fileTransfersTotal = new client.Gauge({
+      name: "control_plane_file_transfers_total",
+      help: "Total file transfers by status",
+      labelNames: ["status"],
+      ...gaugeOpts
+    });
+    const adminLoginsTotal = new client.Gauge({
+      name: "control_plane_admin_logins_total",
+      help: "Total admin login attempts by result",
+      labelNames: ["result"],
+      ...gaugeOpts
+    });
+    const auditEventsTotal = new client.Gauge({
+      name: "control_plane_audit_events_total",
+      help: "Total audit events by type",
+      labelNames: ["event_type"],
+      ...gaugeOpts
+    });
+
+    metricsGauges = {
+      usersGauge, devicesGauge, presenceOnlineGauge,
+      sessionsActiveGauge, dbSizeGauge,
+      relayTasksTotal, fileTransfersTotal,
+      adminLoginsTotal, auditEventsTotal
+    };
+
+    // Helper to collect gauge values from SQLite every 60s
+    const collectDbGauges = () => {
+      try {
+        const db = getDb();
+        // Users by status
+        const usersByStatus = db.prepare(
+          "SELECT status, COUNT(*) AS cnt FROM users GROUP BY status"
+        ).all() as { status: string; cnt: number }[];
+        for (const row of usersByStatus) {
+          usersGauge.set({ status: row.status }, row.cnt);
+        }
+        // Devices by status
+        const devicesByStatus = db.prepare(
+          "SELECT status, COUNT(*) AS cnt FROM devices GROUP BY status"
+        ).all() as { status: string; cnt: number }[];
+        for (const row of devicesByStatus) {
+          devicesGauge.set({ status: row.status }, row.cnt);
+        }
+        // Online presence
+        const onlineCount = db.prepare(
+          "SELECT COUNT(*) AS cnt FROM presence WHERE status = 'online'"
+        ).get() as { cnt: number };
+        presenceOnlineGauge.set(onlineCount.cnt);
+        // Active admin sessions
+        const sessionCount = db.prepare(
+          "SELECT COUNT(*) AS cnt FROM admin_sessions WHERE expires_at > datetime('now')"
+        ).get() as { cnt: number };
+        sessionsActiveGauge.set(sessionCount.cnt);
+        // DB file size
+        try {
+          const stats = statSync(cfg.CONTROL_PLANE_DB_PATH);
+          dbSizeGauge.set(stats.size);
+        } catch { /* ignore if file not found */ }
+        // Tasks by status / type
+        const tasksByStatus = db.prepare(
+          "SELECT status, type, COUNT(*) AS cnt FROM relay_tasks GROUP BY status, type"
+        ).all() as { status: string; type: string; cnt: number }[];
+        for (const row of tasksByStatus) {
+          relayTasksTotal.set({ status: row.status, type: row.type ?? "unknown" }, row.cnt);
+        }
+        // File transfers by status
+        const transfersByStatus = db.prepare(
+          "SELECT status, COUNT(*) AS cnt FROM file_transfers GROUP BY status"
+        ).all() as { status: string; cnt: number }[];
+        for (const row of transfersByStatus) {
+          fileTransfersTotal.set({ status: row.status }, row.cnt);
+        }
+        // Audit events by type
+        const auditEventsByType = db.prepare(
+          "SELECT event_type, COUNT(*) AS cnt FROM audit_events GROUP BY event_type"
+        ).all() as { event_type: string; cnt: number }[];
+        for (const row of auditEventsByType) {
+          auditEventsTotal.set({ event_type: row.event_type }, row.cnt);
+        }
+      } catch { /* swallow errors during gauge collection */ }
+    };
+    // Collect on startup and every 60s
+    collectDbGauges();
+    setInterval(collectDbGauges, 60_000);
+  }
 
   app.get("/health", async () => ({
     status: "ok",

@@ -15,6 +15,7 @@ import { ChatRepository, type RelayDeliveryReceipt } from "../chat/ChatRepositor
 import { withRecoveredDeviceToken } from "./CloudTokenRecovery.js";
 import { PeerRoutingService } from "./PeerRoutingService.js";
 import { resolveFileRequestCandidates, toApprovalCandidatePayload } from "./FileRequestCandidateResolver.js";
+import { ReceiverAgentOrchestrator } from "./ReceiverAgentOrchestrator.js";
 
 export interface DispatchResult {
   relayTaskId: string;
@@ -61,6 +62,10 @@ export class RemoteTaskDispatcher {
     }
     if (relayMessageType === "message.send" || payloadKind === "message") {
       return this.handleMessageSend(message);
+    }
+
+    if (relayMessageType === "file.request" && message.payload && typeof message.payload === "object" && "voice_command_id" in message.payload) {
+      return this.handleIncomingFileRequest(message);
     }
 
     const now = new Date().toISOString();
@@ -190,6 +195,67 @@ export class RemoteTaskDispatcher {
     } catch (err) {
       this.record(message, "failed", null, err instanceof Error ? err.message : String(err), now);
       return { relayTaskId: message.relay_task_id, localTaskId: "", approvalId: null, status: "failed" };
+    }
+  }
+
+  private async handleIncomingFileRequest(message: RelayInboxMessage): Promise<DispatchResult> {
+    const now = new Date().toISOString();
+    const text = extractRequestText(message.payload);
+    const conversation = await this.findOrCreateRelayConversation(message, "file.request");
+
+    await this.sendFileRequestStatus(message, "request_delivered", "Request delivered to receiver agent").catch(() => {});
+
+    // Create a local task to track the state
+    const task = createTask({
+      contextId: message.a2a_task_id ?? message.relay_task_id,
+      type: "file.request.search",
+      metadata: {
+        query: text,
+        relayTaskId: message.relay_task_id,
+        fromAgentInstanceId: message.from_agent_instance_id,
+        remote: true
+      },
+      actorAgentId: message.from_agent_instance_id
+    });
+
+    try {
+      transition(task.id, "INTENT_CLASSIFIED", { intent: this.intentExtractor.extract(text).intent, remote: true });
+
+      // Call ReceiverAgentOrchestrator to handle incoming request (file search + approval card + insert db)
+      const orchestrator = new ReceiverAgentOrchestrator(this.db, this.profileId, this.chatRepo, this.fileSearch);
+      const approval = await orchestrator.handleIncomingFileRequest(message, conversation.id, task.id);
+
+      transition(task.id, "SEARCH_QUERY_BUILT", { query: text });
+      transition(task.id, "LOCAL_SEARCH_RUNNING", { query: text, source: "hybrid" });
+      transition(task.id, "CANDIDATES_RANKED", { count: JSON.parse(approval.candidatesJson).length });
+      transition(task.id, "APPROVAL_REQUIRED", { approvalId: approval.id, remote: true });
+
+      await this.sendFileRequestStatus(
+        message,
+        "waiting_for_approval",
+        "Receiver found candidate files and is waiting for owner approval",
+        {
+          candidate_count: JSON.parse(approval.candidatesJson).length,
+          parsed_filename: text,
+          search_source: "hybrid"
+        }
+      ).catch(() => {});
+
+      this.record(message, "created", task.id, null, now);
+      return {
+        relayTaskId: message.relay_task_id,
+        localTaskId: task.id,
+        approvalId: approval.id,
+        status: "created"
+      };
+    } catch (err) {
+      this.record(message, "failed", task.id, err instanceof Error ? err.message : String(err), now);
+      return {
+        relayTaskId: message.relay_task_id,
+        localTaskId: task.id,
+        approvalId: null,
+        status: "failed"
+      };
     }
   }
 

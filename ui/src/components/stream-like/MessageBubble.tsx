@@ -13,6 +13,8 @@ import { ApprovalCardMessage } from "../agentic-ai/ApprovalCardMessage";
 import { TransferProgressMessage as TransferProgressCard } from "../agentic-ai/TransferProgressMessage";
 import { FileReceiptMessage as FileReceiptCard } from "../agentic-ai/FileReceiptMessage";
 import { FileRequestMessage as FileRequestCard } from "../agentic-ai/FileRequestMessage";
+import { VoiceCommandCard } from "../../features/voice/VoiceCommandCard";
+import { ReceiverApprovalCard } from "../../features/voice/VoiceCommandCard";
 import { ThinkingBar as AgentPhaseThinkingBar } from "../agentic-ai/ThinkingBar";
 import { ThinkingBar } from "../chat/ThinkingBar";
 import { AgenticReasoning } from "../agentic-ai/AgenticReasoning";
@@ -463,19 +465,33 @@ export function MessageBubble({ message, onRetry, grouped = false, meta }: Messa
               )}
 
               {!isUnavailable && message.kind === "a2a_task" && <AgentRunMessage message={message as A2ATaskMessage} />}
-              {!isUnavailable && message.kind === "approval" && (
-                <>
-                  <ApprovalCardMessage message={message as FileCandidateApprovalMessage} />
-                  {((message as FileCandidateApprovalMessage).card.status === "approved" || (message as FileCandidateApprovalMessage).card.status === "rejected") && (
-                    <div className="mt-2">
-                      <FeedbackBar />
-                    </div>
-                  )}
-                </>
-              )}
               {!isUnavailable && message.kind === "transfer" && <TransferProgressCard message={message as TransferProgressMessage} />}
               {!isUnavailable && message.kind === "receipt" && <FileReceiptCard message={message as FileReceiptMessage} />}
               {!isUnavailable && message.kind === "file_request" && <FileRequestCard message={message as FileRequestMessageType} />}
+              {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+              {!isUnavailable && (message as any).kind === "voice_command" && (
+                <VoiceCommandCard
+                  record={(message as unknown as { voice_record: Parameters<typeof VoiceCommandCard>[0]["record"] }).voice_record}
+                  onRefresh={() => window.dispatchEvent(new CustomEvent("oa-refresh-voice-commands"))}
+                />
+              )}
+              {!isUnavailable && message.kind === "approval" && (
+                (message as { card?: { kind?: string } }).card?.kind === "receiver_file_approval" ? (
+                  <ReceiverApprovalCard
+                    payload={(message as unknown as { card: Parameters<typeof ReceiverApprovalCard>[0]["payload"] }).card}
+                    onDecided={() => window.dispatchEvent(new CustomEvent("oa-refresh-approvals"))}
+                  />
+                ) : (
+                  <>
+                    <ApprovalCardMessage message={message as FileCandidateApprovalMessage} />
+                    {((message as FileCandidateApprovalMessage).card.status === "approved" || (message as FileCandidateApprovalMessage).card.status === "rejected") && (
+                      <div className="mt-2">
+                        <FeedbackBar />
+                      </div>
+                    )}
+                  </>
+                )
+              )}
               {!isUnavailable && isThinkingBar && <ThinkingBar state={message.state} privacyMasked />}
               {!isUnavailable && isAgentPhase && <AgentPhaseThinkingBar text={text} />}
               {!isUnavailable && (message.kind === "human" || (message.kind === "agent_status" && !isAgentPhase) || message.kind === "system_event") ? (

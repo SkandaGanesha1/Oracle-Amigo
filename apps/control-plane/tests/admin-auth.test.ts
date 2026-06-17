@@ -66,7 +66,8 @@ beforeAll(async () => {
     ADMIN_COOKIE_HOST_PREFIX: "false",
     ADMIN_LOGIN_RATELIMIT_PER_EMAIL: "3",
     ADMIN_LOGIN_RATELIMIT_PER_IP: "10",
-    ADMIN_LOGIN_LOCKOUT_MINUTES: "15"
+    ADMIN_LOGIN_LOCKOUT_MINUTES: "15",
+    METRICS_ENABLED: "false"
   });
   closeAll();
   app = await buildApp();

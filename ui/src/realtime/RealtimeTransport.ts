@@ -5,6 +5,7 @@ export type RealtimeEventKind =
   | "approval_update"
   | "transfer_update"
   | "conversation_update"
+  | "message_created"
   | "voice_command_update"
   | "agent_status"
   | "cloud_status"
@@ -38,14 +39,24 @@ export interface SseSubscription {
   closeWhen?: (data: unknown) => boolean;
 }
 
+function normalizeRealtimeEvent(parsed: unknown): RealtimeEvent | null {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const record = parsed as Record<string, unknown>;
+  const payload = record.payload ?? record.data ?? {};
+  return {
+    kind: typeof record.kind === "string"
+      ? record.kind as RealtimeEventKind
+      : typeof record.type === "string"
+        ? record.type as RealtimeEventKind
+        : "unknown",
+    payload: payload && typeof payload === "object" && !Array.isArray(payload) ? payload as Record<string, unknown> : {},
+    timestamp: typeof record.timestamp === "string" ? record.timestamp : new Date().toISOString(),
+  };
+}
+
 function parseRealtimeEvent(data: string): RealtimeEvent | null {
   try {
-    const parsed = JSON.parse(data);
-    return {
-      kind: parsed.kind ?? parsed.type ?? "unknown",
-      payload: parsed.payload ?? parsed.data ?? {},
-      timestamp: parsed.timestamp ?? new Date().toISOString(),
-    };
+    return normalizeRealtimeEvent(JSON.parse(data));
   } catch {
     return null;
   }
@@ -63,10 +74,30 @@ function queryKeyFromKind(kind: string): unknown[] {
   if (kind === "mission_update") return ["missions"];
   if (kind === "approval_update") return ["approvals", "pending"];
   if (kind === "transfer_update") return ["files", "received"];
-  if (kind === "conversation_update") return ["chat", "conversations"];
+  if (kind === "conversation_update" || kind === "message_created") return ["chat", "conversations"];
   if (kind === "voice_command_update") return ["voice", "commands"];
   if (kind === "cloud_status") return ["cloud-status"];
   return ["missions"];
+}
+
+function invalidateRealtimeEvent(queryClient: QueryClient, event: RealtimeEvent): void {
+  void queryClient.invalidateQueries({ queryKey: queryKeyFromKind(event.kind) });
+  if (event.kind !== "conversation_update" && event.kind !== "message_created") return;
+
+  const conversationId = event.payload.conversationId;
+  if (typeof conversationId !== "string" || !conversationId) return;
+  if (conversationId === "*") {
+    void queryClient.invalidateQueries({
+      predicate: (query) =>
+        query.queryKey[0] === "chat" &&
+        query.queryKey[1] === "conversations" &&
+        query.queryKey[3] === "messages"
+    });
+    return;
+  }
+  void queryClient.invalidateQueries({
+    queryKey: ["chat", "conversations", conversationId, "messages"]
+  });
 }
 
 function sameOriginSseUrl(raw: string, baseUrl: string): string {
@@ -128,10 +159,10 @@ export class SseTransport implements RealtimeTransport {
         const eventSource = new EventSource(url);
         const handleEvent = (event: MessageEvent<string>) => {
           const data = parseSseData(event.data);
-          const parsed = typeof data === "string" ? parseRealtimeEvent(data) : null;
+          const parsed = typeof data === "string" ? parseRealtimeEvent(data) : normalizeRealtimeEvent(data);
           if (parsed) {
             onEvent?.(parsed);
-            void queryClient.invalidateQueries({ queryKey: queryKeyFromKind(parsed.kind) });
+            invalidateRealtimeEvent(queryClient, parsed);
           }
           if (subscription.queryKey) queryClient.setQueryData(subscription.queryKey, data);
           subscription.hydrate?.(data, queryClient);
@@ -209,7 +240,7 @@ export class WebSocketTransport implements RealtimeTransport {
         const parsed = parseRealtimeEvent(String(event.data));
         if (parsed) {
           onEvent?.(parsed);
-          void queryClient.invalidateQueries({ queryKey: queryKeyFromKind(parsed.kind) });
+          invalidateRealtimeEvent(queryClient, parsed);
         }
       };
       this.ws.onclose = () => {

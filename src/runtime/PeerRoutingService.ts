@@ -124,8 +124,9 @@ export class PeerRoutingService {
 }
 
 export function chooseRelayPeerAgent(agents: CloudAgentInstance[], capability?: string): CloudAgentInstance | null {
+  const normalizedCapability = normalizeCapability(capability);
   const ranked = [...agents].sort((a, b) => {
-    const supportRank = capabilityScore(b, capability) - capabilityScore(a, capability);
+    const supportRank = capabilityScore(b, normalizedCapability) - capabilityScore(a, normalizedCapability);
     if (supportRank !== 0) return supportRank;
     const statusRank = statusScore(b.status) - statusScore(a.status);
     if (statusRank !== 0) return statusRank;
@@ -147,9 +148,14 @@ function capabilityScore(agent: CloudAgentInstance, capability?: string): number
   if (caps.length === 0) return 1;
   if (caps.includes(capability)) return 3;
   if (capability === "message.send" && caps.includes("a2a.v1")) return 2;
-  if (capability === "file.request" && (caps.includes("a2a.v1") || caps.includes("file.request"))) return 2;
+  if (capability === "file.request.search" && (caps.includes("a2a.v1") || caps.includes("file.request") || caps.includes("file.request.search"))) return 2;
   if (capability === "file.transfer" && (caps.includes("a2a.v1") || caps.includes("file.transfer"))) return 2;
   return 0;
+}
+
+function normalizeCapability(capability?: string): string | undefined {
+  if (capability === "file.request") return "file.request.search";
+  return capability;
 }
 
 function agentLastSeenAt(agent: CloudAgentInstance): string | null {

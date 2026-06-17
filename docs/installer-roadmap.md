@@ -72,7 +72,7 @@ The two-laptop demo runs but the setup takes 20+ minutes and requires the user t
 | Task | Status |
 | --- | --- |
 | Structured logging (pino) with correlation IDs that flow from the agent → relay → control plane | TBD |
-| Prometheus metrics endpoint on the control plane (`/metrics`) | TBD |
+| Prometheus metrics endpoint on the control plane (`/metrics`) | Done |
 | Alerting runbook: "what to do when X happens" for the top 10 alert types | TBD |
 | Database backup automation (encrypted, offsite, tested restore) | TBD |
 

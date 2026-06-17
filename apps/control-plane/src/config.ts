@@ -41,7 +41,11 @@ const ConfigSchema = z.object({
   ADMIN_SETUP_ENABLED: z.enum(["true", "false"]).default("false"),
   // Optional RS256 key used to re-sign control-plane rewritten cloud Agent Cards.
   AGENT_CARD_SIGNING_PRIVATE_KEY_PEM: z.string().optional(),
-  AGENT_CARD_SIGNING_KEY_ID: z.string().default("control-plane-agent-card")
+  AGENT_CARD_SIGNING_KEY_ID: z.string().default("control-plane-agent-card"),
+
+  // Prometheus metrics
+  METRICS_ENABLED: z.enum(["true", "false"]).default("true"),
+  METRICS_ENDPOINT: z.string().default("/metrics")
 });
 
 export type Config = z.infer<typeof ConfigSchema>;

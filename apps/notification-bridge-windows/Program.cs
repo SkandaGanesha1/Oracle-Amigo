@@ -47,15 +47,16 @@ var port = Environment.GetEnvironmentVariable("NOTIFICATION_BRIDGE_PORT") ?? "34
 Log($"Step 1: Starting HttpListener on port {port}");
 var listener = new HttpListener();
 listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+bool isListenerStarted = false;
 try
 {
     listener.Start();
     Log("HttpListener started");
+    isListenerStarted = true;
 }
 catch (Exception ex)
 {
-    Log($"HttpListener.Start FAILED: {ex.Message}");
-    throw;
+    Log($"HttpListener.Start FAILED (port already in use?): {ex.Message}. Running in toast-activation only mode.");
 }
 
 AppNotificationManager? notificationManager = null;
@@ -88,7 +89,7 @@ try
             return;
         }
 
-        var localPort = Environment.GetEnvironmentVariable("LOCAL_AGENT_PORT") ?? "3399";
+        var localPort = argsDict.GetValueOrDefault("local_port", Environment.GetEnvironmentVariable("LOCAL_AGENT_PORT") ?? "3399");
         var callbackPayload = new Dictionary<string, object?>
         {
             ["approvalId"] = approvalId,
@@ -111,19 +112,19 @@ try
             var response = client.PostAsync($"http://127.0.0.1:{localPort}/approvals/notification-callback", content)
                 .GetAwaiter().GetResult();
             Log($"[toast] Callback response: {(int)response.StatusCode}");
-            // If the local agent rejected the callback as a duplicate, drop our
-            // dedup record so the user can re-tap without a stale skip.
-            if ((int)response.StatusCode == 409)
+            
+            // Clear dedup record on failure so the user can retry.
+            if (!response.IsSuccessStatusCode)
             {
-                processedApprovals.TryRemove(dedupKey, out _);
-                Log($"[toast] Local agent reported duplicate; cleared dedup record for {dedupKey}");
+                processedApprovals.TryRemove(dedupKey, out var discard);
+                Log($"[toast] Local agent reported failure ({response.StatusCode}); cleared dedup record for {dedupKey}");
             }
         }
         catch (Exception ex)
         {
             Log($"[toast] Callback FAILED: {ex.Message}");
             // Network blip — release the dedup record so the next attempt can try again.
-            if (!string.IsNullOrEmpty(approvalId)) processedApprovals.TryRemove(dedupKey, out _);
+            if (!string.IsNullOrEmpty(approvalId)) processedApprovals.TryRemove(dedupKey, out var discard);
         }
     };
 
@@ -143,6 +144,16 @@ Log($"Notification bridge listening on http://127.0.0.1:{port}");
 
 while (true)
 {
+    if (!isListenerStarted)
+    {
+        // If we are a secondary instance (e.g. launched by COM to handle toast activation),
+        // we wait for a reasonable time to let the NotificationInvoked handler run, and then exit.
+        Log("No listener active. Waiting 10 seconds for toast activation handler, then exiting.");
+        await Task.Delay(10000);
+        Log("Exit: Toast activation handler window closed.");
+        break;
+    }
+
     HttpListenerContext context;
     try
     {
@@ -200,19 +211,22 @@ while (true)
                     .AddArgument("candidate_id", notifyParams.CandidateId ?? "")
                     .AddArgument("task_id", notifyParams.TaskId ?? "")
                     .AddArgument("nonce", notifyParams.CallbackNonce ?? "")
-                    .AddArgument("signature", notifyParams.CallbackSignature ?? ""))
+                    .AddArgument("signature", notifyParams.CallbackSignature ?? "")
+                    .AddArgument("local_port", notifyParams.LocalAgentCallbackPort.ToString()))
                 .AddButton(new AppNotificationButton("Reject")
                     .AddArgument("action", "reject")
                     .AddArgument("approval_id", notifyParams.ApprovalId ?? "")
                     .AddArgument("task_id", notifyParams.TaskId ?? "")
                     .AddArgument("nonce", notifyParams.CallbackNonce ?? "")
-                    .AddArgument("signature", notifyParams.CallbackSignature ?? ""))
+                    .AddArgument("signature", notifyParams.CallbackSignature ?? "")
+                    .AddArgument("local_port", notifyParams.LocalAgentCallbackPort.ToString()))
                 .AddButton(new AppNotificationButton("Send feedback")
                     .AddArgument("action", "feedback")
                     .AddArgument("approval_id", notifyParams.ApprovalId ?? "")
                     .AddArgument("task_id", notifyParams.TaskId ?? "")
                     .AddArgument("nonce", notifyParams.CallbackNonce ?? "")
                     .AddArgument("signature", notifyParams.CallbackSignature ?? "")
+                    .AddArgument("local_port", notifyParams.LocalAgentCallbackPort.ToString())
                     .SetInputId("feedback"));
 
             var toast = builder.BuildNotification();

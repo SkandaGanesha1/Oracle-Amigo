@@ -4,6 +4,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { defaultProfileId, type LocalCloudIdentity } from "../cloud/LocalCloudIdentityStore.js";
 import { appendAuditEvent } from "../security/AuditHashChain.js";
 import { CommandUnderstandingService } from "./CommandUnderstandingService.js";
+import type { VoiceCommandParser } from "./VoiceCommandParserInterface.js";
 import {
   VoiceCommandParseResultSchema,
   VoiceCommandPreviewSchema,
@@ -30,6 +31,7 @@ export interface VoiceCommandServiceDeps {
   getCloudIdentity: () => LocalCloudIdentity | null;
   resolveUser: (query: string) => Promise<VoiceDirectoryUser | null>;
   appendVoiceCommandMessage?: (record: VoiceCommandRecord) => Promise<void> | void;
+  parser?: VoiceCommandParser;
   executeRemoteFileRequest: (input: {
     commandId: string;
     targetUserId: string;
@@ -43,10 +45,10 @@ export interface VoiceCommandServiceDeps {
 
 export class VoiceCommandService {
   private readonly events = new EventEmitter();
-  private readonly commandUnderstanding: CommandUnderstandingService;
+  private readonly commandUnderstanding: VoiceCommandParser;
 
   constructor(private deps: VoiceCommandServiceDeps) {
-    this.commandUnderstanding = deps.commandUnderstanding ?? new CommandUnderstandingService();
+    this.commandUnderstanding = deps.parser ?? deps.commandUnderstanding ?? new CommandUnderstandingService();
   }
 
   async createCommand(request: VoiceCommandRequest): Promise<VoiceCommandRecord> {
@@ -60,7 +62,15 @@ export class VoiceCommandService {
     this.recordEvent(id, "VOICE_CAPTURED", { source: request.source, inputMode });
     this.recordEvent(id, "TRANSCRIPT_CREATED", { locale: request.locale ?? null, sttProvider, sttConfidence });
 
-    const parsed = VoiceCommandParseResultSchema.parse(await this.commandUnderstanding.parse(request.transcript));
+    const parsed = VoiceCommandParseResultSchema.parse(await this.commandUnderstanding.parse({
+      transcript: request.transcript,
+      locale: request.locale ?? null,
+      currentUser: cloud?.userId ? {
+        userId: cloud.userId,
+        displayName: cloud.displayName ?? null,
+        email: cloud.userEmail ?? null
+      } : null
+    }));
     this.recordEvent(id, "COMMAND_PARSED", {
       intent: parsed.intent,
       confidence: parsed.confidence,
@@ -169,7 +179,7 @@ export class VoiceCommandService {
     const record = this.getCommand(id);
     if (!record) throw new VoiceCommandError("VOICE_COMMAND_NOT_FOUND", "Voice command not found");
     if (record.status === "cancelled") throw new VoiceCommandError("VOICE_COMMAND_CANCELLED", "Cancelled commands cannot be confirmed");
-    if (record.status === "completed" || record.status === "submitted" || record.status === "running") return record;
+    if (record.status === "completed" || record.status === "submitted" || record.status === "running" || record.status === "waiting_remote_agent" || record.status === "waiting_receiver_approval" || record.status === "transferring") return record;
     if (record.preview.error) throw new VoiceCommandError("VOICE_COMMAND_NOT_CONFIRMABLE", record.preview.error);
 
     const idempotencyKey = options.idempotency_key ?? `voice-${id}`;
@@ -201,7 +211,7 @@ export class VoiceCommandService {
           missionId: result.missionId ?? null,
           relayTaskId: result.relayTaskId ?? null,
           errorMessage: result.errorMessage ? redactUnsafeText(result.errorMessage) : null,
-          completedAt: result.status === "failed" ? null : new Date().toISOString()
+          completedAt: result.status === "completed" ? new Date().toISOString() : null
         });
         this.recordEvent(id, result.status === "failed" ? "COMMAND_FAILED" : "RELAY_SUBMITTED", {
           conversationId: result.conversationId ?? null,

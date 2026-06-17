@@ -1,28 +1,19 @@
-import { getLlmProvider, type LlmProvider } from "../oci/LlmProvider.js";
-import { LlmVoiceCommandParser } from "./LlmVoiceCommandParser.js";
-import { RuleBasedVoiceCommandParser } from "./VoiceCommandParser.js";
-import { VoiceCommandParseResultSchema, type VoiceCommandParseResult } from "./VoiceCommandTypes.js";
+import type { LlmProvider } from "../oci/LlmProvider.js";
+import { HybridVoiceCommandParser } from "./HybridVoiceCommandParser.js";
+import type { VoiceCommandParseResult } from "./VoiceCommandTypes.js";
+import type { VoiceCommandParser, VoiceCommandParserInput } from "./VoiceCommandParserInterface.js";
 
-const RULE_CONFIDENCE_THRESHOLD = 0.72;
+export class CommandUnderstandingService implements VoiceCommandParser {
+  private readonly parser: HybridVoiceCommandParser;
 
-export class CommandUnderstandingService {
-  private readonly ruleParser = new RuleBasedVoiceCommandParser();
-  private readonly llmParser: LlmVoiceCommandParser;
-
-  constructor(llm: LlmProvider = getLlmProvider()) {
-    this.llmParser = new LlmVoiceCommandParser(llm);
+  constructor(llm?: LlmProvider) {
+    this.parser = llm ? new HybridVoiceCommandParser(llm) : new HybridVoiceCommandParser();
   }
 
-  async parse(transcript: string): Promise<VoiceCommandParseResult> {
-    const ruleResult = VoiceCommandParseResultSchema.parse(this.ruleParser.parse(transcript));
-    if (ruleResult.confidence >= RULE_CONFIDENCE_THRESHOLD && ruleResult.intent !== "unknown") {
-      return ruleResult;
-    }
-
-    const llmResult = await this.llmParser.parse(transcript);
-    if (llmResult.intent !== "unknown" && llmResult.confidence > ruleResult.confidence) {
-      return llmResult;
-    }
-    return ruleResult.intent === "unknown" ? llmResult : ruleResult;
+  async parse(input: string | VoiceCommandParserInput): Promise<VoiceCommandParseResult> {
+    return this.parser.parse(typeof input === "string" ? {
+      transcript: input,
+      currentUser: null
+    } : input);
   }
 }

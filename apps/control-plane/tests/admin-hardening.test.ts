@@ -47,7 +47,8 @@ beforeAll(async () => {
     FILE_TRANSFER_STORE: join(dataDir, "transfers"),
     DEFAULT_ORG_SLUG: "admin-hardening",
     DEV_ADMIN_TOKEN: "test-admin-token-1234",
-    CONTROL_PLANE_ENV: "test"
+    CONTROL_PLANE_ENV: "test",
+    METRICS_ENABLED: "false"
   });
   closeAll();
   app = await buildApp();
@@ -286,7 +287,8 @@ describe("admin hardening", () => {
         ADMIN_KEK: "prod-admin-kek-strong-enough-1234567890",
         TRANSFER_KEK: "prod-transfer-kek-strong-enough-1234567890",
         ADMIN_COOKIE_HOST_PREFIX: "true",
-        ADMIN_SETUP_ENABLED: "false"
+        ADMIN_SETUP_ENABLED: "false",
+        METRICS_ENABLED: "false"
       });
       const prodApp = await buildApp();
       await prodApp.ready();
@@ -307,7 +309,8 @@ describe("admin hardening", () => {
         FILE_TRANSFER_STORE: join(dataDir, "transfers"),
         DEFAULT_ORG_SLUG: "admin-hardening",
         DEV_ADMIN_TOKEN: "test-admin-token-1234",
-        CONTROL_PLANE_ENV: "test"
+        CONTROL_PLANE_ENV: "test",
+        METRICS_ENABLED: "false"
       });
       rmSync(prodDir, { recursive: true, force: true });
     }

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { EventEmitter } from "node:events";
 import type { DatabaseSync } from "node:sqlite";
 import { getDb } from "../db/connection.js";
 
@@ -100,8 +101,28 @@ export interface MessageWindowResult {
   hasMoreAfter: boolean;
 }
 
+export type ChatRepositoryEventOperation = "message_created" | "message_updated" | "conversation_updated";
+
+export interface ChatRepositoryEvent {
+  operation: ChatRepositoryEventOperation;
+  conversationId: string;
+  messageId?: string;
+  message?: ChatMessageRecord;
+  conversation?: ChatConversationRecord | null;
+  timestamp: string;
+}
+
 export class ChatRepository {
-  constructor(private db: DatabaseSync = getDb()) {}
+  private readonly events = new EventEmitter();
+
+  constructor(private db: DatabaseSync = getDb()) {
+    this.events.setMaxListeners(0);
+  }
+
+  subscribe(listener: (event: ChatRepositoryEvent) => void): () => void {
+    this.events.on("chat", listener);
+    return () => this.events.off("chat", listener);
+  }
 
   createConversation(input: CreateConversationInput): ChatConversationRecord {
     const now = new Date().toISOString();
@@ -143,7 +164,9 @@ export class ChatRepository {
     if (input.peerUserId || input.peerAgentInstanceId) {
       this.ensureParticipant(id, input.peerUserId ?? null, input.peerAgentInstanceId ?? null, "peer");
     }
-    return this.getConversation(id)!;
+    const conversation = this.getConversation(id)!;
+    this.emitConversationEvent("conversation_updated", id);
+    return conversation;
   }
 
   getOrCreateLocalConversation(localAgentInstanceId: string | null): ChatConversationRecord {
@@ -219,7 +242,9 @@ export class ChatRepository {
     if (peerUserId || peerAgentInstanceId) {
       this.ensureParticipant(conversationId, peerUserId ?? null, peerAgentInstanceId ?? null, "peer");
     }
-    return this.getConversation(conversationId);
+    const conversation = this.getConversation(conversationId);
+    this.emitConversationEvent("conversation_updated", conversationId);
+    return conversation;
   }
 
   updateConversationPeerAgent(conversationId: string, peerAgentInstanceId: string): ChatConversationRecord | null {
@@ -266,7 +291,16 @@ export class ChatRepository {
     );
     this.db.prepare("UPDATE conversations SET updated_at = ?, last_message_at = ? WHERE id = ?").run(now, now, input.conversationId);
     this.recomputeUnreadCount(input.conversationId);
-    return this.getMessage(id)!;
+    const message = this.getMessage(id)!;
+    this.emitChatEvent({
+      operation: "message_created",
+      conversationId: input.conversationId,
+      messageId: message.id,
+      message,
+      conversation: this.getConversation(input.conversationId),
+      timestamp: message.created_at
+    });
+    return message;
   }
 
   getMessages(conversationId: string): ChatMessageRecord[] {
@@ -362,7 +396,17 @@ export class ChatRepository {
     const now = new Date().toISOString();
     this.db.prepare("UPDATE chat_messages SET delivery_status = ?, updated_at = ? WHERE id = ?").run(status, now, id);
     const row = this.getMessage(id);
-    if (row) this.recordDeliveryAttempt(id, status, error);
+    if (row) {
+      this.recordDeliveryAttempt(id, status, error);
+      this.emitChatEvent({
+        operation: "message_updated",
+        conversationId: row.conversation_id,
+        messageId: row.id,
+        message: row,
+        conversation: this.getConversation(row.conversation_id),
+        timestamp: row.updated_at
+      });
+    }
   }
 
   updateMessagePayload(id: string, patch: Record<string, unknown>): ChatMessageRecord | null {
@@ -374,7 +418,18 @@ export class ChatRepository {
       SET payload_json = ?, updated_at = ?
       WHERE id = ?
     `).run(JSON.stringify({ ...existing.payload_json, ...patch }), now, id);
-    return this.getMessage(id);
+    const updated = this.getMessage(id);
+    if (updated) {
+      this.emitChatEvent({
+        operation: "message_updated",
+        conversationId: updated.conversation_id,
+        messageId: updated.id,
+        message: updated,
+        conversation: this.getConversation(updated.conversation_id),
+        timestamp: updated.updated_at
+      });
+    }
+    return updated;
   }
 
   listMessageReactions(messageId: string, actorId?: string | null): ChatMessageReaction[] {
@@ -439,7 +494,18 @@ export class ChatRepository {
       WHERE id = ?
     `).run(status, JSON.stringify(payload), now, id);
     this.recordDeliveryAttempt(id, status, receipt?.error);
-    return this.getMessage(id);
+    const updated = this.getMessage(id);
+    if (updated) {
+      this.emitChatEvent({
+        operation: "message_updated",
+        conversationId: updated.conversation_id,
+        messageId: updated.id,
+        message: updated,
+        conversation: this.getConversation(updated.conversation_id),
+        timestamp: updated.updated_at
+      });
+    }
+    return updated;
   }
 
   updateDeliveryStatusForRelayTask(
@@ -523,6 +589,19 @@ export class ChatRepository {
 
     this.db.prepare("UPDATE conversations SET unread_count = ?, mention_count = 0 WHERE id = ?")
       .run(unread, conversationId);
+  }
+
+  private emitConversationEvent(operation: ChatRepositoryEventOperation, conversationId: string): void {
+    this.emitChatEvent({
+      operation,
+      conversationId,
+      conversation: this.getConversation(conversationId),
+      timestamp: new Date().toISOString()
+    });
+  }
+
+  private emitChatEvent(event: ChatRepositoryEvent): void {
+    this.events.emit("chat", event);
   }
 }
 

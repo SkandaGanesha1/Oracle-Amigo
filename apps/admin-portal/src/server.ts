@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import Fastify, { type FastifyInstance } from "fastify";
 import fastifyStatic from "@fastify/static";
 import fastifyHttpProxy from "@fastify/http-proxy";
+import fastifyMetrics from "fastify-metrics";
 import { loadAdminPortalConfig } from "./config.js";
 
 export interface BuildAppOptions {
@@ -27,6 +28,49 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
   console.log(
     `[admin-portal] node_env=${process.env.NODE_ENV ?? "development"} upstream=${cfg.CONTROL_PLANE_URL} port=${cfg.ADMIN_PORTAL_PORT}`,
   );
+
+  // Prometheus metrics (unless explicitly disabled)
+  if (cfg.METRICS_ENABLED === "true") {
+    await app.register(fastifyMetrics as never, {
+      endpoint: cfg.METRICS_ENDPOINT,
+      defaultMetrics: { enabled: true },
+      routeMetrics: { enabled: true, registeredRoutesOnly: false }
+    });
+
+    const client = app.metrics.client;
+    const gaugeOpts = { registers: [client.register] };
+
+    const upstreamLatency = new client.Histogram({
+      name: "admin_portal_upstream_latency_ms",
+      help: "Upstream proxy request latency in milliseconds",
+      labelNames: ["upstream"],
+      buckets: [5, 10, 25, 50, 100, 250, 500, 1000, 5000],
+      ...gaugeOpts
+    });
+
+    const proxyErrors = new client.Counter({
+      name: "admin_portal_proxy_errors_total",
+      help: "Total proxy errors by upstream and status",
+      labelNames: ["upstream", "status_code"],
+      ...gaugeOpts
+    });
+
+    // Track upstream latency via onResponse hook
+    app.addHook("onResponse", (request, reply, done) => {
+      const url = request.url;
+      let upstream: string | undefined;
+      if (url.startsWith("/v1/")) upstream = "control-plane";
+      else if (url.startsWith("/policy/")) upstream = "local-agent";
+      if (upstream) {
+        const elapsed = reply.elapsedTime;
+        upstreamLatency.observe({ upstream }, elapsed);
+        if (reply.statusCode >= 400) {
+          proxyErrors.inc({ upstream, status_code: String(reply.statusCode) });
+        }
+      }
+      done();
+    });
+  }
 
   app.get("/health", async () => ({
     status: "ok",

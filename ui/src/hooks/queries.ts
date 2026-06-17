@@ -318,6 +318,7 @@ export function useConversationMessages(conversationId: string | null) {
     queryFn: () => api.conversationMessages(conversationId ?? "local-agent"),
     enabled: Boolean(conversationId),
     refetchInterval: 3000,
+    refetchIntervalInBackground: true,
     structuralSharing: structurallyShareMessages
   });
 }
@@ -1549,9 +1550,34 @@ export function useRealtimePolling() {
       { queryKey: [...queryKeys.voiceCommands], intervalMs: 5000 }
     ];
     const transport = new SseTransport("/events", fallback);
-    transport.start(queryClient);
+    transport.start(queryClient, (event) => {
+      window.dispatchEvent(new CustomEvent("oa-realtime-event", { detail: event }));
+    });
     return () => transport.stop();
   }, [queryClient]);
+}
+
+export function shouldRefetchActiveConversationRealtime(
+  conversationId: string | null,
+  event: { kind?: string; payload?: Record<string, unknown> } | undefined
+): boolean {
+  if (!conversationId) return false;
+  if (event?.kind !== "conversation_update" && event?.kind !== "message_created") return false;
+  const eventConversationId = event.payload?.conversationId;
+  return eventConversationId === conversationId || eventConversationId === "*";
+}
+
+export function useActiveConversationRealtime(conversationId: string | null, refetchMessages: () => void | Promise<unknown>) {
+  useEffect(() => {
+    if (!conversationId) return;
+    function handleRealtimeEvent(event: Event) {
+      const detail = (event as CustomEvent<{ kind?: string; payload?: Record<string, unknown> }>).detail;
+      if (!shouldRefetchActiveConversationRealtime(conversationId, detail)) return;
+      void refetchMessages();
+    }
+    window.addEventListener("oa-realtime-event", handleRealtimeEvent);
+    return () => window.removeEventListener("oa-realtime-event", handleRealtimeEvent);
+  }, [conversationId, refetchMessages]);
 }
 
 export function useQueuedMessages(conversationId: string | null) {

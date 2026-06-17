@@ -41,7 +41,8 @@ beforeAll(async () => {
     ARGON2_PARALLELISM: "1",
     CONTROL_PLANE_ENV: "test",
     AGENT_CARD_SIGNING_PRIVATE_KEY_PEM: cardKeys.privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
-    AGENT_CARD_SIGNING_KEY_ID: "test-control-plane-card"
+    AGENT_CARD_SIGNING_KEY_ID: "test-control-plane-card",
+    METRICS_ENABLED: "false"
   });
   // Close any existing connection from prior tests
   closeAll();

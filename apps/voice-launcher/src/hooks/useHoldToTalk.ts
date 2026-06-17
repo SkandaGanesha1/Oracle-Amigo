@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { startMicAnalyser, type MicSession } from "../lib/mic";
 import { hideLauncherWindow, listenToVoiceShortcutEvents, showLauncherWindow } from "../lib/tauriBridge";
-import type { LocalAgentVoiceClient, VoiceLauncherState } from "../lib/localAgentVoiceClient";
+import type { LocalAgentVoiceClient, VoiceCommandRecord, VoiceLauncherState } from "../lib/localAgentVoiceClient";
 
 interface UseHoldToTalkOptions {
   client: LocalAgentVoiceClient;
@@ -11,6 +11,8 @@ interface UseHoldToTalkOptions {
 
 interface UseHoldToTalkResult {
   cancel: () => void;
+  confirm: () => Promise<void>;
+  command: VoiceCommandRecord | null;
   error: string | null;
   interimTranscript: string;
   isHolding: boolean;
@@ -56,6 +58,8 @@ export function useHoldToTalk({ client, locale, onError }: UseHoldToTalkOptions)
   const [transcript, setTranscript] = useState("");
   const [interimTranscript, setInterimTranscript] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [command, setCommand] = useState<VoiceCommandRecord | null>(null);
+  const commandRef = useRef<VoiceCommandRecord | null>(null);
   const [isHolding, setIsHolding] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [voiceLevel, setVoiceLevel] = useState(0);
@@ -188,6 +192,10 @@ export function useHoldToTalk({ client, locale, onError }: UseHoldToTalkOptions)
   }, []);
 
   const cancel = useCallback(() => {
+    const activeCommand = commandRef.current;
+    if (activeCommand?.status === "preview_required") {
+      void client.cancelCommand(activeCommand.id).catch(() => undefined);
+    }
     clearHideTimer();
     holdingRef.current = false;
     setIsHolding(false);
@@ -197,10 +205,12 @@ export function useHoldToTalk({ client, locale, onError }: UseHoldToTalkOptions)
     stopMic();
     setTranscript("");
     setInterimTranscript("");
+    setCommand(null);
+    commandRef.current = null;
     finalTranscriptRef.current = "";
     interimTranscriptRef.current = "";
     setState("hidden");
-  }, [clearHideTimer, stopMic, stopRecognition, stopRecorder, stopVoiceLoop]);
+  }, [clearHideTimer, client, stopMic, stopRecognition, stopRecorder, stopVoiceLoop]);
 
   const startHold = useCallback(async () => {
     if (holdingRef.current) return;
@@ -305,8 +315,6 @@ export function useHoldToTalk({ client, locale, onError }: UseHoldToTalkOptions)
       setTranscript(finalText);
       setInterimTranscript("");
       setState(finalText || recordedAudio ? "sending" : "hidden");
-      await hideLauncherWindowSafe();
-
       if (!finalText && recordedAudio) {
         try {
           const result = await client.transcribeAudio(recordedAudio, { locale });
@@ -326,8 +334,14 @@ export function useHoldToTalk({ client, locale, onError }: UseHoldToTalkOptions)
 
       setState("sending");
       try {
-        await client.autoSendTranscript(finalText, { locale });
-        setState("completed");
+        const nextCommand = await client.createCommandPreview(finalText, { locale });
+        setCommand(nextCommand);
+        commandRef.current = nextCommand;
+        if (nextCommand.preview?.error) {
+          setFailure(nextCommand.preview.error);
+          return;
+        }
+        setState("preview_required");
       } catch (err) {
         const message = err instanceof Error ? err.message : "Voice command failed.";
         setFailure(message);
@@ -336,6 +350,25 @@ export function useHoldToTalk({ client, locale, onError }: UseHoldToTalkOptions)
 
     return releasePromiseRef.current;
   }, [client, hideLauncherWindowSafe, locale, setFailure, stopMic, stopRecognition, stopRecorder, stopVoiceLoop]);
+
+  const confirm = useCallback(async () => {
+    if (!command) return;
+    setState("sending");
+    try {
+      const confirmed = await client.confirmCommand(command.id);
+      setCommand(confirmed);
+      commandRef.current = confirmed;
+      setState(confirmed.status === "failed" ? "failed" : "completed");
+      if (confirmed.status === "failed") {
+        setError(confirmed.errorMessage ?? "Voice command failed.");
+      } else {
+        hideTimerRef.current = window.setTimeout(() => void hideLauncherWindowSafe(), 1200);
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Voice command confirmation failed.";
+      setFailure(message);
+    }
+  }, [client, command, hideLauncherWindowSafe, setFailure]);
 
   useEffect(() => {
     let disposed = false;
@@ -378,6 +411,8 @@ export function useHoldToTalk({ client, locale, onError }: UseHoldToTalkOptions)
 
   return {
     cancel,
+    confirm,
+    command,
     error,
     interimTranscript,
     isHolding,

@@ -1,6 +1,6 @@
 # Voice Command Parser
 
-Oracle Amigo Quick Voice uses deterministic parsing before any future model-backed fallback. The launcher sends text to the local agent; the local agent owns parsing, directory resolution, policy, relay, and audit.
+Oracle Amigo Quick Voice uses deterministic parsing first and OCI GenAI structured parsing as fallback. The launcher sends text to the local agent; the local agent owns parsing, directory resolution, policy, relay, and audit.
 
 ## Supported Commands
 
@@ -34,6 +34,10 @@ Parsed result:
 ```
 
 The service then resolves `targetPersonQuery` through the directory and returns a preview. Confirmation sends the existing relay file-request flow. Files are not transferred until the remote user approves a bound candidate.
+
+## OCI GenAI Fallback
+
+Low-confidence rule parses call the shared OCI GenAI provider configured by `OCI_GENAI_MODEL_ID`, `OCI_GENAI_SERVICE_ENDPOINT`, `OCI_GENAI_COMPARTMENT_ID`, and the OCI config/profile or `OCI_GENAI_API_KEY`. The parser validates model output with Zod, retries once for malformed JSON, and rejects any response that does not keep `requesterReference` as `current_user`.
 
 ## Unsupported Commands
 

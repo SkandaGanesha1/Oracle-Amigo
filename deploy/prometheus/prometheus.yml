@@ -1,0 +1,26 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: "control-plane"
+    static_configs:
+      - targets: ["10.0.2.2:8080"]
+        labels:
+          service: "control-plane"
+
+  - job_name: "admin-portal"
+    static_configs:
+      - targets: ["10.0.2.2:3398"]
+        labels:
+          service: "admin-portal"
+
+  - job_name: "local-agent"
+    static_configs:
+      - targets: ["10.0.2.2:3401"]
+        labels:
+          service: "local-agent"
+
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]

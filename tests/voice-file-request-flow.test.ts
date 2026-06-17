@@ -8,6 +8,12 @@ import { _resetDb, getDb } from "../src/db/connection.js";
 import { ChatRepository } from "../src/chat/ChatRepository.js";
 import { LocalCloudIdentityStore, defaultProfileId } from "../src/cloud/LocalCloudIdentityStore.js";
 
+function getVoiceFlowSuffix(p: string): string {
+  const normalized = p.replace(/\\/g, "/").toLowerCase();
+  const idx = normalized.indexOf("/voice-flow-");
+  return idx !== -1 ? normalized.slice(idx) : normalized;
+}
+
 let tmpRoot: string;
 let controlPlane: Server | null = null;
 let controlPlaneUrl = "";
@@ -17,6 +23,8 @@ beforeEach(async () => {
   tmpRoot = mkdtempSync(join(tmpdir(), "voice-flow-"));
   process.env.AGENTIC_DB_PATH = join(tmpRoot, "agent.db");
   process.env.AGENTIC_DISABLE_RUNTIME_AUTOSTART = "true";
+  process.env.SANDBOX_FILE_SEARCH_ROOTS = tmpRoot;
+  process.env.METRICS_ENABLED = "false";
   _resetDb();
   relayPayload = null;
   await startControlPlane();
@@ -29,6 +37,8 @@ afterEach(async () => {
   _resetDb();
   delete process.env.AGENTIC_DB_PATH;
   delete process.env.AGENTIC_DISABLE_RUNTIME_AUTOSTART;
+  delete process.env.SANDBOX_FILE_SEARCH_ROOTS;
+  delete process.env.METRICS_ENABLED;
   delete process.env.CONTROL_PLANE_URL;
   try { rmSync(tmpRoot, { recursive: true, force: true }); } catch { /* ignore */ }
 });
@@ -68,6 +78,199 @@ describe("voice file request flow", () => {
     const messages = new ChatRepository(getDb()).listConversations()
       .flatMap((conversation) => new ChatRepository(getDb()).getMessages(conversation.id));
     expect(messages.some((message) => message.delivery_status === "queued_at_relay" && message.text?.includes("NonPO invoice india.pdf"))).toBe(true);
+  });
+
+  it("handles incoming file.request relay messages, registers a receiver approval, and transfers file upon approval", async () => {
+    seedCloudIdentity();
+    const server = buildServer();
+
+    // 1. Create a dummy file to act as the selected file for transfer
+    const fs = await import("node:fs");
+    const dummyFile = join(tmpRoot, "Harassment Policy.pdf");
+    fs.writeFileSync(dummyFile, "dummy policy content");
+
+    // 2. Mock incoming relay file.request message
+    const relayMessage = {
+      relay_task_id: "relay_task_voice_999",
+      a2a_task_id: "a2a_task_voice_999",
+      from_agent_instance_id: "agi_docin",
+      to_agent_instance_id: "agi_skanda",
+      type: "file.request",
+      payload: {
+        text: "Harassment Policy.pdf",
+        requester_user_id: "usr_docin",
+        voice_command_id: "vc_voice_123"
+      },
+      status: "pending",
+      created_at: new Date().toISOString(),
+      delivered_at: null,
+      ack_at: null
+    };
+
+    // 3. Dispatch the message using RemoteTaskDispatcher
+    const { RemoteTaskDispatcher } = await import("../src/runtime/RemoteTaskDispatcher.js");
+    const { PersonalAgentProtocol } = await import("../src/protocol/PersonalAgentProtocol.js");
+    const { FileSearchService } = await import("../src/file-search/FileSearchService.js");
+
+    const protocol = new PersonalAgentProtocol();
+    const dispatcher = new RemoteTaskDispatcher(
+      protocol,
+      getDb(),
+      defaultProfileId(),
+      new ChatRepository(getDb()),
+      new FileSearchService()
+    );
+
+    const result = await dispatcher.dispatch(relayMessage);
+    expect(result.status).toBe("created");
+    expect(result.approvalId).not.toBeNull();
+    const approvalId = result.approvalId!;
+
+    // 4. Verify database entry is created in receiver_approvals with status 'pending'
+    const approvalRow = getDb().prepare("SELECT * FROM receiver_approvals WHERE id = ?").get(approvalId) as Record<string, unknown>;
+    expect(approvalRow).toBeDefined();
+    expect(approvalRow.status).toBe("pending");
+    expect(approvalRow.file_query).toBe("Harassment Policy.pdf");
+
+    // 5. Approve the transfer using Fastify HTTP API POST /receiver/approvals/:id/approve
+    const approveResponse = await server.inject({
+      method: "POST",
+      url: `/receiver/approvals/${approvalId}/approve`,
+      payload: {
+        selected_file_path: dummyFile
+      }
+    });
+
+    expect(approveResponse.statusCode).toBe(200);
+    expect(approveResponse.json().approval.status).toBe("approved");
+
+    // 6. Wait for the setImmediate background task to complete uploading and update status
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    // 7. Verify status has transitioned to 'transferred' in the database
+    const updatedApproval = getDb().prepare("SELECT * FROM receiver_approvals WHERE id = ?").get(approvalId) as Record<string, unknown>;
+    expect(updatedApproval.status).toBe("transferred");
+    expect(getVoiceFlowSuffix(String(updatedApproval.selected_file_path))).toBe(getVoiceFlowSuffix(dummyFile));
+  });
+
+  it("triggers Windows toast notifications via NotificationBridgeClient and processes native callback successfully", async () => {
+    seedCloudIdentity();
+    const server = buildServer();
+
+    // 1. Create a dummy file to act as the search candidate
+    const fs = await import("node:fs");
+    const dummyFile = join(tmpRoot, "Harassment Policy.pdf");
+    fs.writeFileSync(dummyFile, "dummy policy content");
+
+    // 2. Setup mock notification bridge server to capture the outgoing toast payload
+    let capturedNotification: any = null;
+    const bridgeServer = createServer((req, res) => {
+      res.setHeader("content-type", "application/json");
+      if (req.method === "POST" && req.url === "/notify") {
+        let body = "";
+        req.on("data", (chunk) => { body += chunk; });
+        req.on("end", () => {
+          capturedNotification = JSON.parse(body);
+          res.end(JSON.stringify({ supported: true, status: "ok" }));
+        });
+        return;
+      }
+      res.statusCode = 404;
+      res.end();
+    });
+
+    const bridgePort = await new Promise<number>((resolve) => {
+      bridgeServer.listen(0, "127.0.0.1", () => {
+        const addr = bridgeServer.address();
+        resolve(addr && typeof addr === "object" ? addr.port : 3400);
+      });
+    });
+    process.env.NOTIFICATION_BRIDGE_PORT = String(bridgePort);
+
+    try {
+      // 3. Mock incoming relay file.request message
+      const relayMessage = {
+        relay_task_id: "relay_task_voice_888",
+        a2a_task_id: "a2a_task_voice_888",
+        from_agent_instance_id: "agi_docin",
+        to_agent_instance_id: "agi_skanda",
+        type: "file.request",
+        payload: {
+          text: "Harassment Policy.pdf",
+          requester_user_id: "usr_docin",
+          voice_command_id: "vc_voice_123"
+        },
+        status: "pending",
+        created_at: new Date().toISOString(),
+        delivered_at: null,
+        ack_at: null
+      };
+
+      // Dispatch the message using RemoteTaskDispatcher
+      const { RemoteTaskDispatcher } = await import("../src/runtime/RemoteTaskDispatcher.js");
+      const { PersonalAgentProtocol } = await import("../src/protocol/PersonalAgentProtocol.js");
+      const { FileSearchService } = await import("../src/file-search/FileSearchService.js");
+
+      const protocol = new PersonalAgentProtocol();
+      const dispatcher = new RemoteTaskDispatcher(
+        protocol,
+        getDb(),
+        defaultProfileId(),
+        new ChatRepository(getDb()),
+        new FileSearchService()
+      );
+
+      const result = await dispatcher.dispatch(relayMessage);
+      expect(result.status).toBe("created");
+      expect(result.approvalId).not.toBeNull();
+      const approvalId = result.approvalId!;
+
+      // Wait a moment for the non-blocking sendNotification promise to resolve/hit the bridge
+      await new Promise((resolve) => setTimeout(resolve, 80));
+
+      // Assert that the bridge received the correct payload
+      expect(capturedNotification).not.toBeNull();
+      expect(capturedNotification).toMatchObject({
+        approvalId,
+        taskId: result.localTaskId,
+        requesterName: "agi_docin",
+        requestedItem: "Harassment Policy.pdf",
+        topCandidateFileName: "Harassment Policy.pdf"
+      });
+      expect(capturedNotification.callbackNonce).toBeDefined();
+      expect(capturedNotification.callbackSignature).toBeDefined();
+
+      // 4. Simulate a user clicking "Approve" from the OS toast callback!
+      // This sends the payload back to POST /approvals/notification-callback
+      const callbackResponse = await server.inject({
+        method: "POST",
+        url: "/approvals/notification-callback",
+        payload: {
+          approvalId,
+          taskId: result.localTaskId,
+          action: "approve",
+          nonce: capturedNotification.callbackNonce,
+          signature: capturedNotification.callbackSignature,
+          candidateId: capturedNotification.candidateId
+        }
+      });
+
+      expect(callbackResponse.statusCode).toBe(200);
+      expect(callbackResponse.json().ok).toBe(true);
+      expect(callbackResponse.json().status).toBe("approved");
+
+      // 5. Wait for the setImmediate background upload transfer to run
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      // 6. Verify database status updated to 'transferred'
+      const updatedApproval = getDb().prepare("SELECT * FROM receiver_approvals WHERE id = ?").get(approvalId) as Record<string, unknown>;
+      expect(updatedApproval.status).toBe("transferred");
+      expect(getVoiceFlowSuffix(String(updatedApproval.selected_file_path))).toBe(getVoiceFlowSuffix(dummyFile));
+    } finally {
+      // Cleanup
+      delete process.env.NOTIFICATION_BRIDGE_PORT;
+      await new Promise<void>((resolve) => bridgeServer.close(() => resolve()));
+    }
   });
 });
 
@@ -131,6 +334,20 @@ async function startControlPlane(): Promise<void> {
           accepted_at: new Date().toISOString()
         }));
       });
+      return;
+    }
+    if (req.method === "POST" && req.url === "/v1/transfers/init") {
+      res.end(JSON.stringify({
+        transfer_id: "tx_mock_999",
+        status: "ready",
+        upload_url: "/v1/transfers/tx_mock_999/upload",
+        download_url: "/v1/transfers/tx_mock_999/download",
+        expires_at: new Date(Date.now() + 3600000).toISOString()
+      }));
+      return;
+    }
+    if (req.method === "PUT" && req.url === "/v1/transfers/tx_mock_999/upload") {
+      res.end(JSON.stringify({ ok: true, status: "uploaded" }));
       return;
     }
     res.statusCode = 404;

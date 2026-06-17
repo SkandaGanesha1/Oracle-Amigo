@@ -12,9 +12,11 @@ The launcher does not implement relay, directory, approval, storage, or file-tra
 4. The window is sized to 420x180 and positioned bottom-right above the Windows taskbar.
 5. The React UI starts microphone capture, renders a white waveform, and updates white live transcript text above the wave.
 6. Rust-side global shortcut handling emits `voice:stop-and-submit` on `Ctrl+Space` release.
-7. The launcher stops microphone capture, posts the transcript to `POST /voice/commands` with `mode: "auto_execute"`, then calls `POST /voice/commands/:id/confirm`.
-8. Remote file requests reuse the existing cloud relay file-request path and still require the remote user approval before transfer.
-9. The chat UI can list prior commands with `GET /voice/commands`, inspect a command with `GET /voice/commands/:id`, and subscribe to command-specific SSE with `GET /voice/commands/:id/events`.
+7. The launcher stops microphone capture and posts the transcript to `POST /voice/commands` with `mode: "preview_then_execute"`.
+8. The overlay shows transcript, parser confidence, command ID, target, relay task ID, errors, and preview actions.
+9. The user confirms with `POST /voice/commands/:id/confirm` or cancels with `POST /voice/commands/:id/cancel`.
+10. Remote file requests reuse the existing cloud relay file-request path and still require the remote user approval before transfer.
+11. The chat UI can list prior commands with `GET /voice/commands`, inspect a command with `GET /voice/commands/:id`, and subscribe to command-specific SSE with `GET /voice/commands/:id/events`.
 
 ## Security Boundaries
 

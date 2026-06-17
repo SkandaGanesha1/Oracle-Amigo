@@ -620,18 +620,18 @@ export interface TransferProgressMessage extends TimelineMessageMeta {
 }
 
 export interface FileReceiptMessage extends TimelineMessageMeta {
-      kind: "receipt";
-      id: string;
-      transfer_id: string;
-      task_id: string;
-      file_name: string;
-      file_id: string;
-      size_bytes: number;
-      sha256: string;
-      sender: string;
-      stored_path_display: string;
-      received_at: string;
-      hash_verified: boolean;
+  kind: "receipt";
+  id: string;
+  transfer_id: string;
+  task_id: string;
+  file_name: string;
+  file_id: string;
+  size_bytes: number;
+  sha256: string;
+  sender: string;
+  stored_path_display: string;
+  received_at: string;
+  hash_verified: boolean;
 }
 
 export interface A2ATaskMessage extends TimelineMessageMeta {
@@ -643,6 +643,13 @@ export interface A2ATaskMessage extends TimelineMessageMeta {
   artifacts: unknown[];
   history: unknown[];
   created_at: string;
+}
+
+export interface VoiceCommandMessage extends TimelineMessageMeta {
+  kind: "voice_command";
+  id: string;
+  created_at: string;
+  voice_record: VoiceCommandRecord;
 }
 
 export type AgentRunStatus = "running" | "completed" | "partial" | "failed";
@@ -770,7 +777,7 @@ export interface VoiceCommandRecord {
     requiresConfirmation?: boolean;
     [key: string]: unknown;
   };
-  status: "preview_required" | "confirmed" | "submitted" | "running" | "completed" | "failed" | "cancelled";
+  status: "preview_required" | "confirmed" | "submitted" | "waiting_remote_agent" | "waiting_receiver_approval" | "transferring" | "running" | "completed" | "failed" | "cancelled";
   conversationId: string | null;
   missionId: string | null;
   relayTaskId: string | null;
@@ -885,7 +892,8 @@ export type TimelineMessage =
   | FileCandidateApprovalMessage
   | TransferProgressMessage
   | FileReceiptMessage
-  | A2ATaskMessage;
+  | A2ATaskMessage
+  | VoiceCommandMessage;
 
 export interface Conversation {
   id: string;

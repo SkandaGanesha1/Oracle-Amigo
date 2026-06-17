@@ -1,0 +1,440 @@
+{
+  "__inputs": [],
+  "__requires": [],
+  "title": "Oracle Amigo - Service Overview",
+  "uid": "oracle-amigo-overview",
+  "version": 1,
+  "tags": ["oracle-amigo", "infrastructure"],
+  "schemaVersion": 39,
+  "timezone": "browser",
+  "editable": true,
+  "refresh": "30s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "templating": {
+    "list": []
+  },
+  "panels": [
+    {
+      "title": "Request Rate (RPS)",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 4, "x": 0, "y": 0 },
+      "id": 1,
+      "targets": [
+        {
+          "expr": "sum(rate(http_request_duration_seconds_count{route!=\"/metrics\"}[5m]))",
+          "legendFormat": "All Services",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "rps",
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "title": "Error Rate (5xx)",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 4, "x": 4, "y": 0 },
+      "id": 2,
+      "targets": [
+        {
+          "expr": "sum(rate(http_request_duration_seconds_count{status_code=~\"5..\",route!=\"/metrics\"}[5m])) / sum(rate(http_request_duration_seconds_count{route!=\"/metrics\"}[5m])) * 100",
+          "legendFormat": "Error %",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "yellow", "value": 1 },
+            { "color": "red", "value": 5 }
+          ]}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "title": "P95 Latency",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 4, "x": 8, "y": 0 },
+      "id": 3,
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "P95",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "yellow", "value": 0.5 },
+            { "color": "red", "value": 2 }
+          ]}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "title": "Request Rate by Service",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+      "id": 4,
+      "targets": [
+        {
+          "expr": "sum(rate(http_request_duration_seconds_count{route!=\"/metrics\",route!=\"/health\",job=\"control-plane\"}[5m])) by (route)",
+          "legendFormat": "CP: {{ route }}",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(rate(http_request_duration_seconds_count{route!=\"/metrics\",route!=\"/health\",job=\"admin-portal\"}[5m])) by (route)",
+          "legendFormat": "AP: {{ route }}",
+          "refId": "B"
+        },
+        {
+          "expr": "sum(rate(http_request_duration_seconds_count{route!=\"/metrics\",route!=\"/health\",job=\"local-agent\"}[5m])) by (route)",
+          "legendFormat": "LA: {{ route }}",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "rps",
+          "custom": { "showPoints": "never" }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "title": "P50 / P95 / P99 Latency by Service",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+      "id": 5,
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(http_request_duration_seconds_bucket{job=\"control-plane\"}[5m])) by (le))",
+          "legendFormat": "CP P50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job=\"control-plane\"}[5m])) by (le))",
+          "legendFormat": "CP P95",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{job=\"control-plane\"}[5m])) by (le))",
+          "legendFormat": "CP P99",
+          "refId": "C"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job=\"local-agent\"}[5m])) by (le))",
+          "legendFormat": "LA P95",
+          "refId": "D"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "showPoints": "never" }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "title": "Control Plane - Users & Devices",
+      "type": "stat",
+      "gridPos": { "h": 5, "w": 3, "x": 0, "y": 14 },
+      "id": 6,
+      "targets": [
+        {
+          "expr": "sum(control_plane_users_total)",
+          "legendFormat": "Total Users",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }
+        },
+        "overrides": []
+      },
+      "description": "Total registered users"
+    },
+    {
+      "title": "Control Plane - Users by Status",
+      "type": "bargauge",
+      "gridPos": { "h": 5, "w": 5, "x": 3, "y": 14 },
+      "id": 7,
+      "targets": [
+        {
+          "expr": "control_plane_users_total",
+          "legendFormat": "{{ status }}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "title": "Control Plane - Online Presence",
+      "type": "stat",
+      "gridPos": { "h": 5, "w": 3, "x": 8, "y": 14 },
+      "id": 8,
+      "targets": [
+        {
+          "expr": "control_plane_presence_online",
+          "legendFormat": "Online",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "title": "Control Plane - Active Sessions",
+      "type": "stat",
+      "gridPos": { "h": 5, "w": 3, "x": 11, "y": 14 },
+      "id": 9,
+      "targets": [
+        {
+          "expr": "control_plane_sessions_active",
+          "legendFormat": "Sessions",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "purple", "value": null }] }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "title": "Control Plane - DB Size",
+      "type": "stat",
+      "gridPos": { "h": 5, "w": 3, "x": 14, "y": 14 },
+      "id": 10,
+      "targets": [
+        {
+          "expr": "control_plane_db_size_bytes",
+          "legendFormat": "DB Size",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "orange", "value": null }] }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "title": "Control Plane - Relay Tasks by Status",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 19 },
+      "id": 11,
+      "targets": [
+        {
+          "expr": "control_plane_relay_tasks_total",
+          "legendFormat": "{{ status }} / {{ type }}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "showPoints": "never" }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "title": "Control Plane - File Transfers by Status",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 19 },
+      "id": 12,
+      "targets": [
+        {
+          "expr": "control_plane_file_transfers_total",
+          "legendFormat": "{{ status }}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "showPoints": "never" }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "title": "Control Plane - Audit Events by Type",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 19 },
+      "id": 13,
+      "targets": [
+        {
+          "expr": "control_plane_audit_events_total",
+          "legendFormat": "{{ event_type }}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "showPoints": "never" }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "title": "Admin Portal - Upstream Latency",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 27 },
+      "id": 14,
+      "targets": [
+        {
+          "expr": "rate(admin_portal_upstream_latency_ms_sum[5m]) / rate(admin_portal_upstream_latency_ms_count[5m])",
+          "legendFormat": "Avg {{ upstream }}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": { "showPoints": "never" }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "title": "Admin Portal - Proxy Errors",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 27 },
+      "id": 15,
+      "targets": [
+        {
+          "expr": "rate(admin_portal_proxy_errors_total[5m])",
+          "legendFormat": "{{ upstream }} {{ status_code }}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "rps",
+          "custom": { "showPoints": "never" }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "title": "Node.js - Heap Used",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 35 },
+      "id": 16,
+      "targets": [
+        {
+          "expr": "nodejs_heap_size_used_bytes{job=\"control-plane\"}",
+          "legendFormat": "CP",
+          "refId": "A"
+        },
+        {
+          "expr": "nodejs_heap_size_used_bytes{job=\"admin-portal\"}",
+          "legendFormat": "AP",
+          "refId": "B"
+        },
+        {
+          "expr": "nodejs_heap_size_used_bytes{job=\"local-agent\"}",
+          "legendFormat": "LA",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": { "showPoints": "never" }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "title": "Node.js - Event Loop Lag",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 35 },
+      "id": 17,
+      "targets": [
+        {
+          "expr": "nodejs_eventloop_lag_seconds{job=\"control-plane\"}",
+          "legendFormat": "CP",
+          "refId": "A"
+        },
+        {
+          "expr": "nodejs_eventloop_lag_seconds{job=\"admin-portal\"}",
+          "legendFormat": "AP",
+          "refId": "B"
+        },
+        {
+          "expr": "nodejs_eventloop_lag_seconds{job=\"local-agent\"}",
+          "legendFormat": "LA",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "showPoints": "never" }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "title": "Node.js - GC CPU Time",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 35 },
+      "id": 18,
+      "targets": [
+        {
+          "expr": "rate(nodejs_gc_duration_seconds_sum{job=\"control-plane\"}[5m])",
+          "legendFormat": "CP {{ kind }}",
+          "refId": "A"
+        },
+        {
+          "expr": "rate(nodejs_gc_duration_seconds_sum{job=\"local-agent\"}[5m])",
+          "legendFormat": "LA {{ kind }}",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "showPoints": "never" }
+        },
+        "overrides": []
+      }
+    }
+  ]
+}
