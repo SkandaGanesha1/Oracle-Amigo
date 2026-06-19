@@ -69,6 +69,55 @@ describe("remote file request search", () => {
     expect(JSON.stringify(resolved.candidates.map((candidate) => candidate.displayPath))).not.toContain(tmpRoot);
   });
 
+  it("keeps requested PDFs in primary candidates and hides other extensions as low confidence", async () => {
+    const pdfPath = join(tmpRoot, "Harassment Certificate.pdf");
+    const docxPath = join(tmpRoot, "Harassment Certificate.docx");
+    writeFileSync(pdfPath, "%PDF-1.4 certificate");
+    writeFileSync(docxPath, "docx certificate");
+    const now = new Date().toISOString();
+    const insert = getDb().prepare(`
+      INSERT INTO file_index
+        (root_id, file_path, display_path, file_name, extension, mime_type, size_bytes, modified_at, indexed_text, metadata_json, last_indexed_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    insert.run("root-test", pdfPath, "Docs/Harassment Certificate.pdf", "Harassment Certificate.pdf", ".pdf", "application/pdf", 22, now, "", "{}", now);
+    insert.run("root-test", docxPath, "Docs/Harassment Certificate.docx", "Harassment Certificate.docx", ".docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", 16, now, "", "{}", now);
+
+    const resolved = await resolveFileRequestCandidates(
+      "Ask Docin to send me Harassment Certificate pdf file",
+      new FileSearchService(),
+      { limit: 5 }
+    );
+
+    expect(resolved.candidates).toContainEqual(expect.objectContaining({
+      fileName: "Harassment Certificate.pdf",
+      extension: ".pdf"
+    }));
+    expect(resolved.candidates.some((candidate) => candidate.extension !== ".pdf")).toBe(false);
+    expect(resolved.lowConfidenceCandidates).toContainEqual(expect.objectContaining({
+      fileName: "Harassment Certificate.docx",
+      extension: ".docx"
+    }));
+  }, 15_000);
+
+  it("matches case-insensitive exact filenames", () => {
+    const filePath = join(tmpRoot, "Harassment Certificate.PDF");
+    writeFileSync(filePath, "%PDF-1.4 certificate");
+    const now = new Date().toISOString();
+    getDb().prepare(`
+      INSERT INTO file_index
+        (root_id, file_path, display_path, file_name, extension, mime_type, size_bytes, modified_at, indexed_text, metadata_json, last_indexed_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run("root-test", filePath, "Docs/Harassment Certificate.PDF", "Harassment Certificate.PDF", ".pdf", "application/pdf", 22, now, "", "{}", now);
+
+    const matches = searchFileRequestIndex(parseFileRequest("send me harassment certificate.pdf file"), { limit: 5 });
+
+    expect(matches[0]).toMatchObject({
+      fileName: "Harassment Certificate.PDF",
+      reason: "exact-filename"
+    });
+  }, 15_000);
+
   it("returns safe diagnostics for file request search debugging", async () => {
     writeFileSync(join(tmpRoot, "Job Offer-Associate Consultant.pdf"), "%PDF-1.4 debug offer");
     const server = buildServer();
@@ -96,5 +145,5 @@ describe("remote file request search", () => {
     }));
     expect(JSON.stringify(body.finalCandidates)).not.toContain(tmpRoot);
     await server.close();
-  });
+  }, 15_000);
 });

@@ -1,4 +1,5 @@
 import { Badge } from "@heroui/react";
+import { Activity, MoreHorizontal, PanelRight, Pin, Search, ShieldCheck } from "lucide-react";
 import { OracleAvatar } from "../../components/primitives/OracleAvatar";
 import type { Conversation } from "../../api/types";
 import { normalizePeerPresence } from "../../lib/normalizePeerPresence";
@@ -27,11 +28,18 @@ function isLocalConversation(conversation: Conversation): boolean {
   return conversation.id === "local-agent" || conversation.title.toLowerCase().includes("local agent");
 }
 
-export function ConversationHeader({ conversation }: ConversationHeaderProps) {
+function dispatchChatCommand(command: string, detail?: Record<string, unknown>) {
+  window.dispatchEvent(new CustomEvent(command, { detail }));
+}
+
+export function ConversationHeader({ conversation, onToggleInspector, inspectorOpen = false }: ConversationHeaderProps) {
   const presence = normalizePeerPresence(conversation);
   const displayTitle = friendlifyName(conversation.title);
   const local = isLocalConversation(conversation);
   const initials = local ? "MY" : initialsFor(displayTitle);
+  const unreadCount = conversation.readState?.unreadCount ?? conversation.unread ?? 0;
+  const pendingCount = conversation.pendingApprovals ?? 0;
+  const transferCount = conversation.transferCount ?? 0;
 
   return (
     <header className="oa-chat-header glass-panel">
@@ -54,7 +62,73 @@ export function ConversationHeader({ conversation }: ConversationHeaderProps) {
           <div className="truncate text-[15px] font-semibold text-oa-chat-text">
             {displayTitle}
           </div>
+          <div className="oa-chat-header-subline">
+            <span className={`oa-presence-dot ${presence.status === "online" ? "online" : "offline"}`} aria-hidden="true" />
+            <span>{presence.label}</span>
+            {unreadCount > 0 && <span>{unreadCount} unread</span>}
+            {pendingCount > 0 && <span>{pendingCount} approval{pendingCount === 1 ? "" : "s"}</span>}
+            {transferCount > 0 && <span>{transferCount} transfer{transferCount === 1 ? "" : "s"}</span>}
+          </div>
         </div>
+      </div>
+      <div className="oa-chat-header-toolbar" aria-label="Chat tools">
+        <button
+          type="button"
+          className="oa-chat-header-search"
+          onClick={() => dispatchChatCommand("oa-open-chat-search", { conversationId: conversation.id })}
+          aria-label={`Search ${displayTitle}`}
+          title="Search this chat"
+        >
+          <Search className="h-4 w-4" />
+          <span>Search</span>
+        </button>
+        <button
+          type="button"
+          className="oa-chat-header-icon"
+          onClick={() => dispatchChatCommand("oa-open-pinned-messages", { conversationId: conversation.id })}
+          aria-label="Open pinned messages"
+          title="Pinned messages"
+        >
+          <Pin className="h-4 w-4" />
+        </button>
+        <button
+          type="button"
+          className="oa-chat-header-icon"
+          onClick={() => dispatchChatCommand("oa-open-chat-activity", { conversationId: conversation.id })}
+          aria-label="Open chat activity"
+          title="Activity"
+        >
+          <Activity className="h-4 w-4" />
+        </button>
+        <button
+          type="button"
+          className="oa-chat-header-icon"
+          onClick={() => dispatchChatCommand("oa-open-security-context", { conversationId: conversation.id })}
+          aria-label="Open security context"
+          title="Security context"
+        >
+          <ShieldCheck className="h-4 w-4" />
+        </button>
+        <button
+          type="button"
+          className="oa-chat-header-icon"
+          onClick={onToggleInspector}
+          aria-label={inspectorOpen ? "Close inspector" : "Open inspector"}
+          aria-controls="right-inspector-panel"
+          aria-pressed={inspectorOpen}
+          title={inspectorOpen ? "Close inspector" : "Open inspector"}
+        >
+          <PanelRight className="h-4 w-4" />
+        </button>
+        <button
+          type="button"
+          className="oa-chat-header-icon oa-chat-header-more"
+          onClick={() => dispatchChatCommand("oa-open-chat-actions", { conversationId: conversation.id })}
+          aria-label="More chat actions"
+          title="More"
+        >
+          <MoreHorizontal className="h-4 w-4" />
+        </button>
       </div>
     </header>
   );

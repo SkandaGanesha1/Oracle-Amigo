@@ -85,4 +85,17 @@ describe("Primitive component exports", () => {
       expect((mod as Record<string, unknown>)[name]).toBeDefined();
     });
   }
+
+  it("exports shared Motion primitives", async () => {
+    const mod = await import("../components/primitives/MotionPrimitives");
+    expect(mod).toHaveProperty("AnimatePresence");
+    expect(mod).toHaveProperty("m");
+    expect(mod).toHaveProperty("motion");
+    expect(mod).toHaveProperty("motionTransition");
+    expect(mod).toHaveProperty("appShellVariants");
+    expect(mod).toHaveProperty("listItemVariants");
+    expect(mod).toHaveProperty("detailPanelVariants");
+    expect(mod).toHaveProperty("overlayVariants");
+    expect(mod).toHaveProperty("drawerVariants");
+  });
 });

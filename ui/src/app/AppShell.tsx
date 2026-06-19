@@ -7,12 +7,14 @@ import { CommandPalette } from "../components/CommandPalette";
 import { useDensityPreference } from "../lib/uiPreferences";
 import { UserRail } from "./UserRail";
 import { useRealtimePolling } from "../hooks/queries";
+import { AnimatePresence, appShellVariants, m, motionTransition } from "../components/primitives/MotionPrimitives";
 
 export function AppShell() {
   useRealtimePolling();
   const location = useLocation();
   const section = inferSection(location.pathname);
   const { density } = useDensityPreference();
+  const routeMotionKey = location.pathname.split("/")[1] || "home";
 
   return (
     <SidebarProvider>
@@ -28,9 +30,22 @@ export function AppShell() {
           <div className="flex min-w-0 flex-1 flex-col">
             <div className="flex min-h-0 flex-1 overflow-hidden">
               <SectionSidebar />
-              <main id="main-content" className="flex min-h-0 flex-1" role="main" aria-label="Main content">
-                <Outlet />
-              </main>
+              <AnimatePresence initial={false} mode="popLayout">
+                <m.main
+                  key={routeMotionKey}
+                  id="main-content"
+                  className="flex min-h-0 flex-1"
+                  role="main"
+                  aria-label="Main content"
+                  variants={appShellVariants}
+                  initial="initial"
+                  animate="animate"
+                  exit="exit"
+                  transition={motionTransition.quick}
+                >
+                  <Outlet />
+                </m.main>
+              </AnimatePresence>
             </div>
           </div>
         </div>

@@ -3,21 +3,21 @@ import type { ReactNode } from "react";
 import { Brain, Clock, Database, Search } from "lucide-react";
 import { useEpisodicMemory, useLongTermMemory, useMemoryConversations, useMemoryWindow } from "../../hooks/queries";
 
-export function MemoryInspector() {
+export function MemoryInspector({ conversationId }: { conversationId?: string | null }) {
   const { data: conversationsData, isLoading } = useMemoryConversations();
   const conversations = conversationsData?.conversations ?? [];
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
   const [memoryQuery, setMemoryQuery] = useState("");
-  const activeConversationId = selectedConversationId ?? conversations[0]?.conversationId ?? null;
+  const activeConversationId = selectedConversationId ?? conversationId ?? conversations[0]?.conversationId ?? null;
   const { data: windowData } = useMemoryWindow(activeConversationId);
   const { data: episodicData } = useEpisodicMemory(memoryQuery ? { query: memoryQuery, limit: 5 } : { limit: 5 });
   const { data: longTermData } = useLongTermMemory({ namespace: "default", query: memoryQuery, limit: 5 });
 
   useEffect(() => {
-    if (!selectedConversationId && conversations[0]) {
+    if (!selectedConversationId && !conversationId && conversations[0]) {
       setSelectedConversationId(conversations[0].conversationId);
     }
-  }, [conversations, selectedConversationId]);
+  }, [conversationId, conversations, selectedConversationId]);
 
   const windowMessages = windowData?.messages ?? [];
   const episodic = episodicData?.events ?? [];

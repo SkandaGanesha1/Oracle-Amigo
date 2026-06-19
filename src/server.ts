@@ -68,6 +68,7 @@ import { generateOrLoadIdentity, resetLocalIdentity } from "./security/DeviceIde
 import { CloudError, ControlPlaneClient } from "./cloud/ControlPlaneClient.js";
 import { DirectoryClient, type CloudAgentInstance, type CloudAgentInstanceDirectoryEntry } from "./cloud/DirectoryClient.js";
 import { RelayClient } from "./cloud/RelayClient.js";
+import { normalizeRelayDeliveryStatus } from "./cloud/RelayDeliveryStatus.js";
 import { LocalCloudIdentityStore, defaultControlPlaneUrl, defaultProfileId, type LocalCloudIdentity } from "./cloud/LocalCloudIdentityStore.js";
 import { DeviceEnrollmentService } from "./enrollment/DeviceEnrollmentService.js";
 import { AgentRegistrationService } from "./enrollment/AgentRegistrationService.js";
@@ -77,8 +78,9 @@ import { RemoteTaskDispatcher } from "./runtime/RemoteTaskDispatcher.js";
 import { PeerRoutingService } from "./runtime/PeerRoutingService.js";
 import { ApprovalTransferOrchestrator } from "./runtime/ApprovalTransferOrchestrator.js";
 import { resolveFileRequestCandidates, toApprovalCandidatePayload } from "./runtime/FileRequestCandidateResolver.js";
-import { getDeviceTokenRecoveryStatus, structuredEnrollmentError, withRecoveredDeviceToken } from "./runtime/CloudTokenRecovery.js";
+import { getDeviceTokenRecoveryStatus, isExpiredJwt, structuredEnrollmentError, withRecoveredDeviceToken } from "./runtime/CloudTokenRecovery.js";
 import { ChatRepository, type ChatConversationRecord, type ChatMessageRecord, type ChatMessageReaction, type ChatRepositoryEvent, type ConversationReadState, type DeliveryStatus, type RelayDeliveryReceipt } from "./chat/ChatRepository.js";
+import { ConversationRepairService } from "./chat/ConversationRepairService.js";
 import { VoiceCommandService } from "./voice/VoiceCommandService.js";
 import { registerVoiceCommandRoutes } from "./voice/VoiceCommandRoutes.js";
 import { HybridVoiceCommandParser } from "./voice/HybridVoiceCommandParser.js";
@@ -86,6 +88,7 @@ import { getLlmProvider } from "./oci/LlmProvider.js";
 import { registerReceiverApprovalRoutes } from "./runtime/ReceiverApprovalRoutes.js";
 import { ReceiverAgentOrchestrator } from "./runtime/ReceiverAgentOrchestrator.js";
 import { assertPublicHttpsUrl, constantTimeEqual, hasValidLocalUiSession, isPrivateOrMetadataHost, LOCAL_UI_SESSION_COOKIE, requireLocalApiToken, setLocalUiSessionCookie, signApprovalCallback, verifyApprovalCallbackSignature } from "./security/SecurityGuards.js";
+import { assertLocalAgentProductionConfig, localAgentDebugRoutesEnabled } from "./security/ProductionConfig.js";
 import { createHandshakeContext, verifyHandshakeOffer, verifyHandshakeResponse } from "./security/AnpHandshakeAdapter.js";
 
 const FileSearchSchema = z.object({
@@ -378,6 +381,10 @@ export function buildServer(
   reasoner?: AgentReasoner
 ) {
   const logger = createLogger();
+  const localProductionValidation = assertLocalAgentProductionConfig();
+  for (const warning of localProductionValidation.warnings) {
+    logger.warn(warning);
+  }
 
   // Load or generate a persistent ui_session_secret in user_agent_settings SQLite table
   try {
@@ -450,12 +457,15 @@ export function buildServer(
   const deviceEnrollment = new DeviceEnrollmentService(cloudStore);
   const agentRegistration = new AgentRegistrationService(cloudStore);
   const chatRepo = new ChatRepository(getDb());
+  const conversationRepair = new ConversationRepairService(chatRepo);
   const approvalTransfers = new ApprovalTransferOrchestrator(getDb(), cloudStore, defaultProfileId(), chatRepo);
   const universalSearch = new UniversalSearchService(getDb(), (value) => redactLocalPathText(secretPolicy.redactText(value)));
   const missionThreads = new MissionThreadService(getDb());
   const redactionEngine = new RedactionEngine(getDb());
   const adminPolicy = new AdminPolicyEngine(getDb());
   const notificationEvents = new NotificationEventStore(getDb());
+  const skillRegistry = getDefaultRegistry();
+  void skillRegistry.refresh();
   const approvalCallbackSecret = process.env.APPROVAL_CALLBACK_SECRET && process.env.APPROVAL_CALLBACK_SECRET.length >= 32
     ? process.env.APPROVAL_CALLBACK_SECRET
     : (() => {
@@ -492,12 +502,11 @@ export function buildServer(
   };
 
   const chatRealtimeEvent = (event: ChatRepositoryEvent) => {
-    const messageOperation = event.operation === "message_updated" ? "updated" : "created";
     return sanitizeFacadePayload({
       kind: event.operation === "message_created" ? "message_created" : "conversation_update",
-      entityType: event.operation === "message_created" ? "message" : "conversation",
-      entityId: event.messageId ?? event.conversationId,
-      operation: event.operation === "message_created" ? messageOperation : event.operation,
+      entityType: "conversation",
+      entityId: event.conversationId,
+      operation: event.operation,
       payload: chatRealtimePayload(event),
       timestamp: event.timestamp
     });
@@ -709,8 +718,8 @@ export function buildServer(
       heartbeat: heartbeatService.status(),
       inbox: inboxPoller.status()
     };
-  });
-  registerReceiverApprovalRoutes(server, getDb());
+  }, localOnly);
+  registerReceiverApprovalRoutes(server, getDb(), localOnly);
   const remoteDispatcher = new RemoteTaskDispatcher(protocol, getDb(), defaultProfileId(), chatRepo, fileSearch);
   const heartbeatService = new HeartbeatService(cloudStore, defaultProfileId());
   const inboxPoller = new InboxPoller(cloudStore, remoteDispatcher, defaultProfileId());
@@ -1247,7 +1256,9 @@ export function buildServer(
   });
 
   server.get("/cloud/status", async () => {
-    const cloud = cloudStore.getOrCreate();
+    let cloud = cloudStore.getOrCreate();
+    const userAuth = await resolveUserAuthStatus(cloudStore, deviceEnrollment, cloud);
+    cloud = userAuth.identity;
     const configuredControlPlaneUrl = defaultControlPlaneUrl();
     const controlPlane = await inspectControlPlaneConnection(cloud.controlPlaneUrl, configuredControlPlaneUrl);
     const recovery = getDeviceTokenRecoveryStatus(cloud);
@@ -1257,6 +1268,8 @@ export function buildServer(
       inbox: inboxPoller.status(),
       tokenIssue: recovery.tokenIssue,
       canRecoverDeviceToken: recovery.canRecoverDeviceToken,
+      userAuthIssue: userAuth.userAuthIssue,
+      canRecoverUserToken: userAuth.canRecoverUserToken,
       localPublicKeyFingerprint: recovery.localPublicKeyFingerprint,
       relayMode: process.env.AGENTIC_RELAY_MODE ?? "polling",
       controlPlane,
@@ -1271,10 +1284,12 @@ export function buildServer(
   server.get("/cloud/me", localOnly, async (request, reply) => {
     const cloud = requireCloudIdentity(cloudStore.get(), reply);
     if (!cloud) return;
-    const token = requireUserAccessToken(cloud, reply);
+    const token = await requireFreshUserAccessToken(deviceEnrollment, reply);
     if (!token) return;
-    const me = await new (await import("./cloud/AuthClient.js")).AuthClient(new ControlPlaneClient(cloud.controlPlaneUrl)).me(token);
-    return me;
+    const { AuthClient } = await import("./cloud/AuthClient.js");
+    return runUserCloudRequest(reply, cloudStore, cloud, () =>
+      new AuthClient(new ControlPlaneClient(cloud.controlPlaneUrl)).me(token)
+    );
   });
 
   server.get("/cloud/directory/users", localOnly, async (request, reply) => {
@@ -1283,7 +1298,9 @@ export function buildServer(
     const token = await requireFreshUserAccessToken(deviceEnrollment, reply);
     if (!token) return;
     const q = ((request.query as { q?: string })?.q ?? "").trim();
-    return new DirectoryClient(new ControlPlaneClient(cloud.controlPlaneUrl)).searchUsers(q, token);
+    return runUserCloudRequest(reply, cloudStore, cloud, () =>
+      new DirectoryClient(new ControlPlaneClient(cloud.controlPlaneUrl)).searchUsers(q, token)
+    );
   });
 
   server.get("/cloud/directory/users/:user_id/agents", localOnly, async (request, reply) => {
@@ -1292,7 +1309,9 @@ export function buildServer(
     const token = await requireFreshUserAccessToken(deviceEnrollment, reply);
     if (!token) return;
     const { user_id } = request.params as { user_id: string };
-    return new DirectoryClient(new ControlPlaneClient(cloud.controlPlaneUrl)).getUserAgents(user_id, token);
+    return runUserCloudRequest(reply, cloudStore, cloud, () =>
+      new DirectoryClient(new ControlPlaneClient(cloud.controlPlaneUrl)).getUserAgents(user_id, token)
+    );
   });
 
   server.get("/cloud/contacts", localOnly, async (_request, reply) => {
@@ -1301,20 +1320,138 @@ export function buildServer(
     const token = await requireFreshUserAccessToken(deviceEnrollment, reply);
     if (!token) return;
     const client = new DirectoryClient(new ControlPlaneClient(cloud.controlPlaneUrl));
-    const result = await client.listContacts(token);
-    const contacts = await Promise.all((result.contacts ?? []).map(async (contact) => {
-      const peerUserId = contact.requester_user_id === cloud.userId ? contact.target_user_id : contact.requester_user_id;
-      try {
-        const peer = await client.getUserAgents(peerUserId, token);
-        if (contact.requester_user_id === peerUserId) {
-          return { ...contact, requester_display_name: peer.display_name, requester_email: peer.email };
+    return runUserCloudRequest(reply, cloudStore, cloud, async () => {
+      const result = await client.listContacts(token);
+      const contacts = await Promise.all((result.contacts ?? []).map(async (contact) => {
+        const peerUserId = contact.requester_user_id === cloud.userId ? contact.target_user_id : contact.requester_user_id;
+        try {
+          const peer = await client.getUserAgents(peerUserId, token);
+          if (contact.requester_user_id === peerUserId) {
+            return { ...contact, requester_display_name: peer.display_name, requester_email: peer.email };
+          }
+          return { ...contact, target_display_name: peer.display_name, target_email: peer.email };
+        } catch {
+          return contact;
         }
-        return { ...contact, target_display_name: peer.display_name, target_email: peer.email };
-      } catch {
-        return contact;
-      }
+      }));
+      return { contacts };
+    });
+  });
+
+  server.get("/agent-profiles", localOnly, async (_request, reply) => {
+    const cloud = requireCloudIdentity(cloudStore.get(), reply);
+    if (!cloud) return;
+    const auth = await createDirectoryAuthContext(cloud, deviceEnrollment);
+    const skills = await skillRegistry.ensureFresh();
+    const registryAgents = listAgents();
+    const conversations = chatRepo.listConversations();
+    const profiles = new Map<string, Record<string, unknown>>();
+
+    profiles.set("local-agent", sanitizeAgentProfile({
+      id: "local-agent",
+      displayName: cloud.displayName ?? "My Local Agent",
+      email: cloud.userEmail,
+      userId: cloud.userId,
+      agentInstanceId: cloud.agentInstanceId ?? localIdentity.agentId,
+      deviceName: cloud.deviceId ? `Device ${shortId(cloud.deviceId)}` : "Local device",
+      presence: "online",
+      presenceUpdatedAt: cloud.updatedAt,
+      contactStatus: "local",
+      trustLevel: "local",
+      registryDid: localIdentity.did,
+      registryTrustLevel: "local",
+      capabilities: ORACLE_AMIGO_SKILLS.map((skill) => skill.id),
+      conversationId: "local-agent",
+      lastInteractionAt: conversations.find((conversation) => conversation.id === "local-agent")?.last_message_at ?? null,
+      skills: skills.slice(0, 8),
+      source: "local"
     }));
-    return { contacts };
+
+    if (auth?.userToken) {
+      const contacts = await auth.client.listContacts(auth.userToken).catch(() => ({ contacts: [] }));
+      for (const contact of contacts.contacts ?? []) {
+        const peerUserId = contact.requester_user_id === cloud.userId ? contact.target_user_id : contact.requester_user_id;
+        const directory = await getPeerUserDirectory(auth, peerUserId);
+        const bestAgent = chooseRelayPeerAgent(directory?.agents ?? []);
+        const conversation = chatRepo.findCloudRelayConversationByCanonicalPeer({
+          peerUserId,
+          peerAgentInstanceId: bestAgent?.agent_instance_id ?? null
+        });
+        const registry = findRegistryForAgent(registryAgents, bestAgent?.agent_card_url ?? "", bestAgent?.agent_instance_id ?? "");
+        const id = peerUserId || bestAgent?.agent_instance_id || contact.id;
+        profiles.set(id, sanitizeAgentProfile({
+          id,
+          displayName: directory?.display_name ?? bestAgent?.display_name ?? "Remote agent",
+          email: directory?.email ?? null,
+          userId: peerUserId,
+          agentInstanceId: bestAgent?.agent_instance_id ?? null,
+          deviceName: bestAgent?.device_name ?? "Unknown device",
+          presence: normalizeAgentProfilePresence(bestAgent?.status ?? directory?.presence ?? directory?.status),
+          presenceUpdatedAt: bestAgent?.last_heartbeat_at ?? bestAgent?.last_seen_at ?? contact.updated_at ?? null,
+          contactStatus: contact.status,
+          trustLevel: contact.status === "accepted" ? "verified" : "unverified",
+          registryDid: registry?.did ?? null,
+          registryTrustLevel: registry?.trustLevel ?? null,
+          capabilities: bestAgent?.capabilities ?? registry?.skills ?? [],
+          conversationId: conversation?.id ?? null,
+          lastInteractionAt: conversation?.last_message_at ?? conversation?.updated_at ?? contact.updated_at ?? null,
+          skills: skills.filter((skill) => (bestAgent?.capabilities ?? registry?.skills ?? []).includes(skill.id)).slice(0, 8),
+          source: "contact"
+        }));
+      }
+    }
+
+    for (const conversation of conversations) {
+      if (conversation.mode !== "cloud_relay") continue;
+      const peer = await resolveRelayPeerInfo(conversation, cloud, deviceEnrollment);
+      const id = peer?.userId ?? peer?.agentInstanceId ?? conversation.peer_user_id ?? conversation.peer_agent_instance_id;
+      if (!id || profiles.has(id)) continue;
+      const registry = findRegistryForAgent(registryAgents, "", peer?.agentInstanceId ?? conversation.peer_agent_instance_id ?? "");
+      profiles.set(id, sanitizeAgentProfile({
+        id,
+        displayName: peer?.displayName ?? conversation.title,
+        email: peer?.email ?? null,
+        userId: peer?.userId ?? conversation.peer_user_id,
+        agentInstanceId: peer?.agentInstanceId ?? conversation.peer_agent_instance_id,
+        deviceName: "Unknown device",
+        presence: normalizeAgentProfilePresence(peer?.presence),
+        presenceUpdatedAt: conversation.updated_at,
+        contactStatus: "conversation",
+        trustLevel: registry?.trustLevel === "blocked" ? "blocked" : "unverified",
+        registryDid: registry?.did ?? null,
+        registryTrustLevel: registry?.trustLevel ?? null,
+        capabilities: registry?.skills ?? [],
+        conversationId: conversation.id,
+        lastInteractionAt: conversation.last_message_at ?? conversation.updated_at,
+        skills: skills.filter((skill) => (registry?.skills ?? []).includes(skill.id)).slice(0, 8),
+        source: "conversation"
+      }));
+    }
+
+    for (const agent of registryAgents) {
+      if ([...profiles.values()].some((profile) => profile.registryDid === agent.did)) continue;
+      profiles.set(agent.did, sanitizeAgentProfile({
+        id: agent.did,
+        displayName: agent.name,
+        email: null,
+        userId: null,
+        agentInstanceId: null,
+        deviceName: "Registry agent",
+        presence: "unknown",
+        presenceUpdatedAt: agent.lastSeen,
+        contactStatus: "registry",
+        trustLevel: agent.trustLevel === "trusted" || agent.trustLevel === "local" || agent.trustLevel === "loopback" ? "verified" : agent.trustLevel === "blocked" ? "blocked" : "external",
+        registryDid: agent.did,
+        registryTrustLevel: agent.trustLevel,
+        capabilities: agent.skills,
+        conversationId: null,
+        lastInteractionAt: agent.lastSeen,
+        skills: skills.filter((skill) => agent.skills.includes(skill.id)).slice(0, 8),
+        source: "registry"
+      }));
+    }
+
+    return sanitizeFacadePayload({ profiles: [...profiles.values()], count: profiles.size });
   });
 
   server.post("/cloud/contacts/request", localOnly, async (request, reply) => {
@@ -1323,7 +1460,9 @@ export function buildServer(
     const token = await requireFreshUserAccessToken(deviceEnrollment, reply);
     if (!token) return;
     const body = parseBody(ContactRequestSchema, request.body);
-    return new DirectoryClient(new ControlPlaneClient(cloud.controlPlaneUrl)).requestContact(body.target_user_id, token);
+    return runUserCloudRequest(reply, cloudStore, cloud, () =>
+      new DirectoryClient(new ControlPlaneClient(cloud.controlPlaneUrl)).requestContact(body.target_user_id, token)
+    );
   });
 
   server.post("/cloud/contacts/:contact_id/accept", localOnly, async (request, reply) => {
@@ -1332,7 +1471,9 @@ export function buildServer(
     const token = await requireFreshUserAccessToken(deviceEnrollment, reply);
     if (!token) return;
     const { contact_id } = request.params as { contact_id: string };
-    return new DirectoryClient(new ControlPlaneClient(cloud.controlPlaneUrl)).acceptContact(contact_id, token);
+    return runUserCloudRequest(reply, cloudStore, cloud, () =>
+      new DirectoryClient(new ControlPlaneClient(cloud.controlPlaneUrl)).acceptContact(contact_id, token)
+    );
   });
 
   server.get("/relay/inbox/status", localOnly, async () => inboxPoller.status());
@@ -1358,12 +1499,14 @@ export function buildServer(
     });
     const toAgentInstanceId = target.agentInstanceId ?? body.to_agent_instance_id;
     if (!toAgentInstanceId) return reply.status(409).send({ error: "NO_ACTIVE_PEER_AGENT", message: "No active agent instance is available for this peer." });
-    if (body.conversation_id && (target.userId || target.agentInstanceId)) {
-      chatRepo.updateConversationPeer(body.conversation_id, {
+    let conversationId = body.conversation_id ?? null;
+    if (conversationId && (target.userId || target.agentInstanceId)) {
+      const updated = chatRepo.updateConversationPeer(conversationId, {
         peerUserId: target.userId ?? undefined,
         peerAgentInstanceId: target.agentInstanceId ?? undefined,
         title: target.displayName ?? undefined
       });
+      conversationId = updated ? (chatRepo.resolveCanonicalConversation(updated.id)?.id ?? updated.id) : conversationId;
     }
     const result = await withRecoveredDeviceToken(cloudStore, defaultProfileId(), async (fresh) =>
       new RelayClient(new ControlPlaneClient(fresh.controlPlaneUrl)).send({
@@ -1398,12 +1541,14 @@ export function buildServer(
     });
     const toAgentInstanceId = target.agentInstanceId ?? body.to_agent_instance_id;
     if (!toAgentInstanceId) return reply.status(409).send({ error: "NO_ACTIVE_PEER_AGENT", message: "No active agent instance is available for this peer." });
-    if (body.conversation_id && (target.userId || target.agentInstanceId)) {
-      chatRepo.updateConversationPeer(body.conversation_id, {
+    let conversationId = body.conversation_id ?? null;
+    if (conversationId && (target.userId || target.agentInstanceId)) {
+      const updated = chatRepo.updateConversationPeer(conversationId, {
         peerUserId: target.userId ?? undefined,
         peerAgentInstanceId: target.agentInstanceId ?? undefined,
         title: target.displayName ?? undefined
       });
+      conversationId = updated ? (chatRepo.resolveCanonicalConversation(updated.id)?.id ?? updated.id) : conversationId;
     }
     const a2aTaskId = body.a2a_task_id ?? randomUUID();
     const result = await withRecoveredDeviceToken(cloudStore, defaultProfileId(), async (fresh) =>
@@ -1424,9 +1569,9 @@ export function buildServer(
         peer_user_id: target.userId ?? null
       });
     }
-    if (body.conversation_id) {
+    if (conversationId) {
       chatRepo.appendMessage({
-        conversationId: body.conversation_id,
+        conversationId,
         taskId: a2aTaskId,
         senderAgentInstanceId: cloud.agentInstanceId,
         receiverAgentInstanceId: toAgentInstanceId,
@@ -1886,9 +2031,6 @@ export function buildServer(
   });
 
   // ===== Agent Skills (agentskills.io) =====
-  const skillRegistry = getDefaultRegistry();
-  void skillRegistry.refresh();
-
   server.get("/.well-known/agent-skills/", async (_request, reply) => {
     const skills = await skillRegistry.ensureFresh();
     return reply.send({
@@ -2110,13 +2252,13 @@ export function buildServer(
     return sanitizeFacadePayload({ namespace, memories, limit, offset });
   });
 
-  server.post("/intent/classify", async (request) => {
+  server.post("/intent/classify", localOnly, async (request) => {
     const { text } = parseBody(IntentClassifySchema, request.body);
     const classification = intentExtractor.extract(secretPolicy.redactText(text));
     return sanitizeFacadePayload({ classification });
   });
 
-  server.post("/intent/rewrite", async (request) => {
+  server.post("/intent/rewrite", localOnly, async (request) => {
     const { query } = parseBody(IntentRewriteSchema, request.body);
     const rewrite = queryRewriter.rewrite(secretPolicy.redactText(query));
     return sanitizeFacadePayload({ rewrite });
@@ -2494,6 +2636,10 @@ export function buildServer(
         status: approval.status,
         expires_at: approval.expiresAt,
         selected_candidate_id: approval.selectedFileId,
+        approval_type: approval.approvalType,
+        is_bound: Boolean(approval.boundFilePath && approval.boundSha256),
+        requester_display_name: "You",
+        target_display_name: "Local agent",
         candidates: candidates.map((candidate) => ({
           candidate_id: candidate.id,
           file_name: candidate.fileName,
@@ -2764,20 +2910,31 @@ export function buildServer(
   server.post("/chat/conversations", localOnly, async (request) => {
     const body = parseBody(ChatConversationSchema, request.body);
     const cloud = cloudStore.get();
-    const conversation = chatRepo.createConversation({
-      orgId: cloud?.orgId ?? null,
-      localUserId: cloud?.userId ?? null,
-      localAgentInstanceId: cloud?.agentInstanceId ?? localIdentity.agentId,
-      peerUserId: body.peer_user_id ?? null,
-      peerAgentInstanceId: body.peer_agent_instance_id ?? null,
-      mode: body.mode ?? (body.peer_agent_instance_id ? "cloud_relay" : "local"),
-      title: body.title
-    });
+    const isCloudRelay = (body.mode ?? (body.peer_agent_instance_id ? "cloud_relay" : "local")) === "cloud_relay";
+    const conversation = isCloudRelay && (body.peer_user_id || body.peer_agent_instance_id)
+      ? chatRepo.getOrCreateCanonicalRelayConversation({
+        orgId: cloud?.orgId ?? null,
+        localUserId: cloud?.userId ?? null,
+        localAgentInstanceId: cloud?.agentInstanceId ?? localIdentity.agentId,
+        peerUserId: body.peer_user_id ?? null,
+        peerAgentInstanceId: body.peer_agent_instance_id ?? null,
+        mode: "cloud_relay",
+        title: body.title
+      })
+      : chatRepo.createConversation({
+        orgId: cloud?.orgId ?? null,
+        localUserId: cloud?.userId ?? null,
+        localAgentInstanceId: cloud?.agentInstanceId ?? localIdentity.agentId,
+        peerUserId: body.peer_user_id ?? null,
+        peerAgentInstanceId: body.peer_agent_instance_id ?? null,
+        mode: body.mode ?? (body.peer_agent_instance_id ? "cloud_relay" : "local"),
+        title: body.title
+      });
     chatRepo.appendMessage({
       conversationId: conversation.id,
       senderAgentInstanceId: cloud?.agentInstanceId ?? localIdentity.agentId,
       messageType: "system_event",
-      text: body.peer_agent_instance_id ? "Relay chat ready. File requests become A2A tasks." : "Local chat ready - connected to the local backend.",
+      text: isCloudRelay ? "Relay chat ready. File requests become A2A tasks." : "Local chat ready - connected to the local backend.",
       payload: { severity: "success" },
       deliveryStatus: "delivered"
     });
@@ -2788,9 +2945,12 @@ export function buildServer(
   server.get("/chat/conversations", localOnly, async () => {
     const cloud = cloudStore.get();
     chatRepo.getOrCreateLocalConversation(cloud?.agentInstanceId ?? localIdentity.agentId);
+    conversationRepair.repairCloudRelayDuplicates();
     const conversations: ChatConversationRecord[] = [];
     for (const conversation of chatRepo.listConversations()) {
-      conversations.push(await refreshRelayConversationPeer(conversation, cloud, peerRouting, "message.send"));
+      const canonical = chatRepo.resolveCanonicalConversation(conversation.id) ?? conversation;
+      if (conversations.some((candidate) => candidate.id === canonical.id)) continue;
+      conversations.push(await refreshRelayConversationPeer(canonical, cloud, peerRouting, "message.send"));
     }
     for (const conversation of conversations) {
       await refreshRelayDeliveryStatuses(chatRepo.getMessages(conversation.id), cloudStore, defaultProfileId());
@@ -2812,28 +2972,30 @@ export function buildServer(
     const { id } = request.params as { id: string };
     const query = parseBody(ChatMessagesQuerySchema, request.query ?? {});
     const cloud = cloudStore.get();
-    const conversation = id === "local-agent"
+    const loadedConversation = id === "local-agent"
       ? chatRepo.getOrCreateLocalConversation(cloud?.agentInstanceId ?? localIdentity.agentId)
-      : chatRepo.getConversation(id);
+      : chatRepo.resolveCanonicalConversation(id);
+    const conversation = loadedConversation;
     if (!conversation) {
       return reply.status(404).send({ error: "CONVERSATION_NOT_FOUND", message: "Conversation not found" });
     }
     const localAgentInstanceId = conversation?.local_agent_instance_id ?? cloud?.agentInstanceId ?? localIdentity.agentId;
+    const canonicalId = conversation.id;
     const windowResult = query.around
-      ? chatRepo.getMessagesAround(id, query.around, query.limit)
+      ? chatRepo.getMessagesAround(canonicalId, query.around, query.limit)
       : query.before
-        ? chatRepo.getMessagesBefore(id, query.before, query.limit)
+        ? chatRepo.getMessagesBefore(canonicalId, query.before, query.limit)
         : null;
     if ((query.around || query.before) && !windowResult) {
       return reply.status(404).send({ error: "MESSAGE_NOT_FOUND", message: "Message not found in this conversation" });
     }
-    const sourceMessages = windowResult?.messages ?? chatRepo.getMessages(id);
+    const sourceMessages = windowResult?.messages ?? chatRepo.getMessages(canonicalId);
     const refreshed = await refreshRelayDeliveryStatuses(sourceMessages, cloudStore, defaultProfileId());
-    const allMessages = chatRepo.getMessages(id);
+    const allMessages = chatRepo.getMessages(canonicalId);
     const messages = refreshed.map((message) => messageToTimeline(message, localAgentInstanceId, allMessages));
     const peer = await resolveRelayPeerInfo(conversation, cloud, deviceEnrollment);
     return {
-      conversationId: id,
+      conversationId: canonicalId,
       conversation: conversationToUi(conversation, allMessages, peer, localAgentInstanceId),
       messages,
       pageInfo: {
@@ -2842,8 +3004,8 @@ export function buildServer(
         oldestMessageId: refreshed[0]?.id,
         newestMessageId: refreshed.at(-1)?.id
       },
-      readState: chatRepo.getReadState(id) ?? {
-        conversationId: id,
+      readState: chatRepo.getReadState(canonicalId) ?? {
+        conversationId: canonicalId,
         unreadCount: 0,
         mentionCount: 0
       }
@@ -2935,16 +3097,20 @@ export function buildServer(
   server.post("/chat/conversations/:id/read-state", localOnly, async (request, reply) => {
     const { id } = request.params as { id: string };
     const body = parseBody(ChatReadStateSchema, request.body);
-    const conversation = chatRepo.getConversation(id);
+    const cloud = cloudStore.get();
+    const conversation = id === "local-agent"
+      ? chatRepo.getOrCreateLocalConversation(cloud?.agentInstanceId ?? localIdentity.agentId)
+      : chatRepo.resolveCanonicalConversation(id);
     if (!conversation) return reply.status(404).send({ error: "Conversation not found" });
+    const canonicalId = conversation.id;
 
     const marker = chatRepo.getMessage(body.lastReadMessageId);
     if (!marker) return reply.status(404).send({ error: "Message not found" });
-    if (marker.conversation_id !== id) {
+    if (marker.conversation_id !== canonicalId) {
       return reply.status(400).send({ error: "Message does not belong to conversation" });
     }
 
-    const readState = chatRepo.updateReadState(id, body.lastReadMessageId);
+    const readState = chatRepo.updateReadState(canonicalId, body.lastReadMessageId);
     if (!readState) return reply.status(500).send({ error: "Failed to update read state" });
     return { readState };
   });
@@ -2977,16 +3143,20 @@ export function buildServer(
     const { id } = request.params as { id: string };
     const body = parseBody(ChatConversationSendSchema, request.body);
     const cloud = cloudStore.get();
-    let conversation = chatRepo.getConversation(id);
+    let conversation = id === "local-agent"
+      ? chatRepo.getOrCreateLocalConversation(cloud?.agentInstanceId ?? localIdentity.agentId)
+      : chatRepo.resolveCanonicalConversation(id);
     if (!conversation) return reply.status(404).send({ error: "Conversation not found" });
     conversation = await refreshRelayConversationPeer(conversation, cloud, peerRouting, body.send_as === "file_request" ? "file.request" : "message.send");
+    conversation = chatRepo.resolveCanonicalConversation(conversation.id) ?? conversation;
+    const conversationId = conversation.id;
     const messageId = body.client_message_id ?? `msg_${randomUUID()}`;
     const detectedIntent = intentExtractor.extract(body.text);
     const isFileRequest = body.send_as === "file_request" || detectedIntent.intent === "file_request";
     const a2aTaskId = isFileRequest ? `task_${randomUUID()}` : null;
     chatRepo.appendMessage({
       id: messageId,
-      conversationId: id,
+      conversationId,
       taskId: a2aTaskId,
       senderUserId: cloud?.userId ?? null,
       senderAgentInstanceId: cloud?.agentInstanceId ?? localIdentity.agentId,
@@ -3006,8 +3176,8 @@ export function buildServer(
     if (conversation.mode === "cloud_relay" && conversation.peer_agent_instance_id) {
       if (!cloud?.deviceAccessToken) {
         chatRepo.markMessageStatus(messageId, "failed", "Device is not enrolled.");
-        chatRepo.queueOutbox(messageId, id, { text: body.text, send_as: body.send_as }, "Device is not enrolled.");
-        return reply.status(409).send({ error: "Device is not enrolled.", conversation_id: id, message_id: messageId });
+        chatRepo.queueOutbox(messageId, conversationId, { text: body.text, send_as: body.send_as }, "Device is not enrolled.");
+        return reply.status(409).send({ error: "Device is not enrolled.", conversation_id: conversationId, message_id: messageId });
       }
       try {
         let senderAgentInstanceId = cloud.agentInstanceId;
@@ -3032,7 +3202,7 @@ export function buildServer(
         });
         if (isFileRequest) {
           chatRepo.appendMessage({
-            conversationId: id,
+            conversationId,
             taskId: a2aTaskId,
             senderAgentInstanceId,
             receiverAgentInstanceId: conversation.peer_agent_instance_id,
@@ -3044,7 +3214,7 @@ export function buildServer(
         }
         return {
           ok: true,
-          conversation_id: id,
+          conversation_id: conversationId,
           message_id: messageId,
           relay_task_id: relay.relay_task_id,
           task_id: a2aTaskId ?? undefined,
@@ -3054,11 +3224,11 @@ export function buildServer(
       } catch (err) {
         const relayError = normalizeRelaySendError(err);
         chatRepo.markMessageStatus(messageId, "failed", relayError.message);
-        chatRepo.queueOutbox(messageId, id, { text: body.text, send_as: body.send_as }, relayError.message);
+        chatRepo.queueOutbox(messageId, conversationId, { text: body.text, send_as: body.send_as }, relayError.message);
         return reply.status(relayError.statusCode).send({
           error: relayError.code,
           message: relayError.message,
-          conversation_id: id,
+          conversation_id: conversationId,
           message_id: messageId,
           relay_unavailable: true
         });
@@ -3070,21 +3240,21 @@ export function buildServer(
         const answer = localChatAnswer(body.text);
         chatRepo.markMessageStatus(messageId, "delivered");
         chatRepo.appendMessage({
-          conversationId: id,
+          conversationId,
           senderAgentInstanceId: localIdentity.agentId,
           messageType: "agent_status",
           text: answer,
           payload: { phase: "completed", mode: "direct_chat" },
           deliveryStatus: "delivered"
         });
-        return { ok: true, conversation_id: id, message_id: messageId, type: "message", delivery_status: "delivered" };
+        return { ok: true, conversation_id: conversationId, message_id: messageId, type: "message", delivery_status: "delivered" };
       }
 
       chatRepo.markMessageStatus(messageId, "sent");
       const run = agentRuns.createRun({ query: body.text, createSandboxSession: false });
       chatRepo.appendMessage({
         id: `run_${run.runId}_working`,
-        conversationId: id,
+        conversationId,
         taskId: run.runId,
         senderAgentInstanceId: localIdentity.agentId,
         messageType: "agent_status",
@@ -3092,11 +3262,11 @@ export function buildServer(
         payload: { phase: "thinking", run_id: run.runId, status: run.status },
         deliveryStatus: "sent"
       });
-      attachRunToConversation(run.runId, id);
-      persistAgentRunSnapshot(id, run, localIdentity.agentId);
+      attachRunToConversation(run.runId, conversationId);
+      persistAgentRunSnapshot(conversationId, run, localIdentity.agentId);
       return {
         ok: true,
-        conversation_id: id,
+        conversation_id: conversationId,
         message_id: messageId,
         run_id: run.runId,
         type: "message",
@@ -3104,10 +3274,10 @@ export function buildServer(
       };
     }
 
-    const local = await localFileRequestFlow(body.text, id, messageId);
+    const local = await localFileRequestFlow(body.text, conversationId, messageId);
     return {
       ok: true,
-      conversation_id: id,
+      conversation_id: conversationId,
       message_id: messageId,
       task_id: local.taskId,
       run_id: local.runId,
@@ -3335,35 +3505,37 @@ export function buildServer(
     return { items, total, limit, offset };
   });
 
-  server.get("/files/search/debug", localOnly, async (request) => {
-    const q = (request.query ?? {}) as { query?: string; limit?: string };
-    const query = String(q.query ?? "").trim();
-    if (!query) return { error: "query is required" };
-    const limit = Math.max(1, Math.min(20, Number(q.limit ?? 10)));
-    const parsed = parseFileRequest(query);
-    const indexed = searchFileRequestIndex(parsed, { limit });
-    const resolved = await resolveFileRequestCandidates(query, fileSearch, { limit });
-    const db = getDb();
-    const indexedCount = (db.prepare("SELECT COUNT(*) as n FROM file_index").get() as { n: number }).n;
-    return {
-      query,
-      parsed,
-      indexedCount,
-      searchedRoots: resolved.searchedRoots,
-      filenameCandidates: indexed.map((candidate) => ({
-        candidate_id: String(candidate.id),
-        file_name: candidate.fileName,
-        display_path: `Local file / ${candidate.fileName}`,
-        extension: candidate.extension,
-        size_bytes: candidate.sizeBytes,
-        modified_at: candidate.modifiedAt,
-        match_score: candidate.score,
-        match_reason: candidate.reason
-      })),
-      finalCandidates: resolved.candidates.map(toApprovalCandidatePayload),
-      source: resolved.source
-    };
-  });
+  if (localAgentDebugRoutesEnabled()) {
+    server.get("/files/search/debug", localOnly, async (request) => {
+      const q = (request.query ?? {}) as { query?: string; limit?: string };
+      const query = String(q.query ?? "").trim();
+      if (!query) return { error: "query is required" };
+      const limit = Math.max(1, Math.min(20, Number(q.limit ?? 10)));
+      const parsed = parseFileRequest(query);
+      const indexed = searchFileRequestIndex(parsed, { limit });
+      const resolved = await resolveFileRequestCandidates(query, fileSearch, { limit });
+      const db = getDb();
+      const indexedCount = (db.prepare("SELECT COUNT(*) as n FROM file_index").get() as { n: number }).n;
+      return {
+        query,
+        parsed,
+        indexedCount,
+        searchedRoots: resolved.searchedRoots,
+        filenameCandidates: indexed.map((candidate) => ({
+          candidate_id: String(candidate.id),
+          file_name: candidate.fileName,
+          display_path: `Local file / ${candidate.fileName}`,
+          extension: candidate.extension,
+          size_bytes: candidate.sizeBytes,
+          modified_at: candidate.modifiedAt,
+          match_score: candidate.score,
+          match_reason: candidate.reason
+        })),
+        finalCandidates: resolved.candidates.map(toApprovalCandidatePayload),
+        source: resolved.source
+      };
+    });
+  }
 
   server.get("/approvals/pending", { preHandler: requireLocalApiToken }, async () => ({
     approvals: protocol.listApprovals()
@@ -3383,7 +3555,7 @@ export function buildServer(
     const body = (request.body ?? {}) as { idempotency_key?: string };
     const current = protocol.getApproval(id);
     if (!current) return reply.status(404).send({ error: "Approval not found" });
-    if (isUnboundFileTransferApproval(current)) {
+    if (isUnboundFileTransferApproval(current, { includeSearchRefinement: true })) {
       return reply.status(409).send({
         error: "APPROVAL_HAS_NO_BOUND_FILE",
         message: "This approval has no selected local file. Refine the search and select a candidate before approving.",
@@ -3548,24 +3720,26 @@ export function buildServer(
 
     // Create a new approval for the new top candidate
     const top = newCandidates[0];
+    const boundTop = top && isHighConfidenceResolvedCandidate(top) ? top : null;
     const newApproval = await protocol.createApproval(approval.taskId, {
-      approvalType: top ? "file.transfer.offer" : "file.search.refinement",
+      approvalType: boundTop ? "file.transfer.offer" : "file.search.refinement",
       requesterAgentId: approval.requesterAgentId,
       ownerAgentId: approval.ownerAgentId,
-      selectedFileId: top?.id ?? null,
-      boundFilePath: top?.boundFilePath ?? null,
-      boundSha256: top?.boundSha256 ?? null,
-      boundSizeBytes: top?.boundSizeBytes ?? null,
+      selectedFileId: boundTop?.id ?? null,
+      boundFilePath: boundTop?.boundFilePath ?? null,
+      boundSha256: boundTop?.boundSha256 ?? null,
+      boundSizeBytes: boundTop?.boundSizeBytes ?? null,
     });
     try { wfTransition(approval.taskId, "APPROVAL_REQUIRED", { approvalId: newApproval.id, candidateCount: newCandidates.length, refined: true }); } catch { /* ignore */ }
     const safeCandidates = newCandidates.map(toApprovalCandidatePayload);
-    appendRefinedApprovalTimeline(chatRepo, approval.taskId, newApproval.id, body.feedback ?? "", safeCandidates);
+    appendRefinedApprovalTimeline(chatRepo, approval.taskId, newApproval, body.feedback ?? "", safeCandidates);
 
     return {
       ok: true,
       previousApproval: approvalToSafeResponse(approval),
       refinedSearch: { ...refined, resolvedSource: resolved.source },
       candidates: safeCandidates,
+      lowConfidenceCandidates: resolved.lowConfidenceCandidates.map(toApprovalCandidatePayload),
       newApproval: approvalToSafeResponse(newApproval),
     };
   });
@@ -3620,7 +3794,12 @@ export function buildServer(
             } catch (err) {
               const message = err instanceof Error ? err.message : String(err);
               console.error(`[ReceiverApproval] Callback transfer failed:`, message);
-              receiverOrchestrator.markFailed(receiverApproval.id, message);
+              try {
+                receiverOrchestrator.markFailed(receiverApproval.id, message);
+              } catch (markErr) {
+                const markMessage = markErr instanceof Error ? markErr.message : String(markErr);
+                console.error(`[ReceiverApproval] Failed to record callback transfer failure:`, markMessage);
+              }
             }
           });
           return {
@@ -5100,6 +5279,49 @@ function publicCloudIdentity(identity: LocalCloudIdentity): Omit<LocalCloudIdent
   };
 }
 
+type UserAuthIssue = "required" | "expired" | null;
+
+async function resolveUserAuthStatus(
+  identityStore: LocalCloudIdentityStore,
+  enrollmentService: DeviceEnrollmentService,
+  identity: LocalCloudIdentity
+): Promise<{ identity: LocalCloudIdentity; userAuthIssue: UserAuthIssue; canRecoverUserToken: boolean }> {
+  const canRecoverUserToken = Boolean(identity.userRefreshToken ?? identity.refreshToken);
+
+  if (!identity.userAccessToken) {
+    return { identity, userAuthIssue: "required", canRecoverUserToken };
+  }
+
+  if (!isExpiredJwt(identity.userAccessToken)) {
+    return { identity, userAuthIssue: null, canRecoverUserToken };
+  }
+
+  if (canRecoverUserToken) {
+    try {
+      const refreshedToken = await enrollmentService.refreshUserAccessToken();
+      const refreshed = identityStore.get(identity.profileId) ?? identity;
+      if (refreshedToken && refreshed.userAccessToken && !isExpiredJwt(refreshed.userAccessToken)) {
+        return {
+          identity: refreshed,
+          userAuthIssue: null,
+          canRecoverUserToken: Boolean(refreshed.userRefreshToken ?? refreshed.refreshToken)
+        };
+      }
+    } catch {
+      // Fall through to clear the stale user auth below.
+    }
+  }
+
+  clearCloudUserTokens(identityStore, identity);
+  const updated = identityStore.get(identity.profileId) ?? {
+    ...identity,
+    userAccessToken: null,
+    refreshToken: null,
+    userRefreshToken: null
+  };
+  return { identity: updated, userAuthIssue: "expired", canRecoverUserToken: false };
+}
+
 async function inspectControlPlaneConnection(savedUrl: string, configuredUrl: string): Promise<{
   savedUrl: string;
   configuredUrl: string;
@@ -5153,19 +5375,12 @@ function requireCloudIdentity(identity: LocalCloudIdentity | null, reply: Fastif
   return identity;
 }
 
-function requireUserAccessToken(identity: LocalCloudIdentity, reply: FastifyReply): string | null {
-  if (!identity.userAccessToken) {
-    reply.status(401).send({ error: "CLOUD_USER_TOKEN_REQUIRED", message: "Cloud login is required" });
-    return null;
-  }
-  return identity.userAccessToken;
-}
-
 async function requireFreshUserAccessToken(
   enrollmentService: DeviceEnrollmentService,
   reply: FastifyReply
 ): Promise<string | null> {
-  const identity = new LocalCloudIdentityStore().get();
+  const identityStore = new LocalCloudIdentityStore();
+  const identity = identityStore.get();
   if (!identity) {
     reply.status(401).send({ error: "CLOUD_NOT_CONFIGURED", message: "Cloud login is required" });
     return null;
@@ -5175,16 +5390,48 @@ async function requireFreshUserAccessToken(
       const refreshed = await enrollmentService.refreshUserAccessToken();
       if (refreshed) return refreshed;
     } catch (err) {
-      reply.status(401).send({
-        error: "CLOUD_USER_TOKEN_EXPIRED",
-        message: err instanceof Error ? err.message : "Cloud login expired"
-      });
+      clearCloudUserTokens(identityStore, identity);
+      sendCloudUserTokenExpired(reply);
       return null;
     }
   }
   if (identity.userAccessToken) return identity.userAccessToken;
   reply.status(401).send({ error: "CLOUD_USER_TOKEN_REQUIRED", message: "Cloud login is required" });
   return null;
+}
+
+function clearCloudUserTokens(identityStore: LocalCloudIdentityStore, identity: LocalCloudIdentity): void {
+  identityStore.save(identity.profileId, {
+    userAccessToken: null,
+    refreshToken: null,
+    userRefreshToken: null,
+    status: identity.status
+  });
+}
+
+function sendCloudUserTokenExpired(reply: FastifyReply): void {
+  reply.status(401).send({
+    error: "CLOUD_USER_TOKEN_EXPIRED",
+    message: "Cloud login expired. Please sign in again."
+  });
+}
+
+async function runUserCloudRequest<T>(
+  reply: FastifyReply,
+  identityStore: LocalCloudIdentityStore,
+  identity: LocalCloudIdentity,
+  operation: () => Promise<T>
+): Promise<T | undefined> {
+  try {
+    return await operation();
+  } catch (err) {
+    if (err instanceof CloudError && err.statusCode === 401) {
+      clearCloudUserTokens(identityStore, identity);
+      sendCloudUserTokenExpired(reply);
+      return undefined;
+    }
+    throw err;
+  }
 }
 
 async function refreshRelayConversationPeer(
@@ -5268,28 +5515,6 @@ async function fetchRelayDeliveryStatus(
   };
 }
 
-function normalizeRelayDeliveryStatus(relayStatus: string, responseStatus: string | null): DeliveryStatus {
-  if (responseStatus && isDeliveryStatus(responseStatus)) return responseStatus;
-  if (relayStatus === "completed") return "stored_by_remote_agent";
-  if (relayStatus === "delivered") return "delivered_to_remote_agent";
-  if (relayStatus === "pending") return "queued_at_relay";
-  if (relayStatus === "cancelled" || relayStatus === "expired") return "failed";
-  return "queued_at_relay";
-}
-
-function isDeliveryStatus(value: string): value is DeliveryStatus {
-  return [
-    "local_pending",
-    "queued_at_relay",
-    "delivered_to_remote_agent",
-    "stored_by_remote_agent",
-    "read_by_remote_user",
-    "sent",
-    "delivered",
-    "failed"
-  ].includes(value);
-}
-
 function chooseRelayPeerAgent(agents: CloudAgentInstance[]): CloudAgentInstance | null {
   const ranked = [...agents].sort((a, b) => {
     const statusRank = statusScore(b.status) - statusScore(a.status);
@@ -5304,6 +5529,62 @@ function statusScore(status: string): number {
   if (status === "stale") return 2;
   if (status === "offline") return 1;
   return 0;
+}
+
+function normalizeAgentProfilePresence(value: string | null | undefined): "online" | "stale" | "offline" | "unknown" {
+  const normalized = value?.trim().toLowerCase();
+  if (normalized === "online" || normalized === "active") return "online";
+  if (normalized === "stale") return "stale";
+  if (normalized === "offline" || normalized === "unavailable" || normalized === "revoked") return "offline";
+  return "unknown";
+}
+
+function findRegistryForAgent(
+  agents: ReturnType<typeof listAgents>,
+  agentCardUrl: string,
+  agentInstanceId: string
+): ReturnType<typeof listAgents>[number] | null {
+  if (!agentCardUrl && !agentInstanceId) return null;
+  return agents.find((agent) =>
+    Boolean(agentCardUrl && agent.agentCardUrl === agentCardUrl) ||
+    Boolean(agentInstanceId && (agent.did === agentInstanceId || agent.notes.includes(agentInstanceId)))
+  ) ?? null;
+}
+
+function sanitizeAgentProfile(input: Record<string, unknown>): Record<string, unknown> {
+  const capabilities = Array.isArray(input.capabilities) ? input.capabilities.map(String).filter(Boolean) : [];
+  const skills = Array.isArray(input.skills)
+    ? input.skills.slice(0, 12).map((skill) => {
+      const record = skill as Record<string, unknown>;
+      return {
+        id: String(record.id ?? ""),
+        name: String(record.name ?? record.id ?? "Skill"),
+        description: String(record.description ?? ""),
+        tags: Array.isArray(record.tags) ? record.tags.map(String) : [],
+        inputModes: Array.isArray(record.inputModes) ? record.inputModes.map(String) : [],
+        outputModes: Array.isArray(record.outputModes) ? record.outputModes.map(String) : []
+      };
+    }).filter((skill) => skill.id)
+    : [];
+  return {
+    id: String(input.id ?? ""),
+    displayName: String(input.displayName ?? "Agent"),
+    email: typeof input.email === "string" ? input.email : null,
+    userId: typeof input.userId === "string" ? input.userId : null,
+    agentInstanceId: typeof input.agentInstanceId === "string" ? input.agentInstanceId : null,
+    deviceName: typeof input.deviceName === "string" ? input.deviceName : "Unknown device",
+    presence: normalizeAgentProfilePresence(typeof input.presence === "string" ? input.presence : null),
+    presenceUpdatedAt: typeof input.presenceUpdatedAt === "string" ? input.presenceUpdatedAt : null,
+    contactStatus: typeof input.contactStatus === "string" ? input.contactStatus : "unknown",
+    trustLevel: typeof input.trustLevel === "string" ? input.trustLevel : "unverified",
+    registryDid: typeof input.registryDid === "string" ? input.registryDid : null,
+    registryTrustLevel: typeof input.registryTrustLevel === "string" ? input.registryTrustLevel : null,
+    capabilities,
+    conversationId: typeof input.conversationId === "string" ? input.conversationId : null,
+    lastInteractionAt: typeof input.lastInteractionAt === "string" ? input.lastInteractionAt : null,
+    skills,
+    source: typeof input.source === "string" ? input.source : "unknown"
+  };
 }
 
 interface RelayPeerInfo {
@@ -5719,7 +6000,12 @@ function messageToTimeline(message: ChatMessageRecord, localAgentInstanceId: str
         requester: String(payload.requester ?? "remote agent"),
         request_text: String(payload.request_text ?? payload.requestText ?? message.text ?? "File request"),
         candidates: Array.isArray(payload.candidates) ? payload.candidates : [],
+        low_confidence_candidates: Array.isArray(payload.low_confidence_candidates) ? payload.low_confidence_candidates : [],
         selected_candidate_id: payload.selected_candidate_id ? String(payload.selected_candidate_id) : null,
+        approval_type: String(payload.approval_type ?? "file.transfer.offer"),
+        is_bound: Boolean(payload.is_bound ?? payload.selected_candidate_id),
+        requester_display_name: String(payload.requester_display_name ?? payload.requester ?? "remote agent"),
+        target_display_name: String(payload.target_display_name ?? payload.target ?? "Local agent"),
         status: String(payload.status ?? "pending"),
         feedback_text: payload.feedback_text ? String(payload.feedback_text) : null,
         expires_at: String(payload.expires_at ?? message.created_at),
@@ -5851,7 +6137,13 @@ function appendApprovalDecisionTimeline(
 function appendRefinedApprovalTimeline(
   chatRepo: ChatRepository,
   taskId: string,
-  approvalId: string,
+  approval: {
+    id: string;
+    approvalType: string;
+    selectedFileId: string | null;
+    boundFilePath: string | null;
+    boundSha256: string | null;
+  },
   feedback: string,
   candidates: Array<Record<string, unknown>>
 ): void {
@@ -5865,13 +6157,15 @@ function appendRefinedApprovalTimeline(
     messageType: "approval",
     text: "Updated approval required",
     payload: {
-      approval_id: approvalId,
+      approval_id: approval.id,
       task_id: taskId,
       requester: "remote agent",
       request_text: feedback ? `Refined search: ${feedback}` : "Refined file request",
       status: "pending",
       expires_at: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
-      selected_candidate_id: candidates[0]?.candidate_id ? String(candidates[0].candidate_id) : null,
+      selected_candidate_id: approval.selectedFileId,
+      approval_type: approval.approvalType,
+      is_bound: Boolean(approval.boundFilePath && approval.boundSha256),
       feedback_text: feedback,
       candidates
     },
@@ -5916,8 +6210,11 @@ function approvalToSafeResponse(approval: {
     requester_agent_id: approval.requesterAgentId,
     requester_display_name: approvalRequesterDisplayName(approval.id, approval.requesterAgentId),
     owner_agent_id: approval.ownerAgentId,
+    target_display_name: isRawAgentId(approval.ownerAgentId) ? "Local agent" : approval.ownerAgentId,
     status: approval.status,
     selected_file_id: approval.selectedFileId,
+    selected_candidate_id: approval.selectedFileId,
+    is_bound: Boolean(approval.boundFilePath && approval.boundSha256 && approval.boundSizeBytes != null),
     bound_sha256: approval.boundSha256,
     bound_size_bytes: approval.boundSizeBytes,
     feedback_text: approval.feedbackText,
@@ -5955,12 +6252,19 @@ function isUnboundFileTransferApproval(approval: {
   boundFilePath: string | null;
   boundSha256: string | null;
   boundSizeBytes: number | null;
-}): boolean {
-  return (approval.approvalType === "file.transfer.offer" || approval.approvalType === "file.search.refinement") && (
+}, options: { includeSearchRefinement?: boolean } = {}): boolean {
+  const requiresBoundFile = approval.approvalType === "file.transfer.offer" ||
+    (options.includeSearchRefinement === true && approval.approvalType === "file.search.refinement");
+  return requiresBoundFile && (
     !approval.boundFilePath ||
     !approval.boundSha256 ||
     approval.boundSizeBytes == null
   );
+}
+
+function isHighConfidenceResolvedCandidate(candidate: { score: number; reason: string }): boolean {
+  const reason = candidate.reason.toLowerCase();
+  return candidate.score >= 0.75 || reason.includes("exact") || reason.includes("normalized");
 }
 
 function shortId(value: string): string {

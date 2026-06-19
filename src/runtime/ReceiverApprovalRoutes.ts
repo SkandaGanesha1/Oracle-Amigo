@@ -11,7 +11,7 @@
  *   POST /receiver/approvals/:id/approve   — receiver approves with a selected file
  *   POST /receiver/approvals/:id/reject    — receiver rejects the request
  */
-import type { FastifyInstance, FastifyReply } from "fastify";
+import type { FastifyInstance, FastifyReply, RouteShorthandOptions } from "fastify";
 import { z, ZodError } from "zod";
 import { ReceiverAgentOrchestrator, ReceiverApprovalError } from "./ReceiverAgentOrchestrator.js";
 import { ApprovalTransferOrchestrator } from "./ApprovalTransferOrchestrator.js";
@@ -37,13 +37,14 @@ const RejectBodySchema = z.object({
 
 export function registerReceiverApprovalRoutes(
   server: FastifyInstance,
-  db: DatabaseSync
+  db: DatabaseSync,
+  routeOptions: RouteShorthandOptions = {}
 ): void {
   const orchestrator = new ReceiverAgentOrchestrator(db);
   const transferOrchestrator = new ApprovalTransferOrchestrator(db);
 
   // GET /receiver/approvals — list approvals, optionally filtered by status
-  server.get("/receiver/approvals", async (request, reply) => {
+  server.get("/receiver/approvals", routeOptions, async (request, reply) => {
     try {
       const query = ApprovalListQuerySchema.parse(request.query ?? {});
       const approvals = orchestrator.listApprovals({ limit: query.limit, status: query.status });
@@ -58,7 +59,7 @@ export function registerReceiverApprovalRoutes(
   });
 
   // GET /receiver/approvals/:id — get one approval
-  server.get("/receiver/approvals/:id", async (request, reply) => {
+  server.get("/receiver/approvals/:id", routeOptions, async (request, reply) => {
     try {
       const { id } = ApprovalIdParamsSchema.parse(request.params);
       const approval = orchestrator.getApproval(id);
@@ -72,7 +73,7 @@ export function registerReceiverApprovalRoutes(
   });
 
   // POST /receiver/approvals/:id/approve — receiver approves the transfer
-  server.post("/receiver/approvals/:id/approve", async (request, reply) => {
+  server.post("/receiver/approvals/:id/approve", routeOptions, async (request, reply) => {
     try {
       const { id } = ApprovalIdParamsSchema.parse(request.params);
       const body = ApproveBodySchema.parse(request.body ?? {});
@@ -94,7 +95,7 @@ export function registerReceiverApprovalRoutes(
   });
 
   // POST /receiver/approvals/:id/reject — receiver rejects the transfer
-  server.post("/receiver/approvals/:id/reject", async (request, reply) => {
+  server.post("/receiver/approvals/:id/reject", routeOptions, async (request, reply) => {
     try {
       const { id } = ApprovalIdParamsSchema.parse(request.params);
       const body = RejectBodySchema.parse(request.body ?? {});
@@ -128,7 +129,12 @@ async function kickOffTransfer(
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`[ReceiverApproval] Transfer failed for approval ${approvalId}:`, message);
-    orchestrator.markFailed(approvalId, message);
+    try {
+      orchestrator.markFailed(approvalId, message);
+    } catch (markErr) {
+      const markMessage = markErr instanceof Error ? markErr.message : String(markErr);
+      console.error(`[ReceiverApproval] Failed to record transfer failure for approval ${approvalId}:`, markMessage);
+    }
   }
 }
 

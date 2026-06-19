@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { motion } from "framer-motion";
 import { CheckCircle2, Clock, MessageSquare, Send, X } from "lucide-react";
 import { useMessageThread } from "../../lib/messageThreads";
 import { safeDisplayText } from "../../lib/safeText";
 import { RichMessageContent } from "./RichMessageContent";
+import { drawerVariants, m, motionTransition } from "../primitives/MotionPrimitives";
 
 export interface ThreadSubject {
   messageId: string;
@@ -82,11 +82,12 @@ export function ThreadDrawer({ subject, onClose, onReply }: ThreadDrawerProps) {
   if (!subject) return null;
 
   return (
-    <motion.div
-      initial={{ opacity: 0, x: 32 }}
-      animate={{ opacity: 1, x: 0 }}
-      exit={{ opacity: 0, x: 32 }}
-      transition={{ duration: 0.18, ease: "easeOut" }}
+    <m.div
+      variants={drawerVariants}
+      initial="initial"
+      animate="animate"
+      exit="exit"
+      transition={motionTransition.panel}
       className="glass-panel-strong fixed inset-y-0 right-0 z-50 flex w-full max-w-[420px] flex-col border-l border-oa-border shadow-2xl"
       role="dialog"
       aria-label="Message thread"
@@ -217,6 +218,6 @@ export function ThreadDrawer({ subject, onClose, onReply }: ThreadDrawerProps) {
           </div>
         </div>
       )}
-    </motion.div>
+    </m.div>
   );
 }

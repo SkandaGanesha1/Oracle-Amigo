@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { motion } from "framer-motion";
+import { motion } from "../primitives/MotionPrimitives";
 import { CheckCircle2, ChevronRight, XCircle } from "lucide-react";
 import { TextShimmer } from "@/components/prompt-kit/text-shimmer";
 import {

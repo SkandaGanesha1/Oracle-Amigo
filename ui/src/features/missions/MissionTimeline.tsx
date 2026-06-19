@@ -1,5 +1,4 @@
 import { useState, useMemo } from "react";
-import { motion } from "framer-motion";
 import { Search, FileText, ShieldCheck, ArrowRight, CheckCircle2, Loader2, XCircle, Bot, User, Globe, Clock, Ban, ExternalLink, ChevronDown, ChevronRight, MessageSquarePlus } from "lucide-react";
 import { useConversationMessages } from "../../hooks/queries";
 import { AgenticReasoning } from "../../components/agentic-ai/AgenticReasoning";
@@ -8,6 +7,7 @@ import { ApprovalCard } from "../../features/approvals/ApprovalCard";
 import { FileReceiptMessage } from "../../components/agentic-ai/FileReceiptMessage";
 import { MissionThreadPanel } from "./MissionThreadPanel";
 import type { TimelineMessage, AgentStatusMessage, FileCandidateApprovalMessage, FileReceiptMessage as FileReceiptMessageType } from "../../api/types";
+import { AnimatePresence, m, missionStepVariants, motionTransition } from "../../components/primitives/MotionPrimitives";
 
 interface MissionTimelineProps {
   conversationId: string | null;
@@ -260,11 +260,14 @@ export function MissionTimeline({ conversationId, onSelectApproval }: MissionTim
               };
 
               return (
-                <motion.div
+                <m.div
+                  layout="position"
                   key={step.id}
-                  initial={{ opacity: 0, x: -8 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  transition={{ duration: 0.2, delay: index * 0.03 }}
+                  variants={missionStepVariants}
+                  initial="initial"
+                  animate="animate"
+                  exit="exit"
+                  transition={{ ...motionTransition.quick, delay: index * 0.02 }}
                   className="relative flex gap-4 pb-3"
                 >
                   <div className="relative z-10 flex h-10 w-10 shrink-0 items-center justify-center rounded-full border-2 border-oa-border bg-oa-surface">
@@ -295,32 +298,41 @@ export function MissionTimeline({ conversationId, onSelectApproval }: MissionTim
                       </div>
                     </button>
 
-                    {isExpanded && (
-                      <div className="mt-2 pl-2 space-y-2">
-                        {step.kind === "approval" && (
-                          <ApprovalCard card={(step.message as FileCandidateApprovalMessage).card} />
-                        )}
-                        {step.kind === "receipt" && (
-                          <FileReceiptMessage message={step.message as FileReceiptMessageType} />
-                        )}
-                        {step.kind === "reasoning" && step.message.kind === "agent_status" && (
-                          <>
-                            <div className="rounded-lg border border-oa-border bg-oa-surface p-3">
-                              <p className="text-xs text-oa-text-secondary">{((step.message) as AgentStatusMessage).status_text}</p>
+                    <AnimatePresence initial={false}>
+                      {isExpanded && (
+                        <m.div
+                          layout
+                          initial={{ opacity: 0, y: -4 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, y: -4 }}
+                          transition={motionTransition.quick}
+                          className="mt-2 space-y-2 pl-2"
+                        >
+                          {step.kind === "approval" && (
+                            <ApprovalCard card={(step.message as FileCandidateApprovalMessage).card} />
+                          )}
+                          {step.kind === "receipt" && (
+                            <FileReceiptMessage message={step.message as FileReceiptMessageType} />
+                          )}
+                          {step.kind === "reasoning" && step.message.kind === "agent_status" && (
+                            <>
+                              <div className="rounded-lg border border-oa-border bg-oa-surface p-3">
+                                <p className="text-xs text-oa-text-secondary">{((step.message) as AgentStatusMessage).status_text}</p>
+                              </div>
+                              <ReasoningFromDetails details={(step.message as AgentStatusMessage).details} />
+                              <ToolCallsFromDetails details={(step.message as AgentStatusMessage).details} />
+                            </>
+                          )}
+                          {step.kind === "request" && (
+                            <div className="rounded-lg border border-oa-border bg-oa-bg-elevated p-3">
+                              <p className="text-xs text-oa-text">{((step.message) as { text?: string }).text}</p>
                             </div>
-                            <ReasoningFromDetails details={(step.message as AgentStatusMessage).details} />
-                            <ToolCallsFromDetails details={(step.message as AgentStatusMessage).details} />
-                          </>
-                        )}
-                        {step.kind === "request" && (
-                          <div className="rounded-lg border border-oa-border bg-oa-bg-elevated p-3">
-                            <p className="text-xs text-oa-text">{((step.message) as { text?: string }).text}</p>
-                          </div>
-                        )}
-                      </div>
-                    )}
+                          )}
+                        </m.div>
+                      )}
+                    </AnimatePresence>
                   </div>
-                </motion.div>
+                </m.div>
               );
             })}
           </div>

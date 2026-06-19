@@ -52,6 +52,7 @@ export function FileReceiptMessage({ message }: FileReceiptMessageProps) {
     name: message.file_name,
     mimeType: "file",
     sizeLabel: formatSize(message.size_bytes),
+    matchLabel: message.hash_verified ? "Stored locally" : "Integrity check failed",
     status: message.hash_verified ? "received" : "blocked",
     verified: message.hash_verified,
   };
@@ -66,18 +67,15 @@ export function FileReceiptMessage({ message }: FileReceiptMessageProps) {
             {message.hash_verified ? "Hash verified and stored locally" : "Hash verification needs review"}
           </p>
         </div>
-        <span className={`oa-doc-chip ${message.hash_verified ? "success" : "warning"}`}>
-          {message.hash_verified ? "Verified" : "Needs review"}
-        </span>
       </div>
 
       <DocumentPreviewCard
         file={file}
         secondaryAction={<PreviewButton />}
         primaryAction={
-          <button type="button" onClick={handleNavigateAudit} className="oa-doc-action">
+          <button type="button" onClick={handleNavigateAudit} className="oa-doc-action" aria-label="View audit for received file">
             <ExternalLink size={16} aria-hidden="true" />
-            Audit entry
+            View audit
           </button>
         }
       />

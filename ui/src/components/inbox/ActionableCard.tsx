@@ -1,4 +1,4 @@
-import { motion } from "framer-motion";
+import { motion } from "../primitives/MotionPrimitives";
 import { AlertTriangle, CheckCircle2, Eye, ShieldAlert } from "lucide-react";
 import type { ActionableInboxItem } from "../../types/agentic";
 

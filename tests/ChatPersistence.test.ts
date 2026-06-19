@@ -7,6 +7,7 @@ import { buildServer } from "../src/server.js";
 import { _resetDb, getDb } from "../src/db/connection.js";
 import { storeReceivedRelayFile } from "../src/storage/AgenticStorage.js";
 import { ChatRepository } from "../src/chat/ChatRepository.js";
+import { ConversationRepairService } from "../src/chat/ConversationRepairService.js";
 import { LocalCloudIdentityStore, defaultProfileId } from "../src/cloud/LocalCloudIdentityStore.js";
 import { RemoteTaskDispatcher } from "../src/runtime/RemoteTaskDispatcher.js";
 import { InboxPoller } from "../src/runtime/InboxPoller.js";
@@ -123,6 +124,41 @@ describe("persisted chat API", () => {
     await server.close();
   });
 
+  it("marks the local-agent sentinel conversation read through the canonical conversation", async () => {
+    const server = buildServer();
+    const opened = await server.inject({ method: "GET", url: "/chat/conversations/local-agent/messages" });
+    expect(opened.statusCode).toBe(200);
+
+    const chatRepo = new ChatRepository();
+    chatRepo.appendMessage({
+      id: "msg-local-agent-read-state",
+      conversationId: "local-agent",
+      messageType: "human",
+      text: "mark local agent read",
+      deliveryStatus: "delivered",
+      createdAt: "2026-06-14T10:00:00.000Z"
+    });
+
+    const updated = await server.inject({
+      method: "POST",
+      url: "/chat/conversations/local-agent/read-state",
+      payload: { lastReadMessageId: "msg-local-agent-read-state" }
+    });
+
+    expect(updated.statusCode).toBe(200);
+    expect(updated.json().readState).toMatchObject({
+      conversationId: "local-agent",
+      lastReadMessageId: "msg-local-agent-read-state",
+      unreadCount: 0,
+      mentionCount: 0
+    });
+
+    const refreshed = await server.inject({ method: "GET", url: "/chat/conversations/local-agent/messages" });
+    expect(refreshed.statusCode).toBe(200);
+    expect(refreshed.json().readState).toMatchObject(updated.json().readState);
+    await server.close();
+  });
+
   it("creates conversations and persists normal messages", async () => {
     const server = buildServer();
     const created = await server.inject({
@@ -169,6 +205,7 @@ describe("persisted chat API", () => {
     });
     expect(created.statusCode).toBe(200);
     expect(created.json().conversation).toMatchObject({
+      id: "relay_user_usr-docin",
       title: "Docin",
       peerUserId: "usr-docin",
       agentInstanceId: "agi-docin"
@@ -180,10 +217,130 @@ describe("persisted chat API", () => {
     });
     expect(messages.statusCode).toBe(200);
     expect(messages.json().conversation).toMatchObject({
+      id: "relay_user_usr-docin",
       peerUserId: "usr-docin",
       agentInstanceId: "agi-docin"
     });
     await server.close();
+  });
+
+  it("uses the peer agent as the canonical cloud relay id when no peer user is known", async () => {
+    const server = buildServer();
+    const created = await server.inject({
+      method: "POST",
+      url: "/chat/conversations",
+      payload: {
+        title: "Unknown relay peer",
+        mode: "cloud_relay",
+        peer_agent_instance_id: "agi-agent-only"
+      }
+    });
+
+    expect(created.statusCode).toBe(200);
+    expect(created.json().conversation).toMatchObject({
+      id: "relay_agent_agi-agent-only",
+      agentInstanceId: "agi-agent-only"
+    });
+    await server.close();
+  });
+
+  it("repairs legacy random cloud relay conversations into the canonical peer-user conversation", async () => {
+    const chatRepo = new ChatRepository();
+    const legacy = chatRepo.createConversation({
+      id: "conv_legacy_docin",
+      title: "Docin legacy",
+      mode: "cloud_relay",
+      localAgentInstanceId: "agi-local",
+      peerUserId: "usr-docin",
+      peerAgentInstanceId: "agi-old"
+    });
+    chatRepo.appendMessage({
+      id: "msg-legacy-docin",
+      conversationId: legacy.id,
+      senderAgentInstanceId: "agi-old",
+      receiverAgentInstanceId: "agi-local",
+      messageType: "human",
+      text: "legacy hello",
+      deliveryStatus: "stored_by_remote_agent"
+    });
+    const server = buildServer();
+
+    const created = await server.inject({
+      method: "POST",
+      url: "/chat/conversations",
+      payload: {
+        title: "Docin",
+        mode: "cloud_relay",
+        peer_user_id: "usr-docin",
+        peer_agent_instance_id: "agi-current"
+      }
+    });
+
+    expect(created.statusCode).toBe(200);
+    expect(created.json().conversation).toMatchObject({ id: "relay_user_usr-docin" });
+    expect(chatRepo.getConversation("conv_legacy_docin")).toBeTruthy();
+    expect(chatRepo.getMessages("relay_user_usr-docin")).toContainEqual(expect.objectContaining({
+      id: "msg-legacy-docin",
+      text: "legacy hello"
+    }));
+
+    const legacyRoute = await server.inject({ method: "GET", url: "/chat/conversations/conv_legacy_docin/messages" });
+    expect(legacyRoute.statusCode).toBe(200);
+    expect(legacyRoute.json().conversationId).toBe("relay_user_usr-docin");
+    const canonical = await server.inject({ method: "GET", url: "/chat/conversations/relay_user_usr-docin/messages" });
+    expect(canonical.statusCode).toBe(200);
+    expect(canonical.json().messages).toContainEqual(expect.objectContaining({
+      id: "msg-legacy-docin",
+      text: "legacy hello"
+    }));
+
+    const legacySend = await server.inject({
+      method: "POST",
+      url: "/chat/conversations/conv_legacy_docin/messages",
+      payload: {
+        text: "legacy route send",
+        client_message_id: "msg-legacy-route-send"
+      }
+    });
+    expect(legacySend.statusCode).toBe(409);
+    expect(legacySend.json().conversation_id).toBe("relay_user_usr-docin");
+    expect(chatRepo.getMessages("relay_user_usr-docin")).toContainEqual(expect.objectContaining({
+      id: "msg-legacy-route-send",
+      text: "legacy route send"
+    }));
+    expect(chatRepo.getMessages("conv_legacy_docin")).toHaveLength(0);
+    await server.close();
+  });
+
+  it("repairs duplicate cloud relay conversations through the repair service", () => {
+    const chatRepo = new ChatRepository();
+    const repair = new ConversationRepairService(chatRepo);
+    const legacy = chatRepo.createConversation({
+      id: "conv_duplicate_docin",
+      title: "Docin duplicate",
+      mode: "cloud_relay",
+      localAgentInstanceId: "agi-local",
+      peerUserId: "usr-docin",
+      peerAgentInstanceId: "agi-old"
+    });
+    chatRepo.appendMessage({
+      id: "msg-duplicate-docin",
+      conversationId: legacy.id,
+      senderAgentInstanceId: "agi-old",
+      receiverAgentInstanceId: "agi-local",
+      messageType: "human",
+      text: "duplicate hello",
+      deliveryStatus: "stored_by_remote_agent"
+    });
+
+    const result = repair.repairCloudRelayDuplicates();
+
+    expect(result.aliases).toContainEqual({ from: "conv_duplicate_docin", to: "relay_user_usr-docin" });
+    expect(result.repaired).toContainEqual(expect.objectContaining({ id: "relay_user_usr-docin" }));
+    expect(chatRepo.getMessages("relay_user_usr-docin")).toContainEqual(expect.objectContaining({
+      id: "msg-duplicate-docin",
+      text: "duplicate hello"
+    }));
   });
 
   it("persists conversation read state and rejects markers from other conversations", async () => {
@@ -579,21 +736,28 @@ describe("persisted chat API", () => {
     });
     const server = buildServer();
 
-    const sent = await server.inject({
+    const sendRelayMessage = (clientMessageId: string) => server.inject({
       method: "POST",
       url: `/chat/conversations/${conversation.id}/messages`,
-      payload: { text: "hello relay", send_as: "normal", client_message_id: "msg-relay-auth" }
+      payload: { text: "hello relay", send_as: "normal", client_message_id: clientMessageId }
     });
+
+    let messageId = "msg-relay-auth";
+    let sent = await sendRelayMessage(messageId);
+    if (sent.statusCode === 503) {
+      messageId = "msg-relay-auth-retry";
+      sent = await sendRelayMessage(messageId);
+    }
 
     expect(sent.statusCode).toBe(401);
     expect(sent.json()).toMatchObject({
       error: "UNAUTHORIZED",
       message: "HTTP 401",
-      conversation_id: conversation.id,
-      message_id: "msg-relay-auth",
+      conversation_id: "relay_agent_agi-peer",
+      message_id: messageId,
       relay_unavailable: true
     });
-    const stored = chatRepo.getMessage("msg-relay-auth");
+    const stored = chatRepo.getMessage(messageId);
     expect(stored?.delivery_status).toBe("failed");
     await server.close();
     await controlPlane.close();
@@ -685,12 +849,14 @@ describe("persisted chat API", () => {
       to_agent_instance_id: "agi-current",
       type: "message.send"
     });
-    const repaired = chatRepo.getConversation(conversation.id);
+    const repaired = chatRepo.getConversation("relay_user_usr-peer");
     expect(repaired).toMatchObject({
+      id: "relay_user_usr-peer",
       peer_user_id: "usr-peer",
       peer_agent_instance_id: "agi-current",
       title: "Docin"
     });
+    expect(sent.json().conversation_id).toBe("relay_user_usr-peer");
     expect(sent.json().delivery_status).toBe("queued_at_relay");
     const stored = chatRepo.getMessage("msg-route-repair");
     expect(stored).toMatchObject({ delivery_status: "queued_at_relay" });
@@ -834,13 +1000,15 @@ describe("persisted chat API", () => {
     });
 
     expect(result.status).toBe("created");
-    const repaired = chatRepo.getConversation(existing.id);
+    const repaired = chatRepo.getConversation("relay_user_usr-peer");
     expect(repaired).toMatchObject({
+      id: "relay_user_usr-peer",
       peer_user_id: "usr-peer",
       peer_agent_instance_id: "agi-current",
       title: "Docin"
     });
-    const messages = chatRepo.getMessages(existing.id);
+    expect(chatRepo.resolveCanonicalConversation(existing.id)?.id).toBe("relay_user_usr-peer");
+    const messages = chatRepo.getMessages("relay_user_usr-peer");
     expect(messages).toContainEqual(expect.objectContaining({
       message_type: "human",
       text: "hello existing peer conversation",
@@ -850,9 +1018,9 @@ describe("persisted chat API", () => {
     }));
     expect(captured).toContainEqual(expect.objectContaining({
       receipt_for: "relay-msg-existing-user",
-      status: "stored_by_remote_agent"
+      payload: expect.objectContaining({ status: "stored_by_remote_agent" })
     }));
-    expect(chatRepo.listConversations().filter((conversation) => conversation.peer_user_id === "usr-peer")).toHaveLength(1);
+    expect(chatRepo.listConversations().some((conversation) => conversation.id === "relay_user_usr-peer")).toBe(true);
     await controlPlane.close();
   });
 

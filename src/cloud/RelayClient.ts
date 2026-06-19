@@ -11,8 +11,10 @@ export interface RelaySendRequest {
 
 export interface RelaySendResult {
   relay_task_id: string;
+  relay_message_id?: string;
   status: string;
   accepted_at: string;
+  queued_at?: string | null;
 }
 
 export interface RelayInboxMessage {
@@ -43,11 +45,32 @@ export interface RelayTaskStatusResult {
   a2aTaskId: string;
   type: string;
   payloadJson?: string;
-  status: "pending" | "delivered" | "completed" | "cancelled" | "expired" | string;
+  status:
+    | "accepted"
+    | "queued"
+    | "delivered_to_remote_agent"
+    | "stored_by_remote_agent"
+    | "waiting_approval"
+    | "approved"
+    | "transfer_started"
+    | "completed"
+    | "failed"
+    | "expired"
+    | string;
   createdAt?: string;
   updatedAt?: string;
+  acceptedAt?: string | null;
+  queuedAt?: string | null;
   deliveredAt: string | null;
+  storedAt?: string | null;
   completedAt: string | null;
+  failedAt?: string | null;
+  expiredAt?: string | null;
+  expiresAt?: string | null;
+  attemptCount?: number;
+  maxAttempts?: number;
+  lastError?: string | null;
+  nextRetryAt?: string | null;
   response: Record<string, unknown> | null;
 }
 
@@ -67,12 +90,12 @@ export class RelayClient {
     return { items: r.items ?? [], next_cursor: null, server_time: r.server_time };
   }
 
-  ack(relayTaskId: string, deviceToken: string): Promise<{ ok: boolean }> {
-    return this.cp.postJson<{ ok: boolean }>(`/v1/relay/a2a/${encodeURIComponent(relayTaskId)}/ack`, {}, deviceToken);
+  ack(relayTaskId: string, deviceToken: string): Promise<{ ok: boolean; status?: string }> {
+    return this.cp.postJson<{ ok: boolean; status?: string }>(`/v1/relay/a2a/${encodeURIComponent(relayTaskId)}/ack`, {}, deviceToken);
   }
 
-  respond(relayTaskId: string, response: Record<string, unknown>, deviceToken: string): Promise<{ ok: boolean }> {
-    return this.cp.postJson<{ ok: boolean }>(`/v1/relay/a2a/${encodeURIComponent(relayTaskId)}/respond`, response, deviceToken);
+  respond(relayTaskId: string, response: Record<string, unknown>, deviceToken: string): Promise<{ ok: boolean; status?: string }> {
+    return this.cp.postJson<{ ok: boolean; status?: string }>(`/v1/relay/a2a/${encodeURIComponent(relayTaskId)}/respond`, { payload: response }, deviceToken);
   }
 
   getTask(relayTaskId: string, deviceToken: string): Promise<RelayTaskStatusResult> {

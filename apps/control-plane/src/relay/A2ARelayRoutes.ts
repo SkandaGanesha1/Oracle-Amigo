@@ -5,7 +5,7 @@ import {
   ackRelay, fetchInbox, getRelayTask, respondRelay, sendRelay
 } from "./A2ARelayService.js";
 import { loadConfig } from "./../config.js";
-import { getDb } from "../db/connection.js";
+import { getControlPlaneStore } from "../db/connection.js";
 import { toCloudAgentCard } from "../enrollment/CloudAgentCard.js";
 
 const SendSchema = z.object({
@@ -13,11 +13,16 @@ const SendSchema = z.object({
   a2a_task_id: z.string().min(1).max(120),
   type: z.string().min(1).max(80),
   payload: z.record(z.unknown()),
-  idempotency_key: z.string().min(1).max(200).optional()
+  idempotency_key: z.string().min(1).max(200).optional(),
+  ttl_seconds: z.number().int().min(60).optional()
 });
 
 const RespondSchema = z.object({
   payload: z.record(z.unknown())
+});
+
+const InboxQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(500).optional()
 });
 
 export async function registerA2ARelayRoutes(app: FastifyInstance): Promise<void> {
@@ -27,10 +32,9 @@ export async function registerA2ARelayRoutes(app: FastifyInstance): Promise<void
       return;
     }
     const { agent_instance_id } = req.params as { agent_instance_id: string };
-    const db = getDb();
-    const row = db.prepare(`
-      SELECT * FROM agent_instances WHERE org_id = ? AND id = ?
-    `).get(req.deviceContext.orgId, agent_instance_id) as Record<string, unknown> | undefined;
+    const row = await getControlPlaneStore().one(`
+      SELECT * FROM agent_instances WHERE org_id = $1 AND id = $2
+    `, [req.deviceContext.orgId, agent_instance_id]);
     if (!row) {
       reply.code(404).send({ error: "NOT_FOUND", message: "Agent instance not found" });
       return;
@@ -57,14 +61,15 @@ export async function registerA2ARelayRoutes(app: FastifyInstance): Promise<void
     }
     try {
       const body = SendSchema.parse(req.body);
-      const result = sendRelay({
+      const result = await sendRelay({
         orgId: req.deviceContext.orgId,
         fromAgentInstanceId: req.deviceContext.agentInstanceId,
         toAgentInstanceId: body.to_agent_instance_id as never,
         a2aTaskId: body.a2a_task_id,
         type: body.type,
         payload: body.payload,
-        idempotencyKey: body.idempotency_key
+        idempotencyKey: body.idempotency_key,
+        ttlSeconds: body.ttl_seconds
       });
       reply.send(result);
     } catch (err) {
@@ -82,10 +87,15 @@ export async function registerA2ARelayRoutes(app: FastifyInstance): Promise<void
       return;
     }
     const cfg = loadConfig();
-    const items = fetchInbox({
+    const parsedQuery = InboxQuerySchema.safeParse(req.query);
+    if (!parsedQuery.success) {
+      reply.code(400).send({ error: "VALIDATION_ERROR", issues: parsedQuery.error.issues });
+      return;
+    }
+    const items = await fetchInbox({
       orgId: req.deviceContext.orgId,
       toAgentInstanceId: req.deviceContext.agentInstanceId,
-      maxBatch: cfg.RELAY_POLL_MAX_BATCH,
+      maxBatch: parsedQuery.data.limit ?? cfg.RELAY_POLL_MAX_BATCH,
       markDelivered: true
     });
     reply.send({ items, server_time: new Date().toISOString() });
@@ -98,7 +108,7 @@ export async function registerA2ARelayRoutes(app: FastifyInstance): Promise<void
     }
     const { relay_task_id } = req.params as { relay_task_id: string };
     try {
-      const result = ackRelay(req.deviceContext.orgId, relay_task_id, req.deviceContext.agentInstanceId);
+      const result = await ackRelay(req.deviceContext.orgId, relay_task_id, req.deviceContext.agentInstanceId);
       reply.send(result);
     } catch (err) {
       reply.code(400).send({ error: "RELAY_ACK_FAILED", message: err instanceof Error ? err.message : String(err) });
@@ -113,7 +123,7 @@ export async function registerA2ARelayRoutes(app: FastifyInstance): Promise<void
     const { relay_task_id } = req.params as { relay_task_id: string };
     try {
       const body = RespondSchema.parse(req.body);
-      const result = respondRelay(
+      const result = await respondRelay(
         req.deviceContext.orgId,
         relay_task_id,
         req.deviceContext.agentInstanceId,
@@ -136,7 +146,7 @@ export async function registerA2ARelayRoutes(app: FastifyInstance): Promise<void
     }
     const { relay_task_id } = req.params as { relay_task_id: string };
     try {
-      const task = getRelayTask(req.deviceContext.orgId, relay_task_id, req.deviceContext.agentInstanceId);
+      const task = await getRelayTask(req.deviceContext.orgId, relay_task_id, req.deviceContext.agentInstanceId);
       if (!task) {
         reply.code(404).send({ error: "NOT_FOUND" });
         return;

@@ -1,4 +1,3 @@
-import { motion } from "framer-motion";
 import { useNavigate } from "react-router-dom";
 import {
   Bot, ShieldCheck, FileText,
@@ -6,6 +5,7 @@ import {
 } from "lucide-react";
 import { useSection, type AppSection } from "./SectionContext";
 import { NotificationCenter } from "../components/notifications/NotificationCenter";
+import { motion, motionTransition } from "../components/primitives/MotionPrimitives";
 
 const sections: { id: AppSection; label: string; icon: typeof Bot }[] = [
   { id: "agents", label: "Agents", icon: Bot },
@@ -42,7 +42,7 @@ export function NavBar() {
                 <motion.span
                   layoutId="active-nav-pill"
                   className="absolute inset-1 rounded-md border border-oa-border-strong bg-oa-surface/80 shadow-[0_8px_24px_rgba(0,0,0,0.22)]"
-                  transition={{ duration: 0.18 }}
+                  transition={motionTransition.quick}
                 />
               )}
               <span className="relative flex items-center gap-1.5">

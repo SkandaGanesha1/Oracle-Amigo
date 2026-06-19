@@ -40,4 +40,23 @@ describe("AuthScreen prop interfaces", () => {
     expect(source).toContain("password");
     expect(source).toContain("email");
   });
+
+  it("auth pages use direct email/password flow without Google, control-plane URL, or idle readiness copy", () => {
+    const fs = require("fs");
+    const path = require("path");
+    const auth = fs.readFileSync(path.resolve(__dirname, "../features/auth/AuthScreen.tsx"), "utf8");
+    const login = fs.readFileSync(path.resolve(__dirname, "../features/auth/LoginForm.tsx"), "utf8");
+    const signup = fs.readFileSync(path.resolve(__dirname, "../features/auth/SignupForm.tsx"), "utf8");
+    const schemas = fs.readFileSync(path.resolve(__dirname, "../features/auth/schemas.ts"), "utf8");
+    const combined = `${auth}\n${login}\n${signup}\n${schemas}`;
+
+    expect(auth).toContain('navigate(hasDeviceSession ? "/inbox" : "/enroll"');
+    expect(login).toContain("loginSchema.safeParse({ email: email.trim(), password })");
+    expect(signup).toContain("signupSchema.safeParse({ email: email.trim(), password, displayName: displayName.trim() })");
+    expect(combined).not.toContain("ControlPlaneUrlField");
+    expect(combined).not.toContain("controlPlaneUrl");
+    expect(combined).not.toContain("control_plane_url");
+    expect(combined).not.toContain("Ready to connect");
+    expect(combined).not.toContain("Google");
+  });
 });

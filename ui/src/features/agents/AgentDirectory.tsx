@@ -1,32 +1,15 @@
-import { useState, useMemo, useCallback } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Search, Wifi, WifiOff, Clock, Shield, Bot, BadgeCheck, BadgeAlert, HardDrive, Tags, Globe, X, ExternalLink, Sparkles } from "lucide-react";
-import { useContacts, useConversations, useDiscoverRegistryAgent, useRegistryAgents, useSkills, useStartConversation, useUpdateRegistryTrust } from "../../hooks/queries";
-import type { Contact, RegistryAgent, RegistryTrustLevel } from "../../api/types";
-
-interface EnrichedContact extends Contact {
-  displayName: string;
-  presence: "online" | "offline" | "stale" | "unknown";
-  trustLevel: "verified" | "unverified" | "external";
-  deviceName: string;
-}
-
-function enrichContact(c: Contact): EnrichedContact {
-  const email = c.target_user_id ?? c.requester_user_id ?? "unknown";
-  return {
-    ...c,
-    displayName: email.split("@")[0] ?? email,
-    presence: "online" as const,
-    trustLevel: c.status === "accepted" ? "verified" as const : "unverified" as const,
-    deviceName: "Remote agent",
-  };
-}
+import { BadgeAlert, BadgeCheck, Bot, Clock, ExternalLink, Globe, HardDrive, Search, Shield, Sparkles, Tags, Wifi, WifiOff, X, type LucideIcon } from "lucide-react";
+import { useAgentProfiles, useDiscoverRegistryAgent, useRegistryAgents, useSkills, useStartConversation, useUpdateRegistryTrust } from "../../hooks/queries";
+import type { AgentProfileDetail, RegistryAgent, RegistryTrustLevel } from "../../api/types";
 
 const trustOptions = [
   { value: "all", label: "All" },
   { value: "verified", label: "Verified" },
   { value: "unverified", label: "Unverified" },
   { value: "external", label: "External" },
+  { value: "blocked", label: "Blocked" },
 ] as const;
 
 const presenceOptions = [
@@ -47,13 +30,21 @@ const trustConfig: Record<string, { icon: typeof BadgeCheck; color: string; labe
   verified: { icon: BadgeCheck, color: "text-oa-green", label: "Verified" },
   unverified: { icon: BadgeAlert, color: "text-oa-amber", label: "Unverified" },
   external: { icon: BadgeAlert, color: "text-oa-red", label: "External" },
+  blocked: { icon: BadgeAlert, color: "text-oa-red", label: "Blocked" },
+  local: { icon: BadgeCheck, color: "text-oa-blue", label: "Local" },
 };
 
-function AgentCard({ agent, onOpen, onSelect }: { agent: EnrichedContact; onOpen?: (agent: EnrichedContact) => void; onSelect?: (agent: EnrichedContact) => void }) {
+interface AgentDirectoryProps {
+  onSelectAgent?: (agentId: string) => void;
+}
+
+function AgentCard({ agent, onOpen, onSelect }: { agent: AgentProfileDetail; onOpen: (agent: AgentProfileDetail) => void; onSelect?: (agent: AgentProfileDetail) => void }) {
   const pc = presenceConfig[agent.presence] ?? presenceConfig.unknown;
   const PresenceIcon = pc.icon;
   const tc = trustConfig[agent.trustLevel] ?? trustConfig.unverified;
   const TrustIcon = tc.icon;
+  const subtitle = agent.email ?? agent.userId ?? agent.agentInstanceId ?? agent.registryDid ?? agent.id;
+  const canOpen = Boolean(agent.conversationId || agent.userId || agent.agentInstanceId);
 
   return (
     <div className="group rounded-xl border border-oa-border bg-oa-surface transition hover:border-oa-border-strong">
@@ -64,10 +55,10 @@ function AgentCard({ agent, onOpen, onSelect }: { agent: EnrichedContact; onOpen
         <div className="min-w-0 flex-1">
           <div className="flex items-center justify-between gap-2">
             <div className="min-w-0">
-              <h3 className="text-sm font-semibold text-oa-text truncate">{agent.displayName}</h3>
-              <p className="text-[10px] text-oa-text-muted truncate">{agent.target_user_id}</p>
+              <h3 className="truncate text-sm font-semibold text-oa-text">{agent.displayName}</h3>
+              <p className="truncate text-[10px] text-oa-text-muted">{subtitle}</p>
             </div>
-            <div className="flex items-center gap-1.5 shrink-0">
+            <div className="flex shrink-0 items-center gap-1.5">
               <span className={`inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[9px] font-medium ${tc.color} bg-current/10`}>
                 <TrustIcon className="h-3 w-3" />
                 {tc.label}
@@ -78,42 +69,55 @@ function AgentCard({ agent, onOpen, onSelect }: { agent: EnrichedContact; onOpen
               </span>
             </div>
           </div>
-          <div className="mt-2 flex items-center gap-3 text-[10px] text-oa-text-muted">
+          <div className="mt-2 flex flex-wrap items-center gap-3 text-[10px] text-oa-text-muted">
             <span className="flex items-center gap-1">
               <HardDrive className="h-3 w-3" />
               {agent.deviceName}
             </span>
             <span className="flex items-center gap-1">
               <Globe className="h-3 w-3" />
-              {agent.status}
+              {agent.contactStatus}
             </span>
-          </div>
-          </div>
-          <div className="flex shrink-0 gap-1 opacity-0 transition-opacity group-hover:opacity-100">
-            {agent.target_user_id && (
-              <button
-                type="button"
-                onClick={(e) => { e.stopPropagation(); onOpen?.(agent); }}
-                className="flex min-h-[48px] min-w-[48px] items-center justify-center rounded-lg text-oa-text-muted hover:bg-oa-surface-2 hover:text-oa-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oa-blue focus-visible:ring-offset-2"
-                aria-label="Open chat with agent"
-                title="Open chat"
-              >
-                <ExternalLink className="h-4 w-4" />
-              </button>
+            {agent.lastInteractionAt && (
+              <span className="flex items-center gap-1">
+                <Clock className="h-3 w-3" />
+                {new Date(agent.lastInteractionAt).toLocaleDateString()}
+              </span>
             )}
           </div>
+          {agent.capabilities.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-1">
+              {agent.capabilities.slice(0, 4).map((capability) => (
+                <span key={capability} className="rounded border border-oa-border bg-oa-bg-elevated px-1.5 py-0.5 text-[9px] text-oa-text-muted">
+                  {capability}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+        {canOpen && (
+          <div className="flex shrink-0 gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                onOpen(agent);
+              }}
+              className="flex min-h-[48px] min-w-[48px] items-center justify-center rounded-lg text-oa-text-muted hover:bg-oa-surface-2 hover:text-oa-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oa-blue focus-visible:ring-offset-2"
+              aria-label="Open chat with agent"
+              title="Open chat"
+            >
+              <ExternalLink className="h-4 w-4" />
+            </button>
+          </div>
+        )}
       </button>
     </div>
   );
 }
 
-interface AgentDirectoryProps {
-  onSelectAgent?: (agentId: string) => void;
-}
-
 export function AgentDirectory({ onSelectAgent }: AgentDirectoryProps = {}) {
-  const { data: contactsData, isLoading } = useContacts();
-  const { data: conversationsData } = useConversations();
+  const { data: agents = [], isLoading } = useAgentProfiles();
   const { data: registryData } = useRegistryAgents();
   const { data: skillsData } = useSkills();
   const updateTrust = useUpdateRegistryTrust();
@@ -125,50 +129,30 @@ export function AgentDirectory({ onSelectAgent }: AgentDirectoryProps = {}) {
   const [presenceFilter, setPresenceFilter] = useState("all");
   const [discoverUrl, setDiscoverUrl] = useState("");
 
-  const agents = useMemo<EnrichedContact[]>(() => {
-    if (contactsData?.contacts && contactsData.contacts.length > 0) {
-      return contactsData.contacts.map(enrichContact);
-    }
-    const convs = conversationsData?.conversations ?? [];
-    const seen = new Set<string>();
-    return convs
-      .filter((c) => c.agentInstanceId && !seen.has(c.agentInstanceId) && seen.add(c.agentInstanceId))
-      .map((c) => {
-        const email = c.agentInstanceId ?? "unknown";
-        return {
-          id: c.agentInstanceId ?? crypto.randomUUID(),
-          target_user_id: c.agentInstanceId ?? "",
-          requester_user_id: c.agentInstanceId ?? "",
-          display_name: c.title || (c.agentInstanceId?.slice(0, 12) ?? "Agent"),
-          email: "",
-          status: c.presence === "online" ? "accepted" : "pending",
-          created_at: "",
-          updated_at: "",
-          displayName: c.title || "Agent",
-          presence: c.presence === "online" ? "online" as const : c.presence === "offline" ? "offline" as const : "unknown" as const,
-          trustLevel: "unverified" as const,
-          deviceName: "Remote agent",
-        } as EnrichedContact;
-      });
-  }, [contactsData, conversationsData]);
-
-  const handleSelect = useCallback((agent: EnrichedContact) => {
-    onSelectAgent?.(agent.target_user_id);
+  const handleSelect = useCallback((agent: AgentProfileDetail) => {
+    onSelectAgent?.(agent.id);
   }, [onSelectAgent]);
 
   const filtered = useMemo(() => {
-    return agents.filter((a) => {
-      if (search && !a.displayName.toLowerCase().includes(search.toLowerCase()) && !a.target_user_id.toLowerCase().includes(search.toLowerCase())) return false;
-      if (trustFilter !== "all" && a.trustLevel !== trustFilter) return false;
-      if (presenceFilter !== "all" && a.presence !== presenceFilter) return false;
+    const q = search.toLowerCase();
+    return agents.filter((agent) => {
+      const haystack = `${agent.displayName} ${agent.email ?? ""} ${agent.userId ?? ""} ${agent.agentInstanceId ?? ""} ${agent.registryDid ?? ""}`.toLowerCase();
+      if (q && !haystack.includes(q)) return false;
+      if (trustFilter !== "all" && agent.trustLevel !== trustFilter) return false;
+      if (presenceFilter !== "all" && agent.presence !== presenceFilter) return false;
       return true;
     });
-  }, [agents, search, trustFilter, presenceFilter]);
+  }, [agents, presenceFilter, search, trustFilter]);
 
-  const handleOpen = useCallback(async (agent: EnrichedContact) => {
-    if (!agent.target_user_id) return;
+  const handleOpen = useCallback(async (agent: AgentProfileDetail) => {
+    if (agent.conversationId) {
+      navigate(`/chats/${agent.conversationId}`);
+      return;
+    }
+    if (!agent.userId && !agent.agentInstanceId) return;
     const result = await startConversation.mutateAsync({
-      peer_user_id: agent.target_user_id,
+      peer_user_id: agent.userId,
+      peer_agent_instance_id: agent.agentInstanceId,
       title: agent.displayName,
       mode: "cloud_relay"
     });
@@ -181,8 +165,8 @@ export function AgentDirectory({ onSelectAgent }: AgentDirectoryProps = {}) {
     setDiscoverUrl("");
   }, [discoverAgent, discoverUrl]);
 
-  const onlineCount = agents.filter((a) => a.presence === "online").length;
-  const verifiedCount = agents.filter((a) => a.trustLevel === "verified").length;
+  const onlineCount = agents.filter((agent) => agent.presence === "online").length;
+  const verifiedCount = agents.filter((agent) => agent.trustLevel === "verified" || agent.trustLevel === "local").length;
 
   if (isLoading) {
     return (
@@ -196,7 +180,7 @@ export function AgentDirectory({ onSelectAgent }: AgentDirectoryProps = {}) {
   }
 
   return (
-    <div className="flex flex-1 flex-col gap-4 overflow-y-auto p-6 max-w-6xl">
+    <div className="flex max-w-6xl flex-1 flex-col gap-4 overflow-y-auto p-6">
       <div className="flex flex-col gap-1">
         <h1 className="text-lg font-semibold text-oa-text">Agents</h1>
         <p className="text-sm text-oa-text-muted">
@@ -266,13 +250,13 @@ export function AgentDirectory({ onSelectAgent }: AgentDirectoryProps = {}) {
         </div>
       </div>
 
-      <div className="flex items-center gap-3">
-        <div className="relative flex-1 max-w-md">
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="relative max-w-md flex-1">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-oa-text-muted" />
           <input
             type="text"
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onChange={(event) => setSearch(event.target.value)}
             placeholder="Search agents by name or ID..."
             className="h-10 w-full rounded-lg border border-oa-border bg-oa-surface pl-10 pr-3 text-sm text-oa-text outline-none transition focus:border-oa-blue placeholder:text-oa-text-disabled"
           />
@@ -280,59 +264,27 @@ export function AgentDirectory({ onSelectAgent }: AgentDirectoryProps = {}) {
             <button
               type="button"
               onClick={() => setSearch("")}
-              className="absolute right-2 top-1/2 -translate-y-1/2 flex min-h-[48px] min-w-[48px] items-center justify-center text-oa-text-muted hover:text-oa-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oa-blue"
+              className="absolute right-2 top-1/2 flex min-h-[48px] min-w-[48px] -translate-y-1/2 items-center justify-center text-oa-text-muted hover:text-oa-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oa-blue"
               aria-label="Clear search"
             >
               <X className="h-4 w-4" />
             </button>
           )}
         </div>
-        <div className="flex items-center gap-2">
-          <span className="text-[10px] text-oa-text-muted uppercase tracking-wider">Trust</span>
-          <div className="flex gap-1">
-            {trustOptions.map((opt) => (
-              <button
-                key={opt.value}
-                type="button"
-                onClick={() => setTrustFilter(opt.value)}
-                className={`rounded-md px-2.5 py-1.5 text-[10px] font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oa-blue ${
-                  trustFilter === opt.value ? "bg-oa-blue/20 text-oa-blue" : "text-oa-text-muted hover:bg-oa-surface hover:text-oa-text"
-                }`}
-              >
-                {opt.label}
-              </button>
-            ))}
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="text-[10px] text-oa-text-muted uppercase tracking-wider">Status</span>
-          <div className="flex gap-1">
-            {presenceOptions.map((opt) => (
-              <button
-                key={opt.value}
-                type="button"
-                onClick={() => setPresenceFilter(opt.value)}
-                className={`rounded-md px-2.5 py-1.5 text-[10px] font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oa-blue ${
-                  presenceFilter === opt.value ? "bg-oa-blue/20 text-oa-blue" : "text-oa-text-muted hover:bg-oa-surface hover:text-oa-text"
-                }`}
-              >
-                {opt.label}
-              </button>
-            ))}
-          </div>
-        </div>
+        <FilterGroup label="Trust" value={trustFilter} options={trustOptions} onChange={setTrustFilter} />
+        <FilterGroup label="Status" value={presenceFilter} options={presenceOptions} onChange={setPresenceFilter} />
       </div>
 
       {filtered.length === 0 ? (
         <div className="flex flex-1 items-center justify-center">
-          <div className="flex flex-col items-center gap-3 text-center max-w-sm">
+          <div className="flex max-w-sm flex-col items-center gap-3 text-center">
             <Bot className="h-10 w-10 text-oa-text-muted" />
             <div>
               <p className="text-sm font-medium text-oa-text-muted">
                 {search || trustFilter !== "all" || presenceFilter !== "all" ? "No agents match your filters" : "No agents yet"}
               </p>
-              <p className="text-xs text-oa-text-disabled mt-1">
-                {search || trustFilter !== "all" || presenceFilter !== "all" ? "Try adjusting your search or filters" : "Agent contacts will appear here once you connect with other agents"}
+              <p className="mt-1 text-xs text-oa-text-disabled">
+                {search || trustFilter !== "all" || presenceFilter !== "all" ? "Try adjusting your search or filters" : "Agent contacts, relay conversations, and registry entries will appear here"}
               </p>
             </div>
           </div>
@@ -340,15 +292,32 @@ export function AgentDirectory({ onSelectAgent }: AgentDirectoryProps = {}) {
       ) : (
         <div className="grid gap-2">
           {filtered.map((agent) => (
-            <AgentCard
-              key={agent.id}
-              agent={agent}
-              onOpen={handleOpen}
-              onSelect={handleSelect}
-            />
+            <AgentCard key={agent.id} agent={agent} onOpen={handleOpen} onSelect={handleSelect} />
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+function FilterGroup<T extends string>({ label, value, options, onChange }: { label: string; value: string; options: readonly { value: T; label: string }[]; onChange: (value: T) => void }) {
+  return (
+    <div className="flex items-center gap-2">
+      <span className="text-[10px] uppercase tracking-wider text-oa-text-muted">{label}</span>
+      <div className="flex gap-1">
+        {options.map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            onClick={() => onChange(option.value)}
+            className={`rounded-md px-2.5 py-1.5 text-[10px] font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oa-blue ${
+              value === option.value ? "bg-oa-blue/20 text-oa-blue" : "text-oa-text-muted hover:bg-oa-surface hover:text-oa-text"
+            }`}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }

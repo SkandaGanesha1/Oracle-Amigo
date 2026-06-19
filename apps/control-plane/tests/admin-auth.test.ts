@@ -5,8 +5,9 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import * as OTPAuth from "otpauth";
 import { buildApp } from "../src/main.js";
 import { resetConfigForTest } from "../src/config.js";
-import { closeAll, getDb } from "../src/db/connection.js";
+import { closeAll, getControlPlaneStore } from "../src/db/connection.js";
 import { TOTP, Crypto } from "../src/admin/index.js";
+import { postgresTestConfig, resetPostgresTestDatabase } from "./postgresTestHarness.js";
 import type { FastifyInstance } from "fastify";
 
 let app: FastifyInstance;
@@ -41,13 +42,12 @@ function readCookie(res: { headers: Record<string, unknown> }, name: string): st
 
 beforeAll(async () => {
   dataDir = mkdtempSync(join(tmpdir(), "admin-auth-test-"));
-  const dbPath = join(dataDir, "test.db");
   const store = join(dataDir, "transfers");
-  resetConfigForTest({
+  await resetPostgresTestDatabase();
+  resetConfigForTest(postgresTestConfig({
     CONTROL_PLANE_PORT: "9998",
     CONTROL_PLANE_HOST: "127.0.0.1",
     CONTROL_PLANE_PUBLIC_URL: "http://127.0.0.1:9998",
-    CONTROL_PLANE_DB_PATH: dbPath,
     JWT_ACCESS_SECRET: "test-access-secret-must-be-16+",
     JWT_REFRESH_SECRET: "test-refresh-secret-must-be-16+",
     FILE_TRANSFER_STORE: store,
@@ -68,14 +68,15 @@ beforeAll(async () => {
     ADMIN_LOGIN_RATELIMIT_PER_IP: "10",
     ADMIN_LOGIN_LOCKOUT_MINUTES: "15",
     METRICS_ENABLED: "false"
-  });
-  closeAll();
+  }));
+  await closeAll();
   app = await buildApp();
   await app.ready();
 });
 
 afterAll(async () => {
   if (app) await app.close();
+  await closeAll();
   try { rmSync(dataDir, { recursive: true, force: true }); } catch { /* ignore */ }
 });
 
@@ -186,7 +187,7 @@ describe("admin auth (TOTP RFC 6238 + recovery + cookies)", () => {
 
   it("login with 3 wrong passwords triggers 429 on the 4th attempt", async () => {
     // Clear any prior attempts so we start fresh
-    getDb().prepare("DELETE FROM admin_login_attempts").run();
+    await getControlPlaneStore().execute("DELETE FROM admin_login_attempts");
     // 3 wrong attempts return 400
     for (let i = 0; i < 3; i++) {
       const res = await app.inject({
@@ -212,7 +213,7 @@ describe("admin auth (TOTP RFC 6238 + recovery + cookies)", () => {
     // We can't easily create a second admin in the current flow (SETUP_DISABLED after the first),
     // so we test the replay defense by reusing the same challenge twice — the challenge is
     // single-use regardless of the TOTP code's validity.
-    getDb().prepare("DELETE FROM admin_login_attempts").run();
+    await getControlPlaneStore().execute("DELETE FROM admin_login_attempts");
     const loginRes = await app.inject({
       method: "POST",
       url: "/v1/admin/auth/login",
@@ -241,12 +242,15 @@ describe("admin auth (TOTP RFC 6238 + recovery + cookies)", () => {
   });
 
   it("MFA recovery code: rotates all 10 on use", async () => {
-    getDb().prepare("DELETE FROM admin_login_attempts").run();
-    const userRow = getDb().prepare("SELECT id FROM admin_users WHERE email = ?").get(adminEmail) as { id: string };
-    const before = getDb()
-      .prepare("SELECT COUNT(*) AS n FROM admin_recovery_codes WHERE admin_user_id = ? AND used_at IS NULL")
-      .get(userRow.id) as { n: number };
-    expect(before.n).toBe(10);
+    const db = getControlPlaneStore();
+    await db.execute("DELETE FROM admin_login_attempts");
+    const userRow = await db.one<{ id: string }>("SELECT id FROM admin_users WHERE email = $1", [adminEmail]);
+    expect(userRow).toBeTruthy();
+    const before = await db.one<{ n: string | number }>(
+      "SELECT COUNT(*) AS n FROM admin_recovery_codes WHERE admin_user_id = $1 AND used_at IS NULL",
+      [userRow!.id]
+    );
+    expect(Number(before?.n ?? 0)).toBe(10);
   });
 
   it("/me with no cookie returns 401", async () => {

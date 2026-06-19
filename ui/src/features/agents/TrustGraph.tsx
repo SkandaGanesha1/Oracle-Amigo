@@ -1,7 +1,6 @@
 import { useState, useMemo } from "react";
 import { Shield, ShieldCheck, ShieldOff, Ban, BadgeCheck, BadgeAlert, Globe, ArrowRight, Search, X, Filter, type LucideIcon } from "lucide-react";
-import { useTrustGraph, useContacts } from "../../hooks/queries";
-import type { TrustRelationship } from "../../types";
+import { useTrustGraph } from "../../hooks/queries";
 
 type FilterMode = "all" | "verified" | "blocked" | "pending";
 
@@ -15,12 +14,9 @@ const TRUST_LEVEL_CONFIG: Record<string, { icon: LucideIcon; color: string; bg: 
 
 export function TrustGraph() {
   const { data: relationships = [] } = useTrustGraph();
-  const { data: contactsData } = useContacts();
   const [filter, setFilter] = useState<FilterMode>("all");
   const [search, setSearch] = useState("");
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
-
-  const contacts = contactsData?.contacts ?? [];
 
   const nodes = useMemo(() => {
     const result: Array<{
@@ -34,20 +30,31 @@ export function TrustGraph() {
 
     const seen = new Set<string>();
 
+    if (relationships.length > 0) {
+      const localId = relationships[0]?.localAgentInstanceId ?? "local-agent";
+      result.push({
+        id: localId,
+        label: "Local Agent",
+        trustLevel: "local",
+        type: "local",
+        relationshipCount: relationships.length,
+        capabilities: ["a2a.v1", "file.request", "file.transfer"],
+      });
+      seen.add(localId);
+    }
+
     for (const rel of relationships) {
-      for (const id of [rel.localAgentInstanceId, rel.remoteAgentInstanceId]) {
-        if (!seen.has(id)) {
-          seen.add(id);
-          const contact = contacts.find((c) => c.target_user_id === id || c.requester_user_id === id);
-          result.push({
-            id,
-            label: contact?.target_user_id?.slice(0, 12) ?? id.slice(0, 12),
-            trustLevel: rel.trustLevel ?? "unverified",
-            type: id === rel.localAgentInstanceId ? "local" : "remote",
-            relationshipCount: relationships.filter((r) => r.localAgentInstanceId === id || r.remoteAgentInstanceId === id).length,
-            capabilities: rel.capabilities ?? [],
-          });
-        }
+      const id = rel.remoteAgentInstanceId;
+      if (!seen.has(id)) {
+        seen.add(id);
+        result.push({
+          id,
+          label: rel.remoteAgentName,
+          trustLevel: rel.trustLevel ?? "unverified",
+          type: "remote",
+          relationshipCount: relationships.filter((r) => r.remoteAgentInstanceId === id).length,
+          capabilities: rel.capabilities ?? [],
+        });
       }
     }
 
@@ -63,7 +70,7 @@ export function TrustGraph() {
     }
 
     return result;
-  }, [relationships, contacts]);
+  }, [relationships]);
 
   const filtered = useMemo(() => {
     return nodes.filter((n) => {

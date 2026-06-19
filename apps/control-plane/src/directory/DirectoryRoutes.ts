@@ -12,7 +12,7 @@ export async function registerDirectoryRoutes(app: FastifyInstance): Promise<voi
     }
     const q = (req.query as { q?: string }).q ?? "";
     const limit = Math.min(Number((req.query as { limit?: string }).limit ?? 50), 200);
-    const users = searchUsers(req.authContext.orgId, q, { limit, publicBaseUrl: loadConfig().CONTROL_PLANE_PUBLIC_URL });
+    const users = await searchUsers(req.authContext.orgId, q, { limit, publicBaseUrl: loadConfig().CONTROL_PLANE_PUBLIC_URL });
     reply.send({ users });
   });
 
@@ -22,7 +22,7 @@ export async function registerDirectoryRoutes(app: FastifyInstance): Promise<voi
       return;
     }
     const { user_id } = req.params as { user_id: string };
-    const result = getUserAgents(req.authContext.orgId, user_id, { publicBaseUrl: loadConfig().CONTROL_PLANE_PUBLIC_URL });
+    const result = await getUserAgents(req.authContext.orgId, user_id, { publicBaseUrl: loadConfig().CONTROL_PLANE_PUBLIC_URL });
     if (!result) {
       reply.code(404).send({ error: "NOT_FOUND" });
       return;
@@ -36,7 +36,7 @@ export async function registerDirectoryRoutes(app: FastifyInstance): Promise<voi
       return;
     }
     const { user_id } = req.params as { user_id: string };
-    const result = getUserAgents(req.deviceContext.orgId, user_id, { publicBaseUrl: loadConfig().CONTROL_PLANE_PUBLIC_URL });
+    const result = await getUserAgents(req.deviceContext.orgId, user_id, { publicBaseUrl: loadConfig().CONTROL_PLANE_PUBLIC_URL });
     if (!result) {
       reply.code(404).send({ error: "NOT_FOUND" });
       return;
@@ -50,7 +50,7 @@ export async function registerDirectoryRoutes(app: FastifyInstance): Promise<voi
       return;
     }
     const { agent_instance_id } = z.object({ agent_instance_id: z.string().min(1) }).parse(req.params);
-    const result = getAgentInstance(req.authContext.orgId, agent_instance_id, { publicBaseUrl: loadConfig().CONTROL_PLANE_PUBLIC_URL });
+    const result = await getAgentInstance(req.authContext.orgId, agent_instance_id, { publicBaseUrl: loadConfig().CONTROL_PLANE_PUBLIC_URL });
     if (!result) {
       reply.code(404).send({ error: "NOT_FOUND" });
       return;
@@ -64,7 +64,7 @@ export async function registerDirectoryRoutes(app: FastifyInstance): Promise<voi
       return;
     }
     const { agent_instance_id } = z.object({ agent_instance_id: z.string().min(1) }).parse(req.params);
-    const result = getAgentInstance(req.deviceContext.orgId, agent_instance_id, { publicBaseUrl: loadConfig().CONTROL_PLANE_PUBLIC_URL });
+    const result = await getAgentInstance(req.deviceContext.orgId, agent_instance_id, { publicBaseUrl: loadConfig().CONTROL_PLANE_PUBLIC_URL });
     if (!result) {
       reply.code(404).send({ error: "NOT_FOUND" });
       return;

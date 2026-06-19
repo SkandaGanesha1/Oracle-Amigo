@@ -39,6 +39,45 @@ export interface SseSubscription {
   closeWhen?: (data: unknown) => boolean;
 }
 
+const DEFAULT_INVALIDATION_DEBOUNCE_MS = 1000;
+
+type PendingInvalidation = {
+  timer: number;
+  action: () => void;
+};
+
+class RealtimeInvalidationCoalescer {
+  private pending = new Map<string, PendingInvalidation>();
+
+  invalidate(key: string, action: () => void, debounceMs = DEFAULT_INVALIDATION_DEBOUNCE_MS): void {
+    const existing = this.pending.get(key);
+    if (existing) {
+      existing.action = action;
+      return;
+    }
+    const pending: PendingInvalidation = {
+      action,
+      timer: window.setTimeout(() => {
+        this.pending.delete(key);
+        pending.action();
+      }, debounceMs)
+    };
+    this.pending.set(key, pending);
+  }
+
+  cancel(): void {
+    for (const [key, pending] of this.pending) {
+      window.clearTimeout(pending.timer);
+      this.pending.delete(key);
+    }
+  }
+}
+
+function invalidateQueryWhenIdle(queryClient: QueryClient, queryKey: unknown[]): void {
+  if (queryClient.isFetching({ queryKey }) > 0) return;
+  void queryClient.invalidateQueries({ queryKey });
+}
+
 function normalizeRealtimeEvent(parsed: unknown): RealtimeEvent | null {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
   const record = parsed as Record<string, unknown>;
@@ -76,28 +115,43 @@ function queryKeyFromKind(kind: string): unknown[] {
   if (kind === "transfer_update") return ["files", "received"];
   if (kind === "conversation_update" || kind === "message_created") return ["chat", "conversations"];
   if (kind === "voice_command_update") return ["voice", "commands"];
+  if (kind === "agent_status") return ["agent", "profiles"];
   if (kind === "cloud_status") return ["cloud-status"];
   return ["missions"];
 }
 
-function invalidateRealtimeEvent(queryClient: QueryClient, event: RealtimeEvent): void {
-  void queryClient.invalidateQueries({ queryKey: queryKeyFromKind(event.kind) });
+function invalidateRealtimeEvent(
+  queryClient: QueryClient,
+  event: RealtimeEvent,
+  coalescer: RealtimeInvalidationCoalescer
+): void {
+  const baseKey = queryKeyFromKind(event.kind);
+  coalescer.invalidate(`base:${JSON.stringify(baseKey)}`, () => {
+    invalidateQueryWhenIdle(queryClient, baseKey);
+  });
+  if (event.kind === "agent_status" || event.kind === "cloud_status") {
+    coalescer.invalidate("agent:profiles", () => {
+      invalidateQueryWhenIdle(queryClient, ["agent", "profiles"]);
+    });
+    coalescer.invalidate("trust:graph", () => {
+      invalidateQueryWhenIdle(queryClient, ["trust", "graph"]);
+    });
+  }
   if (event.kind !== "conversation_update" && event.kind !== "message_created") return;
 
   const conversationId = event.payload.conversationId;
-  if (typeof conversationId !== "string" || !conversationId) return;
-  if (conversationId === "*") {
-    void queryClient.invalidateQueries({
-      predicate: (query) =>
-        query.queryKey[0] === "chat" &&
-        query.queryKey[1] === "conversations" &&
-        query.queryKey[3] === "messages"
+  if (typeof conversationId === "string" && conversationId && conversationId !== "*") {
+    coalescer.invalidate(`chat:messages:${conversationId}`, () => {
+      invalidateQueryWhenIdle(queryClient, ["chat", "conversations", conversationId, "messages"]);
     });
     return;
   }
-  void queryClient.invalidateQueries({
-    queryKey: ["chat", "conversations", conversationId, "messages"]
-  });
+
+  if (conversationId === "*" || !conversationId) {
+    if (!conversationId && import.meta.env.DEV) {
+      console.warn("Realtime chat event missing payload.conversationId; invalidating all chat conversation queries.");
+    }
+  }
 }
 
 function sameOriginSseUrl(raw: string, baseUrl: string): string {
@@ -139,6 +193,7 @@ export class SseTransport implements RealtimeTransport {
   kind = "sse" as const;
   private eventSources: EventSource[] = [];
   private fallbackTimers: number[] = [];
+  private invalidations = new RealtimeInvalidationCoalescer();
   private subscriptions: SseSubscription[];
 
   constructor(
@@ -157,12 +212,15 @@ export class SseTransport implements RealtimeTransport {
       this.eventSources = this.subscriptions.map((subscription) => {
         const url = sameOriginSseUrl(subscription.url, baseUrl);
         const eventSource = new EventSource(url);
+        eventSource.onopen = () => {
+          this.stopFallbackPolling();
+        };
         const handleEvent = (event: MessageEvent<string>) => {
           const data = parseSseData(event.data);
           const parsed = typeof data === "string" ? parseRealtimeEvent(data) : normalizeRealtimeEvent(data);
           if (parsed) {
             onEvent?.(parsed);
-            invalidateRealtimeEvent(queryClient, parsed);
+            invalidateRealtimeEvent(queryClient, parsed, this.invalidations);
           }
           if (subscription.queryKey) queryClient.setQueryData(subscription.queryKey, data);
           subscription.hydrate?.(data, queryClient);
@@ -189,13 +247,19 @@ export class SseTransport implements RealtimeTransport {
     this.eventSources = [];
     for (const timer of this.fallbackTimers) window.clearInterval(timer);
     this.fallbackTimers = [];
+    this.invalidations.cancel();
   }
 
   private startFallbackPolling(queryClient: QueryClient): void {
     if (this.fallbackTimers.length > 0) return;
     this.fallbackTimers = this.fallbackPoll.map((item) => window.setInterval(() => {
-      void queryClient.invalidateQueries({ queryKey: item.queryKey });
+      invalidateQueryWhenIdle(queryClient, item.queryKey);
     }, item.intervalMs));
+  }
+
+  private stopFallbackPolling(): void {
+    for (const timer of this.fallbackTimers) window.clearInterval(timer);
+    this.fallbackTimers = [];
   }
 }
 
@@ -204,6 +268,7 @@ export class WebSocketTransport implements RealtimeTransport {
   private ws: WebSocket | null = null;
   private reconnectTimer: number | null = null;
   private fallbackTimers: number[] = [];
+  private invalidations = new RealtimeInvalidationCoalescer();
   private stopped = false;
 
   constructor(
@@ -224,6 +289,7 @@ export class WebSocketTransport implements RealtimeTransport {
     this.ws = null;
     for (const timer of this.fallbackTimers) window.clearInterval(timer);
     this.fallbackTimers = [];
+    this.invalidations.cancel();
   }
 
   private connect(queryClient: QueryClient, onEvent?: (event: RealtimeEvent) => void): void {
@@ -235,12 +301,13 @@ export class WebSocketTransport implements RealtimeTransport {
           window.clearTimeout(this.reconnectTimer);
           this.reconnectTimer = null;
         }
+        this.stopFallbackPolling();
       };
       this.ws.onmessage = (event) => {
         const parsed = parseRealtimeEvent(String(event.data));
         if (parsed) {
           onEvent?.(parsed);
-          invalidateRealtimeEvent(queryClient, parsed);
+          invalidateRealtimeEvent(queryClient, parsed, this.invalidations);
         }
       };
       this.ws.onclose = () => {
@@ -257,8 +324,13 @@ export class WebSocketTransport implements RealtimeTransport {
   private startFallbackPolling(queryClient: QueryClient): void {
     if (this.fallbackTimers.length > 0) return;
     this.fallbackTimers = this.fallbackPoll.map((item) => window.setInterval(() => {
-      void queryClient.invalidateQueries({ queryKey: item.queryKey });
+      invalidateQueryWhenIdle(queryClient, item.queryKey);
     }, item.intervalMs));
+  }
+
+  private stopFallbackPolling(): void {
+    for (const timer of this.fallbackTimers) window.clearInterval(timer);
+    this.fallbackTimers = [];
   }
 }
 

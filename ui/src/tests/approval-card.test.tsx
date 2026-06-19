@@ -29,6 +29,8 @@ describe("ApprovalCard source contract", () => {
     expect(source).toContain("oaVariant=\"reject\"");
     expect(source).toContain("handleApprove");
     expect(source).toContain("handleReject");
+    expect(source).toContain("!isBound");
+    expect(source).toContain("card.is_bound");
   });
 
   it("uses sub-components CandidateFileList, ApprovalRiskHeader, ApprovalTerminalState", () => {
@@ -49,6 +51,9 @@ describe("ApprovalCard props contract", () => {
       "utf8"
     );
     expect(source).toContain("FileCandidateApprovalCard");
+    expect(source).toContain("requester_display_name");
+    expect(source).toContain("target_display_name");
+    expect(source).toContain("low_confidence_candidates");
   });
 });
 

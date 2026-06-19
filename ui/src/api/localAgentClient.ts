@@ -1,3 +1,5 @@
+﻿import { markLocalUiSessionBlocked, markLocalUiSessionReady, markLocalUiSessionRecovering } from "./localUiSessionStore";
+
 export class ApiRequestError extends Error {
   constructor(
     message: string,
@@ -9,7 +11,13 @@ export class ApiRequestError extends Error {
   }
 }
 
+let localSessionRefresh: Promise<void> | null = null;
+
 export async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  return requestWithLocalSessionRecovery<T>(path, init, true);
+}
+
+async function requestWithLocalSessionRecovery<T>(path: string, init: RequestInit | undefined, canRefreshLocalSession: boolean): Promise<T> {
   const hasBody = init?.body != null;
   const headers = withLocalAgentAuth(init?.headers);
   if (hasBody && !headers.has("Content-Type")) {
@@ -19,7 +27,7 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     ...init,
     headers,
-    credentials: "same-origin"
+    credentials: "include"
   });
   if (!response.ok) {
     const details = await readResponseBody(response);
@@ -29,9 +37,17 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
         : details && typeof details === "object" && "error" in details && typeof details.error === "string"
           ? details.error
           : `HTTP ${response.status}`;
+    if (canRefreshLocalSession && isLocalUiSessionUnauthorized(path, response.status, message, details)) {
+      await refreshLocalUiSessionOnce();
+      return requestWithLocalSessionRecovery<T>(path, init, false);
+    }
+    if (!canRefreshLocalSession && isLocalUiSessionUnauthorized(path, response.status, message, details)) {
+      markLocalUiSessionBlocked(message);
+    }
     throw new ApiRequestError(message, response.status, details);
   }
 
+  if (path !== "/local-ui-session") markLocalUiSessionReady();
   return readResponseBody(response) as Promise<T>;
 }
 
@@ -45,6 +61,44 @@ export const localAgentClient = {
 
 export function withLocalAgentAuth(headersInit?: HeadersInit): Headers {
   return new Headers(headersInit);
+}
+
+function isLocalUiSessionUnauthorized(path: string, status: number, message: string, details: unknown): boolean {
+  if (status !== 401 || path === "/local-ui-session") return false;
+  if (!details || typeof details !== "object") return false;
+  const error = "error" in details ? String((details as { error?: unknown }).error ?? "") : "";
+  // Trigger session recovery for any local-agent UNAUTHORIZED response.
+  // This covers: expired session cookie, missing LOCAL_AGENT_API_TOKEN, or
+  // a server restart that invalidated the in-memory session secret.
+  return error === "UNAUTHORIZED";
+}
+
+async function refreshLocalUiSessionOnce(): Promise<void> {
+  if (!localSessionRefresh) {
+    markLocalUiSessionRecovering();
+    localSessionRefresh = fetch("/local-ui-session", { credentials: "include" })
+      .then(async (response) => {
+        if (!response.ok) {
+          const details = await readResponseBody(response);
+          const message =
+            details && typeof details === "object" && "message" in details && typeof details.message === "string"
+              ? details.message
+              : `HTTP ${response.status}`;
+          markLocalUiSessionBlocked(message);
+          throw new ApiRequestError(message, response.status, details);
+        }
+        await readResponseBody(response);
+        markLocalUiSessionReady();
+      })
+      .catch((error) => {
+        markLocalUiSessionBlocked(error instanceof Error ? error.message : "Local UI session refresh failed.");
+        throw error;
+      })
+      .finally(() => {
+        localSessionRefresh = null;
+      });
+  }
+  return localSessionRefresh;
 }
 
 async function readResponseBody(response: Response): Promise<unknown> {

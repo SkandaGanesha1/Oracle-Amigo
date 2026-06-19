@@ -3,6 +3,8 @@ import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { getDb } from "../db/connection.js";
+import { getDefaultSecretStore } from "./secrets/SecretStoreFactory.js";
+import { fromSecretRef, profileSecretPrefix, toSecretRef } from "./secrets/SecretStore.js";
 
 export type LocalIdentity = {
   agentId: string;
@@ -46,6 +48,7 @@ export function generateOrLoadIdentity(displayName = "Local User", dbPath?: stri
 export function resetLocalIdentity(displayName = "Local User", dbPath?: string): LocalIdentity {
   const db = getDb(dbPath);
   const existing = db.prepare("SELECT * FROM local_profiles LIMIT 1").get() as Record<string, string> | undefined;
+  const existingSecretName = existing?.private_key_ref ? fromSecretRef(existing.private_key_ref) : null;
   const identity = createIdentity(existing?.user_display_name ?? displayName, randomUUID(), randomUUID());
   const now = new Date().toISOString();
   if (existing?.id) {
@@ -66,6 +69,7 @@ export function resetLocalIdentity(displayName = "Local User", dbPath?: string):
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `).run(displayName, identity.agentId, identity.deviceId, identity.did, identity.publicKey, identity.privateKeyRef, now, now);
   }
+  if (existingSecretName) getDefaultSecretStore().delete(existingSecretName);
   return identity;
 }
 
@@ -79,13 +83,21 @@ function createIdentity(displayName: string, agentId: string, deviceId: string):
   const pubKeyHex = publicKeyPemToHex(publicKey);
   const did = `did:key:z${base64url(hexToBuffer(pubKeyHex))}`;
 
-  const keyDir = keysDir();
-  mkdirSync(keyDir, { recursive: true });
-  const privateKeyRef = join(keyDir, `${agentId}.pem`);
-  writeFileSync(privateKeyRef, privateKey, { mode: 0o600 });
-  // On non-Windows: enforce strict permissions (TODO: Windows Credential Manager)
-  if (process.platform !== "win32") {
-    try { chmodSync(privateKeyRef, 0o600); } catch { /* ignore */ }
+  const secretStore = getDefaultSecretStore();
+  let privateKeyRef: string;
+  if (secretStore.kind === "file") {
+    const keyDir = keysDir();
+    mkdirSync(keyDir, { recursive: true });
+    privateKeyRef = join(keyDir, `${agentId}.pem`);
+    writeFileSync(privateKeyRef, privateKey, { mode: 0o600 });
+    // On non-Windows: enforce strict permissions.
+    if (process.platform !== "win32") {
+      try { chmodSync(privateKeyRef, 0o600); } catch { /* ignore */ }
+    }
+  } else {
+    const secretName = `${profileSecretPrefix(defaultProfileId())}/identity/${agentId}/private-key`;
+    secretStore.set(secretName, privateKey);
+    privateKeyRef = toSecretRef(secretName);
   }
 
   return { agentId, deviceId, did, publicKey: pubKeyHex, privateKeyRef };
@@ -93,7 +105,17 @@ function createIdentity(displayName: string, agentId: string, deviceId: string):
 
 export function loadPrivateKeyPem(identity: LocalIdentity): string {
   if (identity.privateKeyPem) return identity.privateKeyPem;
+  const secretName = fromSecretRef(identity.privateKeyRef);
+  if (secretName) {
+    const value = getDefaultSecretStore().get(secretName);
+    if (!value) throw new Error("Private key secret not found");
+    return value;
+  }
   return readFileSync(identity.privateKeyRef, "utf8");
+}
+
+function defaultProfileId(): string {
+  return process.env.AGENTIC_PROFILE_ID?.trim() || "default";
 }
 
 function publicKeyPemToHex(pem: string): string {

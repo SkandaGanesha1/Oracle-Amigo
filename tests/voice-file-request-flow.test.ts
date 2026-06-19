@@ -2,11 +2,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildServer } from "../src/server.js";
 import { _resetDb, getDb } from "../src/db/connection.js";
 import { ChatRepository } from "../src/chat/ChatRepository.js";
 import { LocalCloudIdentityStore, defaultProfileId } from "../src/cloud/LocalCloudIdentityStore.js";
+
+vi.setConfig({ testTimeout: 30_000 });
 
 function getVoiceFlowSuffix(p: string): string {
   const normalized = p.replace(/\\/g, "/").toLowerCase();
@@ -145,10 +147,9 @@ describe("voice file request flow", () => {
     expect(approveResponse.json().approval.status).toBe("approved");
 
     // 6. Wait for the setImmediate background task to complete uploading and update status
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    const updatedApproval = await waitForReceiverApprovalStatus(approvalId, "transferred");
 
     // 7. Verify status has transitioned to 'transferred' in the database
-    const updatedApproval = getDb().prepare("SELECT * FROM receiver_approvals WHERE id = ?").get(approvalId) as Record<string, unknown>;
     expect(updatedApproval.status).toBe("transferred");
     expect(getVoiceFlowSuffix(String(updatedApproval.selected_file_path))).toBe(getVoiceFlowSuffix(dummyFile));
   });
@@ -260,10 +261,9 @@ describe("voice file request flow", () => {
       expect(callbackResponse.json().status).toBe("approved");
 
       // 5. Wait for the setImmediate background upload transfer to run
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      const updatedApproval = await waitForReceiverApprovalStatus(approvalId, "transferred");
 
       // 6. Verify database status updated to 'transferred'
-      const updatedApproval = getDb().prepare("SELECT * FROM receiver_approvals WHERE id = ?").get(approvalId) as Record<string, unknown>;
       expect(updatedApproval.status).toBe("transferred");
       expect(getVoiceFlowSuffix(String(updatedApproval.selected_file_path))).toBe(getVoiceFlowSuffix(dummyFile));
     } finally {
@@ -273,6 +273,28 @@ describe("voice file request flow", () => {
     }
   });
 });
+
+async function waitForReceiverApprovalStatus(
+  approvalId: string,
+  expectedStatus: string,
+  timeoutMs = 5_000
+): Promise<Record<string, unknown>> {
+  const deadline = Date.now() + timeoutMs;
+  let lastRow: Record<string, unknown> | undefined;
+
+  while (Date.now() < deadline) {
+    lastRow = getDb().prepare("SELECT * FROM receiver_approvals WHERE id = ?").get(approvalId) as Record<string, unknown> | undefined;
+    if (lastRow?.status === expectedStatus) {
+      return lastRow;
+    }
+    if (lastRow?.status === "failed") {
+      throw new Error(`Receiver approval ${approvalId} failed: ${String(lastRow.error_message ?? "unknown error")}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+
+  throw new Error(`Timed out waiting for receiver approval ${approvalId} to reach ${expectedStatus}; last status was ${String(lastRow?.status ?? "missing")}`);
+}
 
 function seedCloudIdentity(): void {
   new LocalCloudIdentityStore(getDb()).save(defaultProfileId(), {

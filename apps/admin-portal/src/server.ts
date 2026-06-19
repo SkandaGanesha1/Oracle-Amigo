@@ -78,6 +78,32 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
     upstream: cfg.CONTROL_PLANE_URL
   }));
 
+  app.get("/livez", async () => ({
+    status: "ok",
+    service: "oracle-amigo-admin-portal"
+  }));
+
+  app.get("/ready", async (_req, reply) => {
+    try {
+      const upstream = await fetch(new URL("/livez", cfg.CONTROL_PLANE_URL), {
+        signal: AbortSignal.timeout(2_000)
+      });
+      if (!upstream.ok) throw new Error(`control plane returned ${upstream.status}`);
+      return {
+        status: "ready",
+        service: "oracle-amigo-admin-portal",
+        upstream: cfg.CONTROL_PLANE_URL
+      };
+    } catch (err) {
+      app.log.error({ err }, "admin portal readiness check failed");
+      return reply.code(503).send({
+        status: "not_ready",
+        service: "oracle-amigo-admin-portal",
+        upstream: cfg.CONTROL_PLANE_URL
+      });
+    }
+  });
+
   // 1. Reverse-proxy /v1/* to the control plane. Critically: forward request `cookie` header
   // AND the upstream `set-cookie` response header so the session cookie is set/read by the
   // browser even though the origin server lives on a different port. The default

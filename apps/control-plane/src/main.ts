@@ -1,18 +1,19 @@
 import "dotenv/config";
-import { mkdirSync, statSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import Fastify, { type FastifyInstance } from "fastify";
 import cookie from "@fastify/cookie";
 import fastifyMetrics from "fastify-metrics";
 import { loadConfig } from "./config.js";
-import { getDb } from "./db/connection.js";
-import { runMigrations, ensureDefaultOrganization } from "./db/migrations.js";
+import { getControlPlaneStore } from "./db/connection.js";
+import { ensureDefaultOrganization } from "./db/migrations.js";
 import { registerAuthRoutes } from "./auth/AuthRoutes.js";
 import { registerEnrollmentRoutes } from "./enrollment/EnrollmentRoutes.js";
 import { registerDirectoryRoutes } from "./directory/DirectoryRoutes.js";
 import { registerContactsRoutes } from "./contacts/ContactsRoutes.js";
 import { registerPresenceRoutes } from "./presence/PresenceRoutes.js";
 import { registerA2ARelayRoutes } from "./relay/A2ARelayRoutes.js";
+import { expireRelayTasks } from "./relay/A2ARelayService.js";
 import { registerTransferRoutes } from "./transfers/TransferRoutes.js";
 import { registerAdminRoutes } from "./admin/AdminRoutes.js";
 import { registerAdminAuthRoutes } from "./admin/AdminAuthRoutes.js";
@@ -30,17 +31,15 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
     }
   }
   const cfg = loadConfig();
-  // Ensure DB dir exists
-  const db = getDb();
-  runMigrations(db);
-  // Ensure default org exists
-  ensureDefaultOrganization(db, cfg.DEFAULT_ORG_SLUG, "Default Organization");
+  const store = getControlPlaneStore();
+  await store.migrate();
+  await ensureDefaultOrganization(store, cfg.DEFAULT_ORG_SLUG, "Default Organization");
 
   const app = Fastify({ logger: cfg.CONTROL_PLANE_ENV === "production" });
   // Startup banner (visible in dev where Fastify's pino logger is off).
   // eslint-disable-next-line no-console
   console.log(
-    `[control-plane] env=${cfg.CONTROL_PLANE_ENV} db=${cfg.CONTROL_PLANE_DB_PATH} ` +
+    `[control-plane] env=${cfg.CONTROL_PLANE_ENV} db=postgres ` +
     `admin_cookie=${cfg.ADMIN_COOKIE_HOST_PREFIX === "true" ? "__Host-admin_session" : "admin_session"}`,
   );
   // Cookie parsing is required for the admin portal session cookie. No `secret` — the cookie
@@ -91,15 +90,34 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
       help: "Number of active admin sessions",
       ...gaugeOpts
     });
-    const dbSizeGauge = new client.Gauge({
-      name: "control_plane_db_size_bytes",
-      help: "SQLite database file size in bytes",
-      ...gaugeOpts
-    });
     const relayTasksTotal = new client.Gauge({
       name: "control_plane_relay_tasks_total",
       help: "Total relay tasks by status and type",
       labelNames: ["status", "type"],
+      ...gaugeOpts
+    });
+    const relayQueueDepth = new client.Gauge({
+      name: "control_plane_relay_queue_depth",
+      help: "Retry-eligible relay tasks waiting for receiver delivery",
+      labelNames: ["status"],
+      ...gaugeOpts
+    });
+    const relayDeliveryLatency = new client.Gauge({
+      name: "control_plane_relay_delivery_latency_seconds",
+      help: "Average relay delivery latency from queued_at to stored/completed/final state",
+      labelNames: ["status"],
+      ...gaugeOpts
+    });
+    const relayFailedCount = new client.Gauge({
+      name: "control_plane_relay_failed_count",
+      help: "Total relay tasks failed or expired",
+      labelNames: ["status"],
+      ...gaugeOpts
+    });
+    const relayRetryCount = new client.Gauge({
+      name: "control_plane_relay_retry_count",
+      help: "Total relay delivery retry attempts beyond first delivery",
+      labelNames: ["status"],
       ...gaugeOpts
     });
     const fileTransfersTotal = new client.Gauge({
@@ -123,70 +141,96 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
 
     metricsGauges = {
       usersGauge, devicesGauge, presenceOnlineGauge,
-      sessionsActiveGauge, dbSizeGauge,
-      relayTasksTotal, fileTransfersTotal,
+      sessionsActiveGauge,
+      relayTasksTotal, relayQueueDepth, relayDeliveryLatency, relayFailedCount, relayRetryCount, fileTransfersTotal,
       adminLoginsTotal, auditEventsTotal
     };
 
-    // Helper to collect gauge values from SQLite every 60s
-    const collectDbGauges = () => {
+    const collectDbGauges = async () => {
       try {
-        const db = getDb();
-        // Users by status
-        const usersByStatus = db.prepare(
+        const db = getControlPlaneStore();
+        const usersByStatus = await db.query<{ status: string; cnt: string | number }>(
           "SELECT status, COUNT(*) AS cnt FROM users GROUP BY status"
-        ).all() as { status: string; cnt: number }[];
+        );
         for (const row of usersByStatus) {
-          usersGauge.set({ status: row.status }, row.cnt);
+          usersGauge.set({ status: row.status }, Number(row.cnt));
         }
-        // Devices by status
-        const devicesByStatus = db.prepare(
+        const devicesByStatus = await db.query<{ status: string; cnt: string | number }>(
           "SELECT status, COUNT(*) AS cnt FROM devices GROUP BY status"
-        ).all() as { status: string; cnt: number }[];
+        );
         for (const row of devicesByStatus) {
-          devicesGauge.set({ status: row.status }, row.cnt);
+          devicesGauge.set({ status: row.status }, Number(row.cnt));
         }
-        // Online presence
-        const onlineCount = db.prepare(
+        const onlineCount = await db.one<{ cnt: string | number }>(
           "SELECT COUNT(*) AS cnt FROM presence WHERE status = 'online'"
-        ).get() as { cnt: number };
-        presenceOnlineGauge.set(onlineCount.cnt);
-        // Active admin sessions
-        const sessionCount = db.prepare(
-          "SELECT COUNT(*) AS cnt FROM admin_sessions WHERE expires_at > datetime('now')"
-        ).get() as { cnt: number };
-        sessionsActiveGauge.set(sessionCount.cnt);
-        // DB file size
-        try {
-          const stats = statSync(cfg.CONTROL_PLANE_DB_PATH);
-          dbSizeGauge.set(stats.size);
-        } catch { /* ignore if file not found */ }
-        // Tasks by status / type
-        const tasksByStatus = db.prepare(
+        );
+        presenceOnlineGauge.set(Number(onlineCount?.cnt ?? 0));
+        const sessionCount = await db.one<{ cnt: string | number }>(
+          "SELECT COUNT(*) AS cnt FROM admin_sessions WHERE expires_at > now() AND revoked_at IS NULL"
+        );
+        sessionsActiveGauge.set(Number(sessionCount?.cnt ?? 0));
+        const tasksByStatus = await db.query<{ status: string; type: string; cnt: string | number }>(
           "SELECT status, type, COUNT(*) AS cnt FROM relay_tasks GROUP BY status, type"
-        ).all() as { status: string; type: string; cnt: number }[];
+        );
         for (const row of tasksByStatus) {
-          relayTasksTotal.set({ status: row.status, type: row.type ?? "unknown" }, row.cnt);
+          relayTasksTotal.set({ status: row.status, type: row.type ?? "unknown" }, Number(row.cnt));
         }
-        // File transfers by status
-        const transfersByStatus = db.prepare(
+        const queueDepthRows = await db.query<{ status: string; cnt: string | number }>(`
+          SELECT status, COUNT(*) AS cnt
+          FROM relay_tasks
+          WHERE status IN ('queued', 'delivered_to_remote_agent')
+            AND (expires_at IS NULL OR expires_at > now())
+            AND (next_retry_at IS NULL OR next_retry_at <= now())
+            AND attempt_count < max_attempts
+          GROUP BY status
+        `);
+        for (const row of queueDepthRows) {
+          relayQueueDepth.set({ status: row.status }, Number(row.cnt));
+        }
+        const latencyRows = await db.query<{ status: string; seconds: string | number | null }>(`
+          SELECT status, AVG(EXTRACT(EPOCH FROM (COALESCE(stored_at, completed_at, failed_at, expired_at, updated_at) - queued_at))) AS seconds
+          FROM relay_tasks
+          WHERE queued_at IS NOT NULL
+            AND status IN ('stored_by_remote_agent', 'waiting_approval', 'approved', 'transfer_started', 'completed', 'failed', 'expired')
+          GROUP BY status
+        `);
+        for (const row of latencyRows) {
+          relayDeliveryLatency.set({ status: row.status }, Number(row.seconds ?? 0));
+        }
+        const failedRows = await db.query<{ status: string; cnt: string | number }>(`
+          SELECT status, COUNT(*) AS cnt
+          FROM relay_tasks
+          WHERE status IN ('failed', 'expired')
+          GROUP BY status
+        `);
+        for (const row of failedRows) {
+          relayFailedCount.set({ status: row.status }, Number(row.cnt));
+        }
+        const retryRows = await db.query<{ status: string; retries: string | number }>(`
+          SELECT status, COALESCE(SUM(GREATEST(attempt_count - 1, 0)), 0) AS retries
+          FROM relay_tasks
+          GROUP BY status
+        `);
+        for (const row of retryRows) {
+          relayRetryCount.set({ status: row.status }, Number(row.retries));
+        }
+        const transfersByStatus = await db.query<{ status: string; cnt: string | number }>(
           "SELECT status, COUNT(*) AS cnt FROM file_transfers GROUP BY status"
-        ).all() as { status: string; cnt: number }[];
+        );
         for (const row of transfersByStatus) {
-          fileTransfersTotal.set({ status: row.status }, row.cnt);
+          fileTransfersTotal.set({ status: row.status }, Number(row.cnt));
         }
-        // Audit events by type
-        const auditEventsByType = db.prepare(
+        const auditEventsByType = await db.query<{ event_type: string; cnt: string | number }>(
           "SELECT event_type, COUNT(*) AS cnt FROM audit_events GROUP BY event_type"
-        ).all() as { event_type: string; cnt: number }[];
+        );
         for (const row of auditEventsByType) {
-          auditEventsTotal.set({ event_type: row.event_type }, row.cnt);
+          auditEventsTotal.set({ event_type: row.event_type }, Number(row.cnt));
         }
       } catch { /* swallow errors during gauge collection */ }
     };
     // Collect on startup and every 60s
-    collectDbGauges();
-    setInterval(collectDbGauges, 60_000);
+    void collectDbGauges();
+    setInterval(() => { void collectDbGauges(); }, 60_000);
   }
 
   app.get("/health", async () => ({
@@ -196,6 +240,29 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
     env: cfg.CONTROL_PLANE_ENV,
     public_url: cfg.CONTROL_PLANE_PUBLIC_URL
   }));
+
+  app.get("/livez", async () => ({
+    status: "ok",
+    service: "oracle-amigo-control-plane"
+  }));
+
+  app.get("/ready", async (_req, reply) => {
+    try {
+      if (!(await store.healthCheck())) {
+        throw new Error("database health check failed");
+      }
+      return {
+        status: "ready",
+        service: "oracle-amigo-control-plane"
+      };
+    } catch (err) {
+      app.log.error({ err }, "control plane readiness check failed");
+      return reply.code(503).send({
+        status: "not_ready",
+        service: "oracle-amigo-control-plane"
+      });
+    }
+  });
 
   await registerAuthRoutes(app);
   await registerEnrollmentRoutes(app, cfg.CONTROL_PLANE_PUBLIC_URL);
@@ -216,8 +283,9 @@ async function main(): Promise<void> {
   mkdirSync(dirname(cfg.FILE_TRANSFER_STORE), { recursive: true });
   // Background cleanup: every 60s
   setInterval(() => {
-    try { recomputeStalePresence(); } catch { /* ignore */ }
-    try { expireOldTransfers(); } catch { /* ignore */ }
+    void recomputeStalePresence().catch(() => undefined);
+    void expireOldTransfers().catch(() => undefined);
+    void expireRelayTasks().catch(() => undefined);
   }, 60_000);
   await app.listen({ port: cfg.CONTROL_PLANE_PORT, host: cfg.CONTROL_PLANE_HOST });
   // eslint-disable-next-line no-console

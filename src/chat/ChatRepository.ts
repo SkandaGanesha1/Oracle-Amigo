@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import type { DatabaseSync } from "node:sqlite";
 import { getDb } from "../db/connection.js";
+import { canonicalRelayConversationId, isCanonicalRelayConversationId } from "./ConversationIdentity.js";
 
 export type ChatMode = "local" | "cloud_relay" | "loopback";
 export type ChatMessageType = "human" | "agent_status" | "system_event" | "voice_command" | "file_request" | "approval" | "transfer" | "receipt";
@@ -218,6 +219,69 @@ export class ChatRepository {
     return row ? rowToConversation(row) : null;
   }
 
+  findCloudRelayConversationByCanonicalPeer(input: {
+    peerUserId?: string | null;
+    peerAgentInstanceId?: string | null;
+  }): ChatConversationRecord | null {
+    const row = this.db.prepare(`
+      SELECT id, org_id, local_user_id, local_agent_instance_id, peer_user_id, peer_agent_instance_id,
+             mode, title, created_at, updated_at, last_message_at, last_read_message_id,
+             unread_count, mention_count
+      FROM conversations
+      WHERE mode = 'cloud_relay'
+        AND (
+          (? IS NOT NULL AND peer_user_id = ?)
+          OR (? IS NOT NULL AND peer_agent_instance_id = ?)
+        )
+      ORDER BY
+        CASE WHEN id = ? THEN 0 ELSE 1 END,
+        CASE WHEN peer_user_id IS NOT NULL THEN 0 ELSE 1 END,
+        COALESCE(last_message_at, updated_at, created_at) DESC
+      LIMIT 1
+    `).get(
+      input.peerUserId ?? null,
+      input.peerUserId ?? null,
+      input.peerAgentInstanceId ?? null,
+      input.peerAgentInstanceId ?? null,
+      canonicalRelayConversationId(input)
+    ) as Record<string, unknown> | undefined;
+    return row ? rowToConversation(row) : null;
+  }
+
+  getOrCreateCanonicalRelayConversation(input: CreateConversationInput & {
+    peerUserId?: string | null;
+    peerAgentInstanceId?: string | null;
+  }): ChatConversationRecord {
+    const canonicalId = canonicalRelayConversationId(input);
+    const existingCanonical = this.getConversation(canonicalId);
+    if (existingCanonical) {
+      return this.updateConversationPeer(existingCanonical.id, {
+        peerUserId: input.peerUserId ?? existingCanonical.peer_user_id,
+        peerAgentInstanceId: input.peerAgentInstanceId ?? existingCanonical.peer_agent_instance_id,
+        title: input.title
+      }) ?? existingCanonical;
+    }
+
+    const duplicate = this.findCloudRelayConversationByCanonicalPeer(input);
+    if (duplicate && !isCanonicalRelayConversationId(duplicate.id, duplicate)) {
+      return this.mergeRelayConversation(duplicate.id, {
+        canonicalId,
+        orgId: input.orgId ?? duplicate.org_id,
+        localUserId: input.localUserId ?? duplicate.local_user_id,
+        localAgentInstanceId: input.localAgentInstanceId ?? duplicate.local_agent_instance_id,
+        peerUserId: input.peerUserId ?? duplicate.peer_user_id,
+        peerAgentInstanceId: input.peerAgentInstanceId ?? duplicate.peer_agent_instance_id,
+        title: input.title || duplicate.title
+      });
+    }
+
+    return this.createConversation({
+      ...input,
+      id: canonicalId,
+      mode: "cloud_relay"
+    });
+  }
+
   updateConversationPeer(conversationId: string, input: {
     peerUserId?: string | null;
     peerAgentInstanceId?: string | null;
@@ -249,6 +313,22 @@ export class ChatRepository {
 
   updateConversationPeerAgent(conversationId: string, peerAgentInstanceId: string): ChatConversationRecord | null {
     return this.updateConversationPeer(conversationId, { peerAgentInstanceId });
+  }
+
+  resolveCanonicalConversation(conversationId: string): ChatConversationRecord | null {
+    const existing = this.getConversation(conversationId);
+    if (!existing || existing.mode !== "cloud_relay") return existing;
+    if (isCanonicalRelayConversationId(existing.id, existing)) return existing;
+    if (!existing.peer_user_id && !existing.peer_agent_instance_id) return existing;
+    return this.mergeRelayConversation(existing.id, {
+      canonicalId: canonicalRelayConversationId(existing),
+      orgId: existing.org_id,
+      localUserId: existing.local_user_id,
+      localAgentInstanceId: existing.local_agent_instance_id,
+      peerUserId: existing.peer_user_id,
+      peerAgentInstanceId: existing.peer_agent_instance_id,
+      title: existing.title
+    });
   }
 
   listConversations(): ChatConversationRecord[] {
@@ -550,6 +630,90 @@ export class ChatRepository {
       INSERT INTO message_delivery_attempts (id, message_id, attempt_no, status, error_code, error_message, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?)
     `).run(`attempt_${randomUUID()}`, messageId, next.next, status, null, errorMessage ?? null, now);
+  }
+
+  private mergeRelayConversation(sourceId: string, input: {
+    canonicalId: string;
+    orgId?: string | null;
+    localUserId?: string | null;
+    localAgentInstanceId?: string | null;
+    peerUserId?: string | null;
+    peerAgentInstanceId?: string | null;
+    title: string;
+  }): ChatConversationRecord {
+    const source = this.getConversation(sourceId);
+    if (!source) {
+      return this.createConversation({
+        id: input.canonicalId,
+        orgId: input.orgId ?? null,
+        localUserId: input.localUserId ?? null,
+        localAgentInstanceId: input.localAgentInstanceId ?? null,
+        peerUserId: input.peerUserId ?? null,
+        peerAgentInstanceId: input.peerAgentInstanceId ?? null,
+        mode: "cloud_relay",
+        title: input.title
+      });
+    }
+
+    const now = new Date().toISOString();
+    this.db.prepare(`
+      INSERT INTO conversations
+        (id, local_agent_id, peer_agent_id, mode, org_id, local_user_id, local_agent_instance_id,
+         peer_user_id, peer_agent_instance_id, title, created_at, updated_at, last_message_at,
+         last_read_message_id, unread_count, mention_count)
+      VALUES (?, ?, ?, 'cloud_relay', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        org_id = COALESCE(excluded.org_id, conversations.org_id),
+        local_user_id = COALESCE(excluded.local_user_id, conversations.local_user_id),
+        local_agent_instance_id = COALESCE(excluded.local_agent_instance_id, conversations.local_agent_instance_id),
+        peer_user_id = COALESCE(excluded.peer_user_id, conversations.peer_user_id),
+        peer_agent_instance_id = COALESCE(excluded.peer_agent_instance_id, conversations.peer_agent_instance_id),
+        peer_agent_id = COALESCE(excluded.peer_agent_instance_id, conversations.peer_agent_id),
+        title = excluded.title,
+        updated_at = excluded.updated_at,
+        last_message_at = MAX(COALESCE(conversations.last_message_at, ''), COALESCE(excluded.last_message_at, ''))
+    `).run(
+      input.canonicalId,
+      input.localAgentInstanceId ?? source.local_agent_instance_id ?? "local-agent",
+      input.peerAgentInstanceId ?? source.peer_agent_instance_id,
+      input.orgId ?? source.org_id,
+      input.localUserId ?? source.local_user_id,
+      input.localAgentInstanceId ?? source.local_agent_instance_id,
+      input.peerUserId ?? source.peer_user_id,
+      input.peerAgentInstanceId ?? source.peer_agent_instance_id,
+      input.title,
+      source.created_at,
+      now,
+      source.last_message_at,
+      source.last_read_message_id,
+      source.unread_count,
+      source.mention_count
+    );
+
+    this.db.prepare("UPDATE chat_messages SET conversation_id = ? WHERE conversation_id = ?")
+      .run(input.canonicalId, sourceId);
+    this.db.prepare("UPDATE outbox SET conversation_id = ? WHERE conversation_id = ?")
+      .run(input.canonicalId, sourceId);
+    this.db.prepare(`
+      INSERT OR IGNORE INTO conversation_participants (conversation_id, user_id, agent_instance_id, role, joined_at)
+      SELECT ?, user_id, agent_instance_id, role, joined_at
+      FROM conversation_participants
+      WHERE conversation_id = ?
+    `).run(input.canonicalId, sourceId);
+    this.db.prepare(`
+      UPDATE conversations
+      SET updated_at = ?, last_message_at = NULL, unread_count = 0, mention_count = 0
+      WHERE id = ?
+    `).run(now, sourceId);
+
+    this.recomputeUnreadCount(input.canonicalId);
+    const canonical = this.updateConversationPeer(input.canonicalId, {
+      peerUserId: input.peerUserId ?? source.peer_user_id,
+      peerAgentInstanceId: input.peerAgentInstanceId ?? source.peer_agent_instance_id,
+      title: input.title
+    }) ?? this.getConversation(input.canonicalId)!;
+    this.emitConversationEvent("conversation_updated", input.canonicalId);
+    return canonical;
   }
 
   private ensureParticipant(conversationId: string, userId: string | null, agentInstanceId: string | null, role: string): void {

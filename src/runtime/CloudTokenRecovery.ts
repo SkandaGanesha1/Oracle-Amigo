@@ -99,7 +99,7 @@ export function structuredEnrollmentError(error: unknown, identity: LocalCloudId
   };
 }
 
-function isExpiredJwt(token: string): boolean {
+export function isExpiredJwt(token: string): boolean {
   const parts = token.split(".");
   if (parts.length < 2) return false;
   try {

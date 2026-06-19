@@ -69,7 +69,7 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
   app.post("/v1/auth/refresh", async (req, reply) => {
     try {
       const body = RefreshSchema.parse(req.body);
-      const result = refreshAccessToken(body.refresh_token);
+      const result = await refreshAccessToken(body.refresh_token);
       reply.send(result);
     } catch (err) {
       if (err instanceof AuthError) {
@@ -87,7 +87,7 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
   app.post("/v1/auth/logout", async (req, reply) => {
     try {
       const body = RefreshSchema.parse(req.body);
-      const ok = logout(body.refresh_token);
+      const ok = await logout(body.refresh_token);
       reply.send({ ok });
     } catch (err) {
       if (err instanceof ZodError) {
@@ -106,7 +106,7 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
         reply.code(401).send({ error: "UNAUTHORIZED", message: "Missing token" });
         return;
       }
-      const me = getMeFromToken(token);
+      const me = await getMeFromToken(token);
       reply.send({ user: me });
     } catch (err) {
       if (err instanceof AuthError) {

@@ -137,14 +137,15 @@ export class RemoteTaskDispatcher {
         // Best-effort.
       });
       const top = candidates[0];
+      const boundTop = top && isHighConfidenceFileCandidate(top) ? top : null;
       const approval = await this.protocol.createApproval(task.id, {
-        approvalType: top ? "file.transfer.offer" : "file.search.refinement",
+        approvalType: boundTop ? "file.transfer.offer" : "file.search.refinement",
         requesterAgentId: message.from_agent_instance_id,
         ownerAgentId: message.to_agent_instance_id,
-        selectedFileId: top?.id ?? null,
-        boundFilePath: top?.boundFilePath ?? null,
-        boundSha256: top?.boundSha256 ?? null,
-        boundSizeBytes: top?.boundSizeBytes ?? null
+        selectedFileId: boundTop?.id ?? null,
+        boundFilePath: boundTop?.boundFilePath ?? null,
+        boundSha256: boundTop?.boundSha256 ?? null,
+        boundSizeBytes: boundTop?.boundSizeBytes ?? null
       });
       transition(task.id, "APPROVAL_REQUIRED", {
         approvalId: approval.id,
@@ -180,13 +181,18 @@ export class RemoteTaskDispatcher {
           task_id: task.id,
           requester: conversation.title || message.from_agent_instance_id,
           request_text: text,
+          requester_display_name: conversation.title || `Remote agent ${shortId(message.from_agent_instance_id)}`,
+          target_display_name: "Local agent",
           status: approval.status,
           expires_at: approval.expiresAt,
           selected_candidate_id: approval.selectedFileId,
           approval_type: approval.approvalType,
+          is_bound: Boolean(approval.boundFilePath && approval.boundSha256),
           search_source: resolved.source,
           parsed_filename: resolved.parsed.exactFilename,
-          candidates: candidates.map(toApprovalCandidatePayload)
+          candidates: candidates.map(toApprovalCandidatePayload),
+          low_confidence_candidates: resolved.lowConfidenceCandidates.map(toApprovalCandidatePayload),
+          privacy_labels: ["Approval required", "Local path hidden from requester"]
         },
         deliveryStatus: "delivered"
       });
@@ -224,18 +230,21 @@ export class RemoteTaskDispatcher {
       // Call ReceiverAgentOrchestrator to handle incoming request (file search + approval card + insert db)
       const orchestrator = new ReceiverAgentOrchestrator(this.db, this.profileId, this.chatRepo, this.fileSearch);
       const approval = await orchestrator.handleIncomingFileRequest(message, conversation.id, task.id);
+      const candidateCount = JSON.parse(approval.candidatesJson).length;
 
       transition(task.id, "SEARCH_QUERY_BUILT", { query: text });
       transition(task.id, "LOCAL_SEARCH_RUNNING", { query: text, source: "hybrid" });
-      transition(task.id, "CANDIDATES_RANKED", { count: JSON.parse(approval.candidatesJson).length });
+      transition(task.id, "CANDIDATES_RANKED", { count: candidateCount });
       transition(task.id, "APPROVAL_REQUIRED", { approvalId: approval.id, remote: true });
 
       await this.sendFileRequestStatus(
         message,
-        "waiting_for_approval",
-        "Receiver found candidate files and is waiting for owner approval",
+        candidateCount > 0 ? "waiting_for_approval" : "no_candidate_found_waiting_for_refinement",
+        candidateCount > 0
+          ? "Receiver found candidate files and is waiting for owner approval"
+          : "Receiver found no candidate files and is waiting for refinement or manual selection",
         {
-          candidate_count: JSON.parse(approval.candidatesJson).length,
+          candidate_count: candidateCount,
           parsed_filename: text,
           search_source: "hybrid"
         }
@@ -471,28 +480,7 @@ export class RemoteTaskDispatcher {
     const peerAgentInstanceId = route.agentInstanceId ?? message.from_agent_instance_id;
     const title = route.displayName || `Remote agent ${shortId(message.from_agent_instance_id)}`;
 
-    if (peerUserId) {
-      const byUser = this.chatRepo.findCloudRelayConversationByPeerUser(peerUserId);
-      if (byUser) {
-        return this.chatRepo.updateConversationPeer(byUser.id, {
-          peerUserId,
-          peerAgentInstanceId,
-          title
-        }) ?? byUser;
-      }
-    }
-
-    const byAgent = this.chatRepo.findCloudRelayConversationByPeerAgent(message.from_agent_instance_id);
-    if (byAgent) {
-      return this.chatRepo.updateConversationPeer(byAgent.id, {
-        peerUserId: peerUserId ?? byAgent.peer_user_id,
-        peerAgentInstanceId,
-        title
-      }) ?? byAgent;
-    }
-
-    return this.chatRepo.createConversation({
-      id: peerUserId ? `relay_user_${peerUserId}` : `relay_${message.from_agent_instance_id}`,
+    return this.chatRepo.getOrCreateCanonicalRelayConversation({
       localAgentInstanceId: message.to_agent_instance_id,
       peerUserId,
       peerAgentInstanceId,
@@ -598,6 +586,11 @@ function humanFileRequestStatus(status: string): string {
     default:
       return "File request status updated";
   }
+}
+
+function isHighConfidenceFileCandidate(candidate: { score: number; reason: string }): boolean {
+  const reason = candidate.reason.toLowerCase();
+  return candidate.score >= 0.75 || reason.includes("exact") || reason.includes("normalized");
 }
 
 function redactLocalPaths(payload: Record<string, unknown>): Record<string, unknown> {

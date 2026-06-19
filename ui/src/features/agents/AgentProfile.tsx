@@ -1,20 +1,11 @@
 import { useState, useMemo } from "react";
-import { BadgeCheck, BadgeAlert, Shield, ShieldOff, Bot, Tags, Sliders, Power, PowerOff, Clock, AlertTriangle, CheckCircle2, XCircle, ExternalLink, MessageCircle, User, Globe, HardDrive, type LucideIcon } from "lucide-react";
+import { BadgeCheck, BadgeAlert, Shield, ShieldOff, Tags, Sliders, Power, PowerOff, Clock, AlertTriangle, CheckCircle2, XCircle, ExternalLink, MessageCircle, Globe, type LucideIcon } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useMissions, useAuditEvents } from "../../hooks/queries";
-import type { Contact, RegistryTrustLevel } from "../../api/types";
+import type { AgentProfileDetail } from "../../api/types";
 
 interface AgentProfileProps {
-  agent: {
-    id: string;
-    displayName: string;
-    targetUserId: string;
-    trustLevel: "verified" | "unverified" | "external" | "local";
-    presence: "online" | "offline" | "stale" | "unknown";
-    capabilities?: string[];
-    deviceName?: string;
-    status?: string;
-  };
+  agent: AgentProfileDetail;
   onClose?: () => void;
 }
 
@@ -23,6 +14,7 @@ const TRUST_CONFIG: Record<string, { icon: LucideIcon; color: string; bg: string
   unverified: { icon: BadgeAlert, color: "text-oa-amber", bg: "bg-oa-amber/10", label: "Unverified" },
   external: { icon: ShieldOff, color: "text-oa-red", bg: "bg-oa-red/10", label: "External" },
   local: { icon: Shield, color: "text-oa-blue", bg: "bg-oa-blue/10", label: "Local" },
+  blocked: { icon: ShieldOff, color: "text-oa-red", bg: "bg-oa-red/10", label: "Blocked" },
 };
 
 const PRESENCE_CONFIG: Record<string, { icon: LucideIcon; color: string; label: string }> = {
@@ -69,8 +61,10 @@ export function AgentProfile({ agent, onClose }: AgentProfileProps) {
     const events = auditData?.events ?? [];
     // Filter events related to this agent
     const agentEvents = events.filter((e) => 
-      e.actorAgentId === agent.targetUserId || 
-      e.detailsJson?.agent_id === agent.targetUserId
+      e.actorAgentId === agent.agentInstanceId ||
+      e.actorAgentId === agent.userId ||
+      e.detailsJson?.agent_id === agent.agentInstanceId ||
+      e.detailsJson?.user_id === agent.userId
     );
     return agentEvents.slice(0, 3).map((e) => ({
       event: e.eventType.replace(/_/g, " "),
@@ -78,7 +72,7 @@ export function AgentProfile({ agent, onClose }: AgentProfileProps) {
                e.eventType.includes("warning") || e.eventType.includes("expired") ? "medium" : "low",
       date: new Date(e.createdAt).toLocaleDateString()
     }));
-  }, [auditData, agent.targetUserId]);
+  }, [auditData, agent.agentInstanceId, agent.userId]);
 
   return (
     <div className="flex flex-col gap-5 p-6 max-w-2xl">
@@ -97,7 +91,7 @@ export function AgentProfile({ agent, onClose }: AgentProfileProps) {
         </div>
         <div className="min-w-0 flex-1">
           <h3 className="text-base font-semibold text-oa-text">{agent.displayName}</h3>
-          <p className="text-xs text-oa-text-muted font-mono truncate">{agent.targetUserId}</p>
+          <p className="truncate font-mono text-xs text-oa-text-muted">{agent.email ?? agent.userId ?? agent.agentInstanceId ?? agent.registryDid ?? agent.id}</p>
           <div className="mt-2 flex flex-wrap gap-2">
             <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium ${tc.color} ${tc.bg}`}>
               <TrustIcon className="h-3 w-3" />
@@ -135,12 +129,12 @@ export function AgentProfile({ agent, onClose }: AgentProfileProps) {
           <h3 className="text-xs font-semibold uppercase tracking-wider text-oa-text-muted">Capabilities</h3>
         </div>
         <div className="flex flex-wrap gap-1.5">
-          {(agent.capabilities ?? ["a2a.v1", "file.request", "file.transfer"]).map((cap) => (
+          {(agent.capabilities.length ? agent.capabilities : ["a2a.v1", "file.request", "file.transfer"]).map((cap) => (
             <span key={cap} className="rounded-md border border-oa-border bg-oa-bg-elevated px-2 py-1 text-[10px] font-medium text-oa-text">
               {cap}
             </span>
           ))}
-          {!agent.capabilities?.length && (
+          {!agent.capabilities.length && (
             <p className="text-xs text-oa-text-muted">No capability info available</p>
           )}
         </div>
@@ -223,7 +217,8 @@ export function AgentProfile({ agent, onClose }: AgentProfileProps) {
 
       <button
         type="button"
-        onClick={() => navigate(`/chats/${agent.id}`)}
+        onClick={() => navigate(`/chats/${agent.conversationId ?? agent.id}`)}
+        disabled={!agent.conversationId && !agent.userId && !agent.agentInstanceId}
         className="flex items-center justify-center gap-2 rounded-lg bg-oa-blue px-4 py-2.5 text-sm font-medium text-white transition hover:bg-oa-blue/80"
       >
         <MessageCircle className="h-4 w-4" />

@@ -1,7 +1,7 @@
 import { Bot, ShieldCheck, FileText, ListChecks, ScrollText, Settings, Wifi, Clock, Search, Calendar, HardDrive, Ban, Bell, CheckCircle2, Database, Shield, SlidersHorizontal, type LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import { useSection } from "./SectionContext";
-import { useA2ATasks, useAgentRuns, useAuditEvents, useCloudStatus, useContacts, useConversations, usePendingApprovals, useReceivedFiles, useTransfers } from "../hooks/queries";
+import { isCloudUserReady, useA2ATasks, useAgentRuns, useAuditEvents, useCloudStatus, useContacts, useConversations, usePendingApprovals, useReceivedFiles, useTransfers } from "../hooks/queries";
 import { useSidebar } from "../components/SidebarContext";
 import { SidebarToggle } from "../components/SidebarToggle";
 import { useDensityPreference } from "../lib/uiPreferences";
@@ -71,7 +71,9 @@ function formatSize(bytes: number): string {
 
 function AgentsSidebar() {
   const { sidebarOpen } = useSidebar();
-  const { data: contactsData } = useContacts();
+  const { data: cloudStatus } = useCloudStatus();
+  const cloudContactsEnabled = isCloudUserReady(cloudStatus);
+  const { data: contactsData } = useContacts(cloudContactsEnabled);
 
   if (!sidebarOpen) return <SidebarShell label="Agents" icon={Bot} collapsed />;
   const contacts = contactsData?.contacts ?? [];

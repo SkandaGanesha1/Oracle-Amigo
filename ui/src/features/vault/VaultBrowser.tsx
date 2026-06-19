@@ -59,9 +59,10 @@ export function VaultBrowser() {
   const { data: rootsData } = useFileIndexRoots();
   const { data: vaultRootsData } = useVaultRoots();
   const { data: indexedData } = useIndexedFiles(50, 0);
-  const [searchQuery, setSearchQuery] = useState("");
-  const normalizedSearchQuery = searchQuery.trim();
-  const { data: searchResults } = useFileSearch(normalizedSearchQuery);
+  const [indexedSearchQuery, setIndexedSearchQuery] = useState("");
+  const [storedSearchQuery, setStoredSearchQuery] = useState("");
+  const normalizedIndexedSearchQuery = indexedSearchQuery.trim();
+  const { data: searchResults } = useFileSearch(normalizedIndexedSearchQuery);
   const { data: filesData, isLoading } = useReceivedFiles();
   const { data: transfersData } = useTransfers();
   const { approvalCards } = usePendingApprovals();
@@ -90,12 +91,12 @@ export function VaultBrowser() {
   const [selectedRootForExclude, setSelectedRootForExclude] = useState<string | null>(null);
 
   const filteredFiles = useMemo(() => {
-    if (!searchQuery.trim()) return files;
-    const q = searchQuery.toLowerCase();
+    if (!storedSearchQuery.trim()) return files;
+    const q = storedSearchQuery.toLowerCase();
     return files.filter((f) => f.originalFileName.toLowerCase().includes(q));
-  }, [files, searchQuery]);
+  }, [files, storedSearchQuery]);
 
-  const indexedDisplay = normalizedSearchQuery ? (searchResults ?? []) : indexed;
+  const indexedDisplay = normalizedIndexedSearchQuery ? (searchResults ?? []) : indexed;
   const indexedWithSensitivity = useMemo(() => {
     return indexedDisplay.map((file) => ({
       ...file,
@@ -269,15 +270,29 @@ export function VaultBrowser() {
         <section className="rounded-xl border border-oa-border bg-oa-surface/80 overflow-hidden">
           <div className="flex items-center gap-2 px-4 py-3">
             <Shield className="h-4 w-4 text-oa-purple" />
-            <h2 className="text-sm font-semibold text-oa-text">{normalizedSearchQuery ? "Search Results" : "Indexed Files"}</h2>
+            <h2 className="text-sm font-semibold text-oa-text">{normalizedIndexedSearchQuery ? "Indexed Search Results" : "Indexed Files"}</h2>
             <span className="ml-auto text-[10px] text-oa-text-muted">
-              {indexedWithSensitivity.length} {normalizedSearchQuery ? "matches" : "files"}
+              {indexedWithSensitivity.length} {normalizedIndexedSearchQuery ? "matches" : "files"}
             </span>
           </div>
           <div className="border-t border-oa-border px-4 pb-4">
+            <div className="relative mt-3">
+              <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-oa-text-muted" />
+              <input
+                value={indexedSearchQuery}
+                onChange={(e) => setIndexedSearchQuery(e.target.value)}
+                placeholder="Search indexed file contents..."
+                className="h-10 w-full rounded-lg border border-oa-border bg-oa-bg pl-9 pr-9 text-xs text-oa-text outline-none focus:border-oa-blue"
+              />
+              {indexedSearchQuery && (
+                <button type="button" onClick={() => setIndexedSearchQuery("")} className="absolute right-2 top-1/2 -translate-y-1/2 text-oa-text-muted hover:text-oa-text" aria-label="Clear indexed search">
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              )}
+            </div>
             {indexedWithSensitivity.length === 0 ? (
               <p className="mt-3 rounded-lg border border-dashed border-oa-border bg-oa-bg-elevated p-3 text-xs text-oa-text-muted">
-                {normalizedSearchQuery ? "No indexed files match this search." : "No files indexed yet. Add roots and run index."}
+                {normalizedIndexedSearchQuery ? "No indexed files match this search." : "No files indexed yet. Add roots and run index."}
               </p>
             ) : (
               <div className="mt-3 space-y-1.5 max-h-64 overflow-y-auto">
@@ -414,13 +429,13 @@ export function VaultBrowser() {
         <div className="relative mb-3">
           <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-oa-text-muted" />
           <input
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
+            value={storedSearchQuery}
+            onChange={(e) => setStoredSearchQuery(e.target.value)}
             placeholder="Search stored files..."
             className="h-10 w-full rounded-lg border border-oa-border bg-oa-bg pl-9 pr-3 text-xs text-oa-text outline-none focus:border-oa-blue"
           />
-          {searchQuery && (
-            <button type="button" onClick={() => setSearchQuery("")} className="absolute right-2 top-1/2 -translate-y-1/2 text-oa-text-muted hover:text-oa-text" aria-label="Clear">
+          {storedSearchQuery && (
+            <button type="button" onClick={() => setStoredSearchQuery("")} className="absolute right-2 top-1/2 -translate-y-1/2 text-oa-text-muted hover:text-oa-text" aria-label="Clear stored file search">
               <X className="h-3.5 w-3.5" />
             </button>
           )}
@@ -437,7 +452,7 @@ export function VaultBrowser() {
         ) : filteredFiles.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-8 gap-2">
             <HardDrive className="h-6 w-6 text-oa-text-muted" />
-            <p className="text-xs text-oa-text-disabled">{searchQuery ? "No matching files" : "No stored files yet"}</p>
+            <p className="text-xs text-oa-text-disabled">{storedSearchQuery ? "No matching files" : "No stored files yet"}</p>
           </div>
         ) : (
           <div className="space-y-1.5">

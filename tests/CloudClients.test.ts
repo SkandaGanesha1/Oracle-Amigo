@@ -13,6 +13,7 @@ import { RelayClient } from "../src/cloud/RelayClient.js";
 import { buildApp } from "../apps/control-plane/src/main.js";
 import { resetConfigForTest } from "../apps/control-plane/src/config.js";
 import { closeAll } from "../apps/control-plane/src/db/connection.js";
+import { postgresTestConfig, resetPostgresTestDatabase } from "../apps/control-plane/tests/postgresTestHarness.js";
 import type { FastifyInstance } from "fastify";
 
 let app: FastifyInstance;
@@ -22,11 +23,11 @@ let baseUrl = "";
 beforeAll(async () => {
   dataDir = mkdtempSync(join(tmpdir(), "cloud-client-"));
   const port = 19700 + Math.floor(Math.random() * 1000);
-  resetConfigForTest({
+  await resetPostgresTestDatabase();
+  resetConfigForTest(postgresTestConfig({
     CONTROL_PLANE_PORT: String(port),
     CONTROL_PLANE_HOST: "127.0.0.1",
     CONTROL_PLANE_PUBLIC_URL: `http://127.0.0.1:${port}`,
-    CONTROL_PLANE_DB_PATH: join(dataDir, "test.db"),
     JWT_ACCESS_SECRET: "test-access-secret-must-be-16+",
     JWT_REFRESH_SECRET: "test-refresh-secret-must-be-16+",
     FILE_TRANSFER_STORE: join(dataDir, "transfers"),
@@ -41,8 +42,8 @@ beforeAll(async () => {
     ARGON2_TIME_COST: "2",
     ARGON2_PARALLELISM: "1",
     CONTROL_PLANE_ENV: "test"
-  });
-  closeAll();
+  }));
+  await closeAll();
   app = await buildApp();
   await app.listen({ port, host: "127.0.0.1" });
   baseUrl = `http://127.0.0.1:${port}`;
@@ -50,6 +51,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   if (app) await app.close();
+  await closeAll();
   try { rmSync(dataDir, { recursive: true, force: true }); } catch { /* ignore */ }
 });
 

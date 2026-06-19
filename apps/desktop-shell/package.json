@@ -1,0 +1,19 @@
+{
+  "name": "@oracle-amigo/desktop-shell",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev:ui": "node scripts/run-root-command.mjs dev:ui",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
+    "package:windows": "tauri build --bundles nsis,msi"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.8.0",
+    "@tauri-apps/plugin-shell": "^2.3.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.8.0"
+  }
+}

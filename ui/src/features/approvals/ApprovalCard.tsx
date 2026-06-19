@@ -44,7 +44,7 @@ export function ApprovalCard({ card }: ApprovalCardProps) {
   const consentAction = useConsentAction();
 
   const [selectedId, setSelectedId] = useState<string | null>(
-    card.selected_candidate_id ?? card.candidates[0]?.candidate_id ?? null
+    card.selected_candidate_id ?? null
   );
   const [selectedAccessType, setSelectedAccessType] = useState<"one-time" | "time-bound" | "permanent">("one-time");
   const [expiryHours, setExpiryHours] = useState(24);
@@ -72,15 +72,18 @@ export function ApprovalCard({ card }: ApprovalCardProps) {
 
   const isTerminal = card.status !== "pending" && card.status !== "feedback_requested";
   const isProcessing = isApproving || isRejecting || isFeedbackSubmitting || consentAction.isPending || rebindFile.isPending;
-  const requesterLabel = formatRequester(card.requester);
+  const requesterLabel = card.requester_display_name?.trim() || formatRequester(card.requester);
+  const targetLabel = card.target_display_name?.trim() || "Local agent";
   const hasCandidates = card.candidates.length > 0;
+  const lowConfidenceCandidates = card.low_confidence_candidates ?? [];
+  const isBound = Boolean(card.is_bound && card.selected_candidate_id);
   const selectedFile = card.candidates.find((c) => c.candidate_id === selectedId);
   const sensitivity = selectedFile ? detectFileSensitivity(selectedFile.file_name, selectedFile.display_path) : detectFileSensitivity("", "");
   const senConfig = SENSITIVITY_CONFIG[sensitivity.level];
 
   const handleApprove = useCallback(() => {
-    if (selectedId) approve({ approvalId: card.approval_id, feedback: undefined });
-  }, [approve, card.approval_id, selectedId]);
+    if (isBound && selectedId) approve({ approvalId: card.approval_id, feedback: undefined });
+  }, [approve, card.approval_id, isBound, selectedId]);
 
   const handleReject = useCallback(() => {
     reject({ approvalId: card.approval_id });
@@ -206,6 +209,19 @@ export function ApprovalCard({ card }: ApprovalCardProps) {
         </div>
       )}
 
+      {lowConfidenceCandidates.length > 0 && (
+        <div className="mt-3 rounded-lg border border-dashed border-oa-border bg-oa-surface-2 p-3">
+          <p className="text-[11px] font-medium text-oa-text-muted">Low confidence / other types</p>
+          <div className="mt-2">
+            <CandidateFileList
+              candidates={lowConfidenceCandidates}
+              selectedId={null}
+              onSelect={() => undefined}
+            />
+          </div>
+        </div>
+      )}
+
       {!hasCandidates && card.status === "pending" && (
         <div className="mt-4 flex items-start gap-2.5 rounded-lg border border-oa-amber/20 bg-oa-amber/5 p-3">
           <FileWarning className="mt-0.5 h-4 w-4 shrink-0 text-oa-amber" />
@@ -269,6 +285,10 @@ export function ApprovalCard({ card }: ApprovalCardProps) {
             fileName={selectedFile.file_name}
             filePath={selectedFile.display_path}
           />
+          <div className="inline-flex items-center gap-1 rounded bg-oa-blue/10 px-2 py-1 text-[10px] font-medium text-oa-blue">
+            <ShieldCheck className="h-3 w-3" />
+            Local path hidden from requester
+          </div>
           <ApprovalRiskHeader
             requester={requesterLabel}
             requestText={card.request_text}
@@ -301,7 +321,7 @@ export function ApprovalCard({ card }: ApprovalCardProps) {
 
       {card.status === "pending" && (
         <div className="mt-4 space-y-2">
-          {hasCandidates && selectedId && (
+          {hasCandidates && selectedId && isBound && (
             <div className="space-y-2">
               <p className="text-[10px] font-semibold uppercase tracking-wider text-oa-text-disabled">Access Type</p>
               {(["one-time", "time-bound", "permanent"] as const).map((type) => (
@@ -357,7 +377,7 @@ export function ApprovalCard({ card }: ApprovalCardProps) {
                 oaVariant="approve"
                 className="h-8 text-xs px-3"
                 isPending={isApproving}
-                isDisabled={isProcessing}
+                isDisabled={isProcessing || !isBound}
                 onPress={handleApprove}
               >
                 <Check className="h-3.5 w-3.5" />
@@ -453,7 +473,7 @@ export function ApprovalCard({ card }: ApprovalCardProps) {
       {card.expires_at && card.status === "pending" && (
         <div className="mt-3 flex items-center gap-1.5 text-[10px] text-oa-text-disabled">
           <Clock className="h-3 w-3" />
-          Expires {new Date(card.expires_at).toLocaleString()}
+          Expires {new Date(card.expires_at).toLocaleString()} · Target {targetLabel}
         </div>
       )}
 

@@ -406,6 +406,8 @@ async function mockReleaseFlow(page) {
         status: "pending",
         expires_at: now,
         selected_file_id: "candidate-release-checklist",
+        selected_candidate_id: "candidate-release-checklist",
+        is_bound: true,
         bound_file_path: "C:\\Users\\Alice\\Documents\\release-checklist.pdf",
         bound_size_bytes: 2048,
         candidates: [{

@@ -1,7 +1,8 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { timingSafeEqual } from "node:crypto";
 import { hashOpaqueToken, toAuthContext, toDeviceAuthContext, verifyAccessToken, verifyDeviceToken } from "./TokenService.js";
-import { getDb } from "../db/connection.js";
+import { getControlPlaneStore } from "../db/connection.js";
+import { isEffectiveProduction, loadConfig } from "../config.js";
 import { resolveSession as resolveAdminSession, cookieName as adminCookieName, touchSession } from "../admin/AdminSessionService.js";
 import type { AuthContext, DeviceAuthContext } from "../types/cloud.js";
 import type { ResolvedSession } from "../admin/AdminSessionService.js";
@@ -31,7 +32,7 @@ export function requireUserAuth() {
     }
     try {
       const claims = verifyAccessToken(token);
-      if (!isActiveUser(claims.org, claims.sub)) {
+      if (!(await isActiveUser(claims.org, claims.sub))) {
         reply.code(403).send({ error: "USER_DISABLED", message: "User is not active" });
         return reply;
       }
@@ -49,7 +50,7 @@ export function optionalUserAuth() {
     if (!token) return;
     try {
       const claims = verifyAccessToken(token);
-      if (!isActiveUser(claims.org, claims.sub)) return;
+      if (!(await isActiveUser(claims.org, claims.sub))) return;
       req.authContext = toAuthContext(claims);
     } catch {
       // ignore - optional
@@ -57,10 +58,11 @@ export function optionalUserAuth() {
   };
 }
 
-function isActiveUser(orgId: string, userId: string): boolean {
-  const row = getDb()
-    .prepare("SELECT status FROM users WHERE org_id = ? AND id = ?")
-    .get(orgId, userId) as { status: string } | undefined;
+async function isActiveUser(orgId: string, userId: string): Promise<boolean> {
+  const row = await getControlPlaneStore().one<{ status: string }>(
+    "SELECT status FROM users WHERE org_id = $1 AND id = $2",
+    [orgId, userId]
+  );
   return row?.status === "active";
 }
 
@@ -73,11 +75,11 @@ export function requireDeviceAuth() {
     }
     try {
       const claims = verifyDeviceToken(token);
-      const db = getDb();
-      const tokenRow = db.prepare(`
+      const db = getControlPlaneStore();
+      const tokenRow = await db.one(`
         SELECT * FROM device_tokens
-        WHERE org_id = ? AND user_id = ? AND device_id = ? AND token_hash = ?
-      `).get(claims.org, claims.user, claims.device, hashOpaqueToken(token)) as Record<string, unknown> | undefined;
+        WHERE org_id = $1 AND user_id = $2 AND device_id = $3 AND token_hash = $4
+      `, [claims.org, claims.user, claims.device, hashOpaqueToken(token)]);
       if (!tokenRow || tokenRow.revoked_at) {
         reply.code(401).send({ error: "DEVICE_TOKEN_REVOKED", message: "Device token is not active" });
         return reply;
@@ -86,14 +88,14 @@ export function requireDeviceAuth() {
         reply.code(401).send({ error: "DEVICE_TOKEN_EXPIRED", message: "Device token has expired" });
         return reply;
       }
-      const row = db.prepare(`
+      const row = await db.one(`
         SELECT d.status AS device_status, ai.status AS agent_instance_status, a.status AS agent_status, u.status AS user_status
         FROM devices d
         JOIN agent_instances ai ON ai.org_id = d.org_id AND ai.device_id = d.id
         JOIN agents a ON a.org_id = ai.org_id AND a.id = ai.agent_id
         JOIN users u ON u.org_id = d.org_id AND u.id = d.user_id
-        WHERE d.org_id = ? AND d.id = ? AND ai.id = ? AND ai.agent_id = ? AND d.user_id = ?
-      `).get(claims.org, claims.device, claims.sub, claims.agent, claims.user) as Record<string, unknown> | undefined;
+        WHERE d.org_id = $1 AND d.id = $2 AND ai.id = $3 AND ai.agent_id = $4 AND d.user_id = $5
+      `, [claims.org, claims.device, claims.sub, claims.agent, claims.user]);
       if (!row) {
         reply.code(401).send({ error: "DEVICE_NOT_FOUND", message: "Device or agent instance is not enrolled" });
         return reply;
@@ -126,15 +128,19 @@ export function requireAdmin() {
     // Path 1: production-quality session cookie. Used by the Admin Portal after password+TOTP login.
     const cookieToken = readAdminSessionCookie(req);
     if (cookieToken) {
-      const resolved = resolveAdminSession(cookieToken);
+      const resolved = await resolveAdminSession(cookieToken);
       if (resolved) {
         req.adminContext = resolved;
-        touchSession(resolved.sessionId);
+        await touchSession(resolved.sessionId);
         return;
       }
     }
+    if (isEffectiveProduction(loadConfig())) {
+      reply.code(503).send({ error: "ADMIN_DISABLED", message: "Static admin tokens are disabled in production" });
+      return reply;
+    }
     // Path 2: bootstrap / dev escape hatch. A static token set in ADMIN_BOOTSTRAP_TOKEN (or the legacy
-    // DEV_ADMIN_TOKEN) is accepted only when set. Never set either in production.
+    // DEV_ADMIN_TOKEN) is accepted only outside production.
     const expected = process.env.ADMIN_BOOTSTRAP_TOKEN ?? process.env.DEV_ADMIN_TOKEN;
     if (!expected) {
       reply.code(503).send({ error: "ADMIN_DISABLED", message: "Admin endpoints are not configured" });
@@ -157,13 +163,13 @@ export function requireAdminSession() {
       reply.code(401).send({ error: "UNAUTHORIZED", message: "Admin session required" });
       return reply;
     }
-    const resolved = resolveAdminSession(cookieToken);
+    const resolved = await resolveAdminSession(cookieToken);
     if (!resolved) {
       reply.code(401).send({ error: "UNAUTHORIZED", message: "Admin session expired or revoked" });
       return reply;
     }
     req.adminContext = resolved;
-    touchSession(resolved.sessionId);
+    await touchSession(resolved.sessionId);
   };
 }
 

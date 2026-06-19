@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import { AnimatePresence, motion } from "../primitives/MotionPrimitives";
 import { Brain, ChevronDown, ChevronRight, Copy, Check } from "lucide-react";
 
 interface ReasoningStep {

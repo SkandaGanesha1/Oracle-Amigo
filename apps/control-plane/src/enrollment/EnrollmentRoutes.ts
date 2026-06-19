@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { z, ZodError } from "zod";
 import { requireUserAuth, requireDeviceAuth } from "./../auth/AuthMiddleware.js";
 import { enroll } from "./EnrollmentService.js";
-import { getDb } from "./../db/connection.js";
+import { getControlPlaneStore } from "./../db/connection.js";
 import type { Device, AgentInstance, Agent } from "./../types/cloud.js";
 import { loadConfig } from "../config.js";
 import { toCloudAgentCard } from "./CloudAgentCard.js";
@@ -47,10 +47,9 @@ export async function registerEnrollmentRoutes(app: FastifyInstance, publicBaseU
       reply.code(401).send({ error: "UNAUTHORIZED" });
       return;
     }
-    const db = getDb();
-    const rows = db.prepare(`
-      SELECT * FROM devices WHERE org_id = ? AND user_id = ? ORDER BY created_at DESC
-    `).all(req.authContext.orgId, req.authContext.userId) as Array<Record<string, unknown>>;
+    const rows = await getControlPlaneStore().query(`
+      SELECT * FROM devices WHERE org_id = $1 AND user_id = $2 ORDER BY created_at DESC
+    `, [req.authContext.orgId, req.authContext.userId]);
     const devices: Device[] = rows.map((r) => ({
       id: String(r.id),
       orgId: String(r.org_id),
@@ -73,10 +72,10 @@ export async function registerEnrollmentRoutes(app: FastifyInstance, publicBaseU
       reply.code(401).send({ error: "UNAUTHORIZED" });
       return;
     }
-    const db = getDb();
-    const agentRows = db.prepare(`
-      SELECT * FROM agents WHERE org_id = ? AND owner_user_id = ? ORDER BY created_at ASC
-    `).all(req.authContext.orgId, req.authContext.userId) as Array<Record<string, unknown>>;
+    const db = getControlPlaneStore();
+    const agentRows = await db.query(`
+      SELECT * FROM agents WHERE org_id = $1 AND owner_user_id = $2 ORDER BY created_at ASC
+    `, [req.authContext.orgId, req.authContext.userId]);
     const agents: Agent[] = agentRows.map((r) => ({
       id: String(r.id),
       orgId: String(r.org_id),
@@ -85,9 +84,9 @@ export async function registerEnrollmentRoutes(app: FastifyInstance, publicBaseU
       status: String(r.status) as Agent["status"],
       createdAt: String(r.created_at)
     }));
-    const instanceRows = db.prepare(`
-      SELECT * FROM agent_instances WHERE org_id = ? AND user_id = ? ORDER BY created_at ASC
-    `).all(req.authContext.orgId, req.authContext.userId) as Array<Record<string, unknown>>;
+    const instanceRows = await db.query(`
+      SELECT * FROM agent_instances WHERE org_id = $1 AND user_id = $2 ORDER BY created_at ASC
+    `, [req.authContext.orgId, req.authContext.userId]);
     const instances: AgentInstance[] = instanceRows.map((r) => ({
       id: String(r.id),
       orgId: String(r.org_id),
@@ -111,10 +110,9 @@ export async function registerEnrollmentRoutes(app: FastifyInstance, publicBaseU
       return;
     }
     const { agent_instance_id } = req.params as { agent_instance_id: string };
-    const db = getDb();
-    const row = db.prepare(`
-      SELECT * FROM agent_instances WHERE org_id = ? AND id = ?
-    `).get(req.deviceContext.orgId, agent_instance_id) as Record<string, unknown> | undefined;
+    const row = await getControlPlaneStore().one(`
+      SELECT * FROM agent_instances WHERE org_id = $1 AND id = $2
+    `, [req.deviceContext.orgId, agent_instance_id]);
     if (!row) {
       reply.code(404).send({ error: "NOT_FOUND", message: "Agent instance not found" });
       return;

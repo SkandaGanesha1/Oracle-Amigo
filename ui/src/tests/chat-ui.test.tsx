@@ -64,6 +64,21 @@ describe("MessageComposer", () => {
     expect(source).toContain("handleKeyDown");
     expect(source).toContain("onSend");
     expect(source).toContain("aria-label");
+    expect(source).toContain("Start file request");
+    expect(source).not.toContain("Paperclip");
+    expect(source).not.toContain("AttachmentPreview");
+  });
+});
+
+describe("ConversationHeader", () => {
+  it("wires the command bar and inspector toggle", () => {
+    const source = read("ui/src/features/chat/ConversationHeader.tsx");
+    expect(source).toContain("oa-chat-header-toolbar");
+    expect(source).toContain("oa-chat-header-search");
+    expect(source).toContain("oa-open-chat-search");
+    expect(source).toContain("onToggleInspector");
+    expect(source).toContain("aria-controls=\"right-inspector-panel\"");
+    expect(source).toContain("presence.label");
   });
 });
 
@@ -385,10 +400,15 @@ function directoryUser(): DirectoryUser {
 }
 
 describe("RightInspectorPanel", () => {
-  it("renders 8 tabs with HeroUI Button components", () => {
+  it("renders readable tab buttons with HeroUI Button components", () => {
     const source = read("ui/src/features/inspector/RightInspectorPanel.tsx");
-    expect(source).toContain('"primary" : "ghost"');
     expect(source).toContain('variant="ghost"');
     expect(source).toContain("@heroui/react");
+    expect(source).toContain("inspectorTabs");
+    expect(source).toContain("<button");
+    expect(source).toContain("role=\"tablist\"");
+    expect(source).toContain("role=\"tab\"");
+    expect(source).toContain("oa-inspector-tab");
+    expect(source).not.toContain("showMore");
   });
 });

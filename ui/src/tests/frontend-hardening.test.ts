@@ -3,8 +3,16 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { ApiRequestError, request } from "../api/localAgentClient";
+import { getLocalUiSessionSnapshot, resetLocalUiSessionForTests } from "../api/localUiSessionStore";
+import {
+  getCloudUserSessionSnapshot,
+  markCloudUserBlocked,
+  reconcileCloudUserSessionFromStatus,
+  resetCloudUserSessionForTests
+} from "../api/cloudUserSessionStore";
 import { safeExternalHref } from "../lib/safeUrl";
 import { safeDisplayText } from "../lib/safeText";
+import type { CloudStatus } from "../api/types";
 
 const ROOT = resolve(__dirname, "../../..");
 
@@ -12,15 +20,53 @@ function read(rel: string): string {
   return readFileSync(resolve(ROOT, rel), "utf8");
 }
 
+type CloudStatusOverrides = Omit<Partial<CloudStatus>, "cloud"> & {
+  cloud?: Partial<CloudStatus["cloud"]>;
+};
+
+function cloudStatus(overrides: CloudStatusOverrides = {}): CloudStatus {
+  const { cloud: cloudOverrides, ...rest } = overrides;
+  return {
+    cloud: {
+      profileId: "default",
+      controlPlaneUrl: "http://127.0.0.1:8080",
+      orgId: "org_test",
+      userId: "usr_test",
+      userEmail: "user@example.com",
+      displayName: "Test User",
+      deviceId: "dev_test",
+      agentId: "agt_test",
+      agentInstanceId: "agi_test",
+      relayInboxUrl: "http://127.0.0.1:8080/v1/relay/a2a/inbox",
+      status: "enrolled",
+      hasUserAccessToken: true,
+      hasDeviceAccessToken: true,
+      hasRefreshToken: true,
+      updatedAt: new Date(0).toISOString(),
+      ...(cloudOverrides ?? {})
+    },
+    heartbeat: { running: true, lastResult: null, lastError: null },
+    inbox: { running: true, lastItemCount: 0, lastError: null },
+    tokenIssue: null,
+    canRecoverDeviceToken: false,
+    userAuthIssue: null,
+    canRecoverUserToken: false,
+    relayMode: "polling",
+    ...rest
+  };
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
+  resetLocalUiSessionForTests();
+  resetCloudUserSessionForTests();
 });
 
 describe("localAgentClient", () => {
   it("does not add JSON content type to bodyless GET requests", async () => {
     const fetchMock = vi.fn(async (_path: string, init?: RequestInit) => {
       const headers = new Headers(init?.headers);
-      expect(init?.credentials).toBe("same-origin");
+      expect(init?.credentials).toBe("include");
       expect(headers.has("Content-Type")).toBe(false);
       expect(headers.has("x-local-agent-token")).toBe(false);
       expect(headers.has("Authorization")).toBe(false);
@@ -32,6 +78,72 @@ describe("localAgentClient", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(request<{ ok: boolean }>("/health")).resolves.toEqual({ ok: true });
+  });
+
+  it("refreshes the local UI session once and retries protected requests without browser tokens", async () => {
+    const fetchMock = vi.fn(async (path: string, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      expect(init?.credentials).toBe("include");
+      expect(headers.has("x-local-agent-token")).toBe(false);
+      expect(headers.has("Authorization")).toBe(false);
+      if (fetchMock.mock.calls.length === 1) {
+        expect(path).toBe("/chat/conversations");
+        return new Response(JSON.stringify({ error: "UNAUTHORIZED", message: "Local agent API token is required" }), {
+          status: 401,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      if (fetchMock.mock.calls.length === 2) {
+        expect(path).toBe("/local-ui-session");
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      expect(path).toBe("/chat/conversations");
+      return new Response(JSON.stringify({ conversations: [] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(request<{ conversations: unknown[] }>("/chat/conversations")).resolves.toEqual({ conversations: [] });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(getLocalUiSessionSnapshot().status).toBe("ready");
+  });
+
+  it("blocks protected polling after local UI session recovery fails", async () => {
+    const fetchMock = vi.fn(async (path: string, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      expect(init?.credentials).toBe("include");
+      expect(headers.has("x-local-agent-token")).toBe(false);
+      expect(headers.has("Authorization")).toBe(false);
+      if (fetchMock.mock.calls.length === 2) {
+        expect(path).toBe("/local-ui-session");
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      expect(path).toBe("/chat/conversations");
+      return new Response(JSON.stringify({ error: "UNAUTHORIZED", message: "Local agent API token is required" }), {
+        status: 401,
+        headers: { "Content-Type": "application/json" }
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(request("/chat/conversations")).rejects.toMatchObject({
+      name: "ApiRequestError",
+      status: 401,
+      message: "Local agent API token is required"
+    } satisfies Partial<ApiRequestError>);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(getLocalUiSessionSnapshot()).toMatchObject({
+      status: "blocked",
+      message: "Local agent API token is required"
+    });
   });
 
   it("returns undefined for empty successful responses", async () => {
@@ -55,7 +167,91 @@ describe("localAgentClient", () => {
   });
 });
 
+describe("cloud user session store", () => {
+  it("marks ready sessions from cloud status", () => {
+    reconcileCloudUserSessionFromStatus(cloudStatus());
+
+    expect(getCloudUserSessionSnapshot()).toMatchObject({
+      status: "ready",
+      issue: null,
+      message: null
+    });
+  });
+
+  it("blocks missing and expired cloud user sessions from cloud status", () => {
+    reconcileCloudUserSessionFromStatus(cloudStatus({
+      cloud: { hasUserAccessToken: false },
+      userAuthIssue: "required"
+    }));
+
+    expect(getCloudUserSessionSnapshot()).toMatchObject({
+      status: "blocked",
+      issue: "required",
+      message: "Please sign in to continue."
+    });
+
+    reconcileCloudUserSessionFromStatus(cloudStatus({
+      cloud: { hasUserAccessToken: false },
+      userAuthIssue: "expired"
+    }));
+
+    expect(getCloudUserSessionSnapshot()).toMatchObject({
+      status: "blocked",
+      issue: "expired",
+      message: "Cloud login expired. Please sign in again."
+    });
+  });
+
+  it("preserves cloud-auth expiry separately from local UI session state", () => {
+    markCloudUserBlocked("expired", "Cloud login expired. Please sign in again.");
+
+    expect(getCloudUserSessionSnapshot()).toMatchObject({
+      status: "blocked",
+      issue: "expired"
+    });
+    expect(getLocalUiSessionSnapshot().status).toBe("checking");
+  });
+});
+
 describe("frontend hardening source contracts", () => {
+  it("centralizes Motion React usage behind shared reduced-motion primitives", () => {
+    const providers = read("ui/src/app/AppProviders.tsx");
+    const primitives = read("ui/src/components/primitives/MotionPrimitives.tsx");
+    const shell = read("ui/src/app/AppShell.tsx");
+    const inboxList = read("ui/src/components/inbox/InboxItemList.tsx");
+    const inboxDetail = read("ui/src/components/inbox/InboxDetailPanel.tsx");
+    const intentInbox = read("ui/src/features/inbox/IntentFirstInbox.tsx");
+    const command = read("ui/src/components/CommandPalette.tsx");
+    const notifications = read("ui/src/components/notifications/NotificationCenter.tsx");
+    const threadDrawer = read("ui/src/components/stream-like/ThreadDrawer.tsx");
+    const missionThread = read("ui/src/features/missions/MissionThreadPanel.tsx");
+    const missionTimeline = read("ui/src/features/missions/MissionTimeline.tsx");
+
+    expect(providers).toContain("MotionConfig");
+    expect(providers).toContain("reducedMotion=\"user\"");
+    expect(primitives).toContain("from \"motion/react\"");
+    expect(primitives).toContain("appShellVariants");
+    expect(primitives).toContain("listItemVariants");
+    expect(primitives).toContain("detailPanelVariants");
+    expect(primitives).toContain("overlayVariants");
+    expect(primitives).toContain("modalPanelVariants");
+    expect(primitives).toContain("drawerVariants");
+    expect(shell).toContain("appShellVariants");
+    expect(shell).toContain("<AnimatePresence initial={false} mode=\"popLayout\">");
+    expect(inboxList).toContain("listContainerVariants");
+    expect(inboxList).toContain("layout=\"position\"");
+    expect(inboxDetail).toContain("detailPanelVariants");
+    expect(inboxDetail).toContain("decisionActionMotion");
+    expect(intentInbox).toContain("<AnimatePresence initial={false}>");
+    expect(command).toContain("overlayVariants");
+    expect(command).toContain("modalPanelVariants");
+    expect(notifications).toContain("modalPanelVariants");
+    expect(threadDrawer).toContain("drawerVariants");
+    expect(missionThread).toContain("drawerVariants");
+    expect(missionThread).not.toContain("animate={{ width:");
+    expect(missionTimeline).toContain("missionStepVariants");
+  });
+
   it("blocks unsafe clickable URL schemes", () => {
     expect(safeExternalHref("javascript:alert(1)")).toBeUndefined();
     expect(safeExternalHref("data:text/html,<svg onload=alert(1)>")).toBeUndefined();
@@ -165,11 +361,12 @@ describe("frontend hardening source contracts", () => {
     expect(localAgentClient).not.toContain("VITE_LOCAL_AGENT_API_TOKEN");
     expect(localAgentClient).not.toContain("ORACLE_AMIGO_LOCAL_AGENT_API_TOKEN");
     expect(localAgentClient).not.toContain("x-local-agent-token");
-    expect(localAgentClient).toContain("credentials: \"same-origin\"");
+    expect(localAgentClient).toContain("credentials: \"include\"");
     expect(sharedMessage).toContain("safeMediaSrc(src)");
     expect(sharedMessage).not.toContain("<AvatarImage src={src}");
-    expect(intentChip).toContain("previewUrlRef");
-    expect(intentChip).toContain("URL.revokeObjectURL(previewUrlRef.current)");
+    expect(intentChip).toContain("Sending as file request");
+    expect(intentChip).not.toContain("createObjectURL");
+    expect(intentChip).not.toContain("simulateUpload");
     expect(responseStream).toContain("mountedRef");
     expect(responseStream).toContain("controller.signal.aborted || !mountedRef.current");
     for (const source of [agentCodeBlock, messageBubble, terminal, stackTrace, aiCodeBlock]) {
@@ -238,6 +435,93 @@ describe("frontend hardening source contracts", () => {
     expect(virtualized).not.toContain("motion-safe:flex gap-1 hidden");
     expect(styles).toContain(".oa-message-jump-highlight");
     expect(styles).toContain("@keyframes oa-message-jump-pulse");
+  });
+
+  it("gates cloud contacts and local read-state behind valid session context", () => {
+    const localAgentClient = read("ui/src/api/localAgentClient.ts");
+    const main = read("ui/src/main.tsx");
+    const localSessionStore = read("ui/src/api/localUiSessionStore.ts");
+    const vite = read("vite.config.ts");
+    const hooks = read("ui/src/hooks/queries.ts");
+    const userRail = read("ui/src/app/UserRail.tsx");
+    const sectionSidebar = read("ui/src/app/SectionSidebar.tsx");
+    const intentInbox = read("ui/src/features/inbox/IntentInbox.tsx");
+    const mainChat = read("ui/src/features/chat/MainChatLayout.tsx");
+    const server = read("src/server.ts");
+
+    expect(localAgentClient).toContain("credentials: \"include\"");
+    expect(localAgentClient).toContain("refreshLocalUiSessionOnce");
+    expect(localAgentClient).toContain("markLocalUiSessionRecovering");
+    expect(localAgentClient).toContain("markLocalUiSessionBlocked");
+    expect(localAgentClient).toContain("isLocalUiSessionUnauthorized");
+    expect(localAgentClient).toContain("return error === \"UNAUTHORIZED\"");
+    expect(localAgentClient).not.toContain("x-local-agent-token");
+    expect(main).toContain("bootstrapLocalUiSession");
+    expect(main).toContain("./api/localUiSessionStore");
+    expect(main).toContain("SESSION_RENEWAL_INTERVAL_MS = 6 * 60 * 60 * 1000");
+    expect(main).toContain("visibilitychange");
+    expect(localSessionStore).toContain("\"/local-ui-session\"");
+    expect(vite).toContain("cookieDomainRewrite");
+    expect(vite).toContain("\"/local-ui-session\"");
+    expect(hooks).toContain("export function isCloudUserReady");
+    expect(hooks).toContain("useLocalUiSession");
+    expect(hooks).toContain("isLocalUiSessionReady");
+    expect(hooks).toContain("status?.cloud.status === \"enrolled\"");
+    expect(hooks).toContain("status.cloud.hasUserAccessToken");
+    expect(hooks).toContain("status.userAuthIssue == null");
+    expect(hooks).toContain("status.tokenIssue !== \"expired\"");
+    expect(hooks).toContain("function isCloudAuthError");
+    expect(hooks).toContain("CLOUD_USER_TOKEN_EXPIRED");
+    expect(hooks).toContain("CLOUD_USER_TOKEN_REQUIRED");
+    expect(hooks).toContain("useCloudUserSession");
+    expect(hooks).toContain("isCloudUserSessionReady");
+    expect(hooks).toContain("markCloudUserBlocked");
+    expect(hooks).toContain("reconcileCloudUserSessionFromStatus(query.data)");
+    expect(hooks).toContain("function handleCloudAuthError");
+    expect(hooks).toContain("queryClient.cancelQueries({ queryKey: queryKeys.contacts })");
+    expect(hooks).toContain("queryClient.removeQueries({ queryKey: [\"directory\"] })");
+    expect(hooks).toContain("normalizedQuery.length > 0");
+    expect(hooks).toContain("refetchInterval: cloudEnabled ? 30000 : false");
+    expect(hooks).toContain("staleTime: 15000");
+    expect(hooks).toContain("retry: (failureCount, error) =>");
+    expect(hooks).not.toContain("contactsAuthBlockedForStatusKey");
+    expect(hooks).not.toContain("directoryAuthBlockedForStatusKey");
+    expect(hooks).not.toContain("scheduleCloudStatusRefresh");
+    expect(userRail).toContain("isCloudUserReady(cloudStatus)");
+    expect(userRail).not.toContain("useDirectorySearch(\"\"");
+    expect(sectionSidebar).toContain("useContacts(cloudContactsEnabled)");
+    expect(sectionSidebar).toContain("isCloudUserReady(cloudStatus)");
+    expect(intentInbox).toContain("useContacts(cloudContactsEnabled)");
+    expect(intentInbox).toContain("isCloudUserReady(cloudStatus)");
+    expect(mainChat).toContain("const canonicalConversationId = messagesData?.conversation?.id");
+    expect(mainChat).toContain("useUpdateConversationReadState(canonicalConversationId)");
+    expect(mainChat).toContain("if (!canonicalConversationId || updateReadState.isPending) return;");
+    expect(server).toContain("id === \"local-agent\"");
+    expect(server).toContain("getOrCreateLocalConversation");
+    expect(server).toContain("function clearCloudUserTokens");
+    expect(server).toContain("userAuthIssue");
+    expect(server).toContain("canRecoverUserToken");
+    expect(server).toContain("function runUserCloudRequest");
+    expect(server).toContain("Cloud login expired. Please sign in again.");
+    expect(server).toContain("userAccessToken: null");
+    expect(server).toContain("userRefreshToken: null");
+  });
+
+  it("bounds realtime invalidation and active message polling", () => {
+    const realtime = read("ui/src/realtime/RealtimeTransport.ts");
+    const liveSync = read("ui/src/hooks/useActiveConversationLiveSync.ts");
+    const hooks = read("ui/src/hooks/queries.ts");
+
+    expect(realtime).toContain("function invalidateQueryWhenIdle");
+    expect(realtime).toContain("queryClient.isFetching({ queryKey })");
+    expect(realtime).toContain("cancel(): void");
+    expect(realtime).not.toContain("flushAndStop");
+    expect(realtime).toContain("eventSource.onopen = () => {");
+    expect(realtime).toContain("this.stopFallbackPolling();");
+    expect(realtime).toContain("this.invalidations.cancel();");
+    expect(liveSync).toContain("eventConversationId === conversationId");
+    expect(liveSync).not.toContain("conversationId === \"*\"");
+    expect(hooks).toContain("document.visibilityState === \"visible\" ? 2000 : 15000");
   });
 
   it("renders message attachments and embeds through safe media previews", () => {
@@ -319,14 +603,50 @@ describe("frontend hardening source contracts", () => {
     expect(styles).toContain(".oa-message-surface-card");
     expect(chat).toContain("sendAs === \"normal\"");
     expect(chat).toContain("clientMessageId: crypto.randomUUID()");
-    expect(chat).toContain("setPendingSend({ text, sendAs })");
+    expect(chat).toContain("setPendingSend({ text, sendAs, clientMessageId: crypto.randomUUID() })");
   });
 
   it("keeps chat polling stable with structural message sharing", () => {
     const hooks = read("ui/src/hooks/queries.ts");
+    const liveSync = read("ui/src/hooks/useActiveConversationLiveSync.ts");
     expect(hooks).toContain("function shallowEqualRecord");
     expect(hooks).toContain("function structurallyShareMessages");
+    expect(hooks).toContain("document.visibilityState === \"visible\" ? 2000 : 15000");
+    expect(hooks).toContain("refetchIntervalInBackground: true");
+    expect(hooks).toContain("refetchOnMount: \"always\"");
+    expect(hooks).toContain("refetchOnReconnect: true");
+    expect(hooks).toContain("networkMode: \"always\"");
     expect(hooks).toContain("structuralSharing: structurallyShareMessages");
+    expect(liveSync).toContain("window.addEventListener(\"oa-realtime-event\"");
+    expect(liveSync).toContain("queryKeys.conversationMessages(conversationId)");
+    expect(liveSync).toContain("queryKeys.conversations");
+    expect(liveSync).not.toContain("messagesQuery.refetch()");
+  });
+
+  it("keeps file transfer review focused on risk, integrity, and ordered actions", () => {
+    const preview = read("ui/src/components/stream-like/DocumentPreviewCard.tsx");
+    const approval = read("ui/src/components/agentic-ai/ApprovalCardMessage.tsx");
+    const receipt = read("ui/src/components/agentic-ai/FileReceiptMessage.tsx");
+    const chat = read("ui/src/features/chat/ChatWindow.tsx");
+    const styles = read("ui/src/styles.css");
+
+    expect(preview).toContain("decodeFileName");
+    expect(preview).toContain("decodeURIComponent(name)");
+    expect(preview).toContain("Hash verified");
+    expect(preview).toContain("Leaves device");
+    expect(preview).not.toContain("pending approval");
+    expect(approval).toContain("Review file transfer");
+    expect(approval).toContain("Approve and send");
+    expect(approval).toContain("PreviewButton");
+    expect(approval).toContain("View audit");
+    expect(approval).toContain("Deny file transfer");
+    expect(approval).toContain("RiskSummary");
+    expect(receipt).toContain("View audit");
+    expect(receipt).not.toContain("Needs review\"}</span>");
+    expect(chat).toContain("ConnectionStatusStrip");
+    expect(chat).toContain("Agent link active");
+    expect(styles).toContain(".oa-risk-summary");
+    expect(styles).toContain(".oa-approval-action-bar");
   });
 
   it("keeps routed pages and section rails out of placeholder mode", () => {
@@ -374,6 +694,7 @@ describe("frontend hardening source contracts", () => {
     const hooks = read("ui/src/hooks/queries.ts");
     const detail = read("ui/src/components/inbox/InboxDetailPanel.tsx");
     const empty = read("ui/src/components/inbox/InboxEmptyState.tsx");
+    const shell = read("ui/src/components/inbox/InboxShell.tsx");
     const row = read("ui/src/components/inbox/InboxItemRow.tsx");
 
     expect(page).toContain("<IntentFirstInbox />");
@@ -387,11 +708,19 @@ describe("frontend hardening source contracts", () => {
     expect(actionCenter).toContain("window.addEventListener(\"keydown\"");
     expect(actionCenter).toContain("searchRef.current?.focus()");
     expect(actionCenter).toContain("navigate(`/chats/${item.conversationId}`)");
+    expect(actionCenter).toContain("detailOpen={Boolean(selectedItem)}");
+    expect(actionCenter).toContain("No approvals pending");
+    expect(actionCenter).toContain("BucketAwareEmptyState");
     expect(actionCenter).not.toContain("Intent-first inbox");
     expect(inboxApi).toContain("/api/inbox/items");
     expect(hooks).toContain("export function useInboxItemAction");
     expect(empty).toContain("All clear");
+    expect(empty).toContain("title = \"All clear\"");
+    expect(shell).toContain("data-detail-open");
     expect(detail).toContain("Masked by privacy mode");
+    expect(detail).toContain("if (!item) return null;");
+    expect(detail).toContain("InboxRiskSummary");
+    expect(detail).toContain("oa-inbox-action-bar");
     expect(row).toContain("oa-inbox-row");
     expect(row).not.toContain("<ActionableCard");
   });
@@ -516,10 +845,11 @@ describe("frontend hardening source contracts", () => {
     expect(header).toContain("oa-rail-avatar h-10 w-10 rounded-full");
     expect(header).toContain("oa-rail-presence-badge");
     expect(header).toContain("local ? \"MY\" : initialsFor(displayTitle)");
-    expect(header).not.toContain("oa-chat-header-toolbar");
-    expect(header).not.toContain("oa-chat-header-search");
-    expect(header).not.toContain("oa-open-chat-search");
-    expect(header).not.toContain("presence.label");
+    expect(header).toContain("oa-chat-header-toolbar");
+    expect(header).toContain("oa-chat-header-search");
+    expect(header).toContain("oa-open-chat-search");
+    expect(header).toContain("presence.label");
+    expect(header).toContain("aria-controls=\"right-inspector-panel\"");
     expect(header).not.toContain("Phone");
     expect(header).not.toContain("Video");
     expect(header).not.toContain("UserPlus");
@@ -570,7 +900,7 @@ describe("frontend hardening source contracts", () => {
     expect(chatThinking).not.toContain("border-oa-blue");
     expect(chatThinking).not.toContain("shadow-sm");
     expect(chatThinking).not.toContain("Trusted local trace");
-    expect(chatThinking).not.toContain("Private details masked");
+    expect(chatThinking).toContain("Private details masked");
     expect(chatThinking).not.toContain("bg-gradient-to-r");
     expect(agentThinking).not.toContain("StopCircle");
     expect(agentThinking).not.toContain("stopLabel");
@@ -740,15 +1070,30 @@ describe("frontend hardening source contracts", () => {
     const routes = read("ui/src/app/routes.tsx");
     const routeShell = read("ui/src/app/RouteShell.tsx");
     const enrollment = read("ui/src/features/enrollment/DeviceEnrollmentScreen.tsx");
+    const auth = read("ui/src/features/auth/AuthScreen.tsx");
     expect(routes).toContain("function RouteGate()");
+    expect(routes).toContain("useLocalUiSession");
+    expect(routes).toContain("useCloudUserSession");
+    expect(routes).toContain("isCloudUserSessionReady");
+    expect(routes).toContain("localSession.status === \"blocked\"");
+    expect(routes).toContain("cloudSession.status === \"blocked\"");
+    expect(routes).toContain("Refreshing local UI session");
     expect(routes).toContain("<Route element={<RouteShell />}>");
     expect(routes).toContain("status === \"disconnected\"");
     expect(routes).toContain("to=\"/login\"");
     expect(routes).toContain("status !== \"enrolled\"");
     expect(routes).toContain("hasDeviceAccessToken");
-    expect(routes).toContain("data?.tokenIssue === \"expired\"");
+    expect(routes).toContain("hasUserAccessToken");
+    expect(routes).toContain("userAuthIssue");
+    expect(routes).toContain("data?.tokenIssue !== \"expired\"");
+    expect(routes).toContain("const cloudAuthMessage =");
+    expect(routes).toContain("Cloud login expired. Please sign in again.");
+    expect(routes).toContain("Please sign in to continue.");
     expect(routes).toContain("to=\"/enroll\"");
     expect(routes).toContain("<Route element={<RouteGate />}>");
+    expect(auth).toContain("routeState?.cloudAuthMessage");
+    expect(auth).toContain("resetCloudUserSession()");
+    expect(auth).toContain("markCloudUserReady()");
     expect(routeShell).toContain("overflow-y-auto");
     expect(routeShell).toContain("data-testid=\"auth-route-scroll\"");
     expect(enrollment).toContain("<LogoutButton />");

@@ -1,4 +1,4 @@
-import { CheckCircle2, Download, Eye, File, FileText, Lock, ShieldCheck } from "lucide-react";
+import { AlertTriangle, Download, Eye, File, FileText, Lock, ShieldCheck } from "lucide-react";
 import type { ReactNode } from "react";
 
 export interface ChatDocumentPreview {
@@ -9,6 +9,7 @@ export interface ChatDocumentPreview {
   sha256?: string;
   thumbnailUrl?: string | null;
   previewText?: string | null;
+  matchLabel?: string | null;
   status?: "requested" | "pending_approval" | "approved" | "sent" | "received" | "blocked" | "failed";
   sensitivity?: "low" | "medium" | "high";
   leavesDevice?: boolean;
@@ -21,7 +22,31 @@ function FileIcon({ mimeType }: { mimeType: string }) {
 }
 
 function statusLabel(status: ChatDocumentPreview["status"]): string {
-  return status ? status.replace(/_/g, " ") : "";
+  if (status === "blocked") return "Blocked";
+  if (status === "failed") return "Failed";
+  return "";
+}
+
+function decodeFileName(name: string): string {
+  try {
+    return decodeURIComponent(name);
+  } catch {
+    return name.replace(/%20/g, " ");
+  }
+}
+
+function mimeLabel(mimeType: string): string {
+  if (!mimeType) return "";
+  if (mimeType === "file") return "File";
+  if (mimeType.startsWith(".")) return mimeType.slice(1).toUpperCase();
+  if (mimeType.includes("pdf")) return "PDF";
+  return mimeType;
+}
+
+function sensitivityLabel(sensitivity: ChatDocumentPreview["sensitivity"]): string {
+  if (sensitivity === "high" || sensitivity === "medium") return "Sensitive";
+  if (sensitivity === "low") return "Low sensitivity";
+  return "";
 }
 
 export function DocumentPreviewCard({
@@ -33,8 +58,11 @@ export function DocumentPreviewCard({
   primaryAction?: ReactNode;
   secondaryAction?: ReactNode;
 }) {
+  const displayName = decodeFileName(file.name);
+  const status = statusLabel(file.status);
+  const sensitivity = sensitivityLabel(file.sensitivity);
   return (
-    <article className="oa-doc-card" aria-label={`Document preview: ${file.name}`}>
+    <article className="oa-doc-card" aria-label={`Document preview: ${displayName}`}>
       <div className="oa-doc-thumb" aria-hidden="true">
         {file.thumbnailUrl ? (
           <img src={file.thumbnailUrl} alt="" loading="lazy" />
@@ -45,18 +73,13 @@ export function DocumentPreviewCard({
 
       <div className="oa-doc-body">
         <div className="oa-doc-title-row">
-          <h4 className="oa-doc-title" title={file.name}>{file.name}</h4>
-          {file.verified && (
-            <span className="oa-doc-chip success">
-              <ShieldCheck size={12} aria-hidden="true" />
-              Verified
-            </span>
-          )}
+          <h4 className="oa-doc-title" title={displayName}>{displayName}</h4>
         </div>
 
         <div className="oa-doc-meta">
           {file.sizeLabel && <span>{file.sizeLabel}</span>}
-          {file.mimeType && <span>{file.mimeType}</span>}
+          {file.mimeType && <span>{mimeLabel(file.mimeType)}</span>}
+          {file.matchLabel && <span>{file.matchLabel}</span>}
           {file.sha256 && <span>SHA-256 {file.sha256.slice(0, 10)}...</span>}
         </div>
 
@@ -65,17 +88,23 @@ export function DocumentPreviewCard({
         )}
 
         <div className="oa-doc-chip-row">
-          {file.sensitivity && <span className="oa-doc-chip">Sensitivity: {file.sensitivity}</span>}
+          {sensitivity && <span className="oa-doc-chip">{sensitivity}</span>}
           {file.leavesDevice && (
             <span className="oa-doc-chip warning">
               <Lock size={12} aria-hidden="true" />
               Leaves device
             </span>
           )}
-          {file.status && (
-            <span className="oa-doc-chip">
-              <CheckCircle2 size={12} aria-hidden="true" />
-              {statusLabel(file.status)}
+          {file.verified && (
+            <span className="oa-doc-chip success">
+              <ShieldCheck size={12} aria-hidden="true" />
+              Hash verified
+            </span>
+          )}
+          {status && (
+            <span className="oa-doc-chip danger">
+              <AlertTriangle size={12} aria-hidden="true" />
+              {status}
             </span>
           )}
         </div>

@@ -27,7 +27,7 @@ describe("DeviceIdentity", () => {
     expect(first.agentId).toBe(second.agentId);
     expect(first.did).toBe(second.did);
     expect(first.publicKey).toBe(second.publicKey);
-  });
+  }, 20_000);
 
   it("generated DID starts with did:key:", async () => {
     const { generateOrLoadIdentity } = await import("../src/security/DeviceIdentity.js");

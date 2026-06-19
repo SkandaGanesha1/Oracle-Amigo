@@ -1,8 +1,8 @@
 import { useEffect, useState, useCallback } from "react";
-import { AnimatePresence } from "framer-motion";
 import { useParams, useNavigate } from "react-router-dom";
 import { AlertTriangle, Search, MessageSquareText, ListTodo, RefreshCw } from "lucide-react";
-import { useActiveConversationRealtime, useConversations, useConversationMessages, useCreateThreadReply, useUpdateConversationReadState } from "../../hooks/queries";
+import { useConversations, useConversationMessages, useCreateThreadReply, useUpdateConversationReadState } from "../../hooks/queries";
+import { useActiveConversationLiveSync } from "../../hooks/useActiveConversationLiveSync";
 import { ApiRequestError } from "../../api/localAgentClient";
 import { api } from "../../api/client";
 import { ConversationHeader } from "./ConversationHeader";
@@ -10,6 +10,7 @@ import { ChatWindow } from "./ChatWindow";
 import { RightInspectorPanel } from "../inspector/RightInspectorPanel";
 import { ThreadDrawer, type ThreadSubject } from "../../components/stream-like/ThreadDrawer";
 import type { TimelineMessage, FileReceiptMessage } from "../../api/types";
+import { AnimatePresence } from "../../components/primitives/MotionPrimitives";
 
 function messageCreatedAt(message: TimelineMessage): string {
   return message.kind === "receipt" ? (message as FileReceiptMessage).received_at : message.created_at;
@@ -133,30 +134,38 @@ function ConversationLoadErrorPanel({
 export function MainChatLayout() {
   const { conversationId } = useParams<{ conversationId?: string }>();
   const { data: conversationsData } = useConversations();
+  const messagesQuery = useConversationMessages(conversationId ?? null);
   const {
     data: messagesData,
     error: messagesError,
     isError: messagesIsError,
     isLoading,
     refetch: refetchMessages,
-  } = useConversationMessages(conversationId ?? null);
-  const updateReadState = useUpdateConversationReadState(conversationId ?? null);
+  } = messagesQuery;
   const { inspectorOpen, toggleInspector, closeInspector } = useInspectorState();
   const [threadSubject, setThreadSubject] = useState<ThreadSubject | null>(null);
   const [refreshingSession, setRefreshingSession] = useState(false);
-  const createThreadReply = useCreateThreadReply(conversationId ?? null, threadSubject?.messageId ?? null);
   const navigate = useNavigate();
+  const canonicalConversationId = messagesData?.conversation?.id ?? messagesData?.conversationId ?? conversationId ?? null;
+  const updateReadState = useUpdateConversationReadState(canonicalConversationId);
+  const createThreadReply = useCreateThreadReply(canonicalConversationId, threadSubject?.messageId ?? null);
 
   const activeConversation = conversationsData?.conversations?.find((c) => c.id === conversationId) ?? messagesData?.conversation ?? null;
   const messages = messagesData?.messages ?? [];
   const readState = messagesData?.readState ?? activeConversation?.readState ?? null;
-  useActiveConversationRealtime(conversationId ?? null, refetchMessages);
+  useActiveConversationLiveSync(canonicalConversationId, messagesQuery);
+
+  useEffect(() => {
+    if (!conversationId || !canonicalConversationId || canonicalConversationId === conversationId) return;
+    navigate(`/chats/${canonicalConversationId}`, { replace: true });
+  }, [conversationId, canonicalConversationId, navigate]);
 
   const handleMarkRead = useCallback((messageId: string) => {
-    if (!conversationId || updateReadState.isPending) return;
+    if (!canonicalConversationId || updateReadState.isPending) return;
+    if (!messages.some((message) => message.id === messageId)) return;
     if (readState?.lastReadMessageId === messageId && readState.unreadCount === 0) return;
     updateReadState.mutate(messageId);
-  }, [conversationId, readState?.lastReadMessageId, readState?.unreadCount, updateReadState]);
+  }, [canonicalConversationId, messages, readState?.lastReadMessageId, readState?.unreadCount, updateReadState]);
 
   useEffect(() => {
     function handleReply(event: Event) {
@@ -233,7 +242,7 @@ export function MainChatLayout() {
                     conversation={activeConversation}
                     messages={messages}
                     loading={isLoading}
-                    conversationId={conversationId}
+                    conversationId={canonicalConversationId ?? conversationId}
                     readState={readState}
                     pageInfo={messagesData?.pageInfo}
                     onMarkRead={handleMarkRead}
@@ -253,6 +262,7 @@ export function MainChatLayout() {
               {inspectorOpen && (
                 <RightInspectorPanel
                   onClose={closeInspector}
+                  conversationId={activeConversation?.id ?? conversationId}
                 />
               )}
             </div>

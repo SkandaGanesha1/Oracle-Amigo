@@ -7,8 +7,9 @@ import * as OTPAuth from "otpauth";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApp } from "../src/main.js";
 import { resetConfigForTest } from "../src/config.js";
-import { closeAll, getDb } from "../src/db/connection.js";
+import { closeAll, getControlPlaneStore } from "../src/db/connection.js";
 import { Crypto } from "../src/admin/index.js";
+import { postgresTestConfig, resetPostgresTestDatabase } from "./postgresTestHarness.js";
 
 let app: FastifyInstance;
 let dataDir: string;
@@ -37,11 +38,11 @@ function readCookieValue(setCookie: string): string {
 
 beforeAll(async () => {
   dataDir = mkdtempSync(join(tmpdir(), "admin-hardening-test-"));
-  resetConfigForTest({
+  await resetPostgresTestDatabase();
+  resetConfigForTest(postgresTestConfig({
     CONTROL_PLANE_PORT: "9998",
     CONTROL_PLANE_HOST: "127.0.0.1",
     CONTROL_PLANE_PUBLIC_URL: "http://127.0.0.1:9998",
-    CONTROL_PLANE_DB_PATH: join(dataDir, "test.db"),
     JWT_ACCESS_SECRET: "test-access-secret-must-be-16+",
     JWT_REFRESH_SECRET: "test-refresh-secret-must-be-16+",
     FILE_TRANSFER_STORE: join(dataDir, "transfers"),
@@ -49,15 +50,15 @@ beforeAll(async () => {
     DEV_ADMIN_TOKEN: "test-admin-token-1234",
     CONTROL_PLANE_ENV: "test",
     METRICS_ENABLED: "false"
-  });
-  closeAll();
+  }));
+  await closeAll();
   app = await buildApp();
   await app.ready();
 });
 
 afterAll(async () => {
   if (app) await app.close();
-  closeAll();
+  await closeAll();
   try {
     rmSync(dataDir, { recursive: true, force: true });
   } catch {
@@ -91,18 +92,22 @@ describe("admin hardening", () => {
 
     const body = setup.json();
     const adminUserId = body.user.id as string;
-    const totpRow = getDb()
-      .prepare("SELECT secret_encrypted FROM admin_totp_secrets WHERE admin_user_id = ?")
-      .get(adminUserId) as { secret_encrypted: string };
-    expect(totpRow.secret_encrypted).toBeTruthy();
-    expect(totpRow.secret_encrypted).not.toBe(setupStart.secret_base32);
-    expect(Crypto.decryptSecret(totpRow.secret_encrypted)).toBe(setupStart.secret_base32);
+    const db = getControlPlaneStore();
+    const totpRow = await db.one<{ secret_encrypted: string }>(
+      "SELECT secret_encrypted FROM admin_totp_secrets WHERE admin_user_id = $1",
+      [adminUserId]
+    );
+    expect(totpRow).toBeTruthy();
+    expect(totpRow!.secret_encrypted).toBeTruthy();
+    expect(totpRow!.secret_encrypted).not.toBe(setupStart.secret_base32);
+    expect(Crypto.decryptSecret(totpRow!.secret_encrypted)).toBe(setupStart.secret_base32);
 
     const recoveryCodes = body.recovery_codes as string[];
     expect(recoveryCodes).toHaveLength(10);
-    const recoveryRows = getDb()
-      .prepare("SELECT code_hash, used_at FROM admin_recovery_codes WHERE admin_user_id = ? ORDER BY created_at ASC")
-      .all(adminUserId) as Array<{ code_hash: string; used_at: string | null }>;
+    const recoveryRows = await db.query<{ code_hash: string; used_at: string | null }>(
+      "SELECT code_hash, used_at FROM admin_recovery_codes WHERE admin_user_id = $1 ORDER BY created_at ASC",
+      [adminUserId]
+    );
     expect(recoveryRows).toHaveLength(10);
     expect(recoveryRows.every((row) => /^[a-f0-9]{64}$/.test(row.code_hash))).toBe(true);
     expect(JSON.stringify(recoveryRows)).not.toContain(recoveryCodes[0].replace(/[\s-]/g, "").toUpperCase());
@@ -120,14 +125,16 @@ describe("admin hardening", () => {
     });
     expect(recovery.statusCode).toBe(200);
     expect(recovery.json().recovery_codes).toHaveLength(10);
-    const unusedAfterRotation = getDb()
-      .prepare("SELECT COUNT(*) AS n FROM admin_recovery_codes WHERE admin_user_id = ? AND used_at IS NULL")
-      .get(adminUserId) as { n: number };
-    expect(unusedAfterRotation.n).toBe(10);
-    const usedAfterRotation = getDb()
-      .prepare("SELECT COUNT(*) AS n FROM admin_recovery_codes WHERE admin_user_id = ? AND used_at IS NOT NULL")
-      .get(adminUserId) as { n: number };
-    expect(usedAfterRotation.n).toBeGreaterThanOrEqual(10);
+    const unusedAfterRotation = await db.one<{ n: string | number }>(
+      "SELECT COUNT(*) AS n FROM admin_recovery_codes WHERE admin_user_id = $1 AND used_at IS NULL",
+      [adminUserId]
+    );
+    expect(Number(unusedAfterRotation?.n ?? 0)).toBe(10);
+    const usedAfterRotation = await db.one<{ n: string | number }>(
+      "SELECT COUNT(*) AS n FROM admin_recovery_codes WHERE admin_user_id = $1 AND used_at IS NOT NULL",
+      [adminUserId]
+    );
+    expect(Number(usedAfterRotation?.n ?? 0)).toBeGreaterThanOrEqual(10);
 
     const logout = await app.inject({
       method: "POST",
@@ -273,23 +280,23 @@ describe("admin hardening", () => {
     const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
     const previous = { ...process.env };
     try {
-      closeAll();
-      resetConfigForTest({
+      await resetPostgresTestDatabase();
+      resetConfigForTest(postgresTestConfig({
         CONTROL_PLANE_ENV: "production",
         CONTROL_PLANE_PORT: "9997",
         CONTROL_PLANE_HOST: "127.0.0.1",
         CONTROL_PLANE_PUBLIC_URL: "https://control-plane.example.test",
-        CONTROL_PLANE_DB_PATH: join(prodDir, "prod.db"),
         JWT_ACCESS_SECRET: "prod-access-secret-strong-enough-123",
         JWT_REFRESH_SECRET: "prod-refresh-secret-strong-enough-123",
         JWT_PRIVATE_KEY_PEM: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
         JWT_PUBLIC_KEY_PEM: publicKey.export({ type: "spki", format: "pem" }).toString(),
         ADMIN_KEK: "prod-admin-kek-strong-enough-1234567890",
         TRANSFER_KEK: "prod-transfer-kek-strong-enough-1234567890",
+        DEV_ADMIN_TOKEN: "",
         ADMIN_COOKIE_HOST_PREFIX: "true",
         ADMIN_SETUP_ENABLED: "false",
         METRICS_ENABLED: "false"
-      });
+      }));
       const prodApp = await buildApp();
       await prodApp.ready();
       const res = await prodApp.inject({ method: "POST", url: "/v1/admin/auth/setup/start", payload: {} });
@@ -298,12 +305,11 @@ describe("admin hardening", () => {
       await prodApp.close();
     } finally {
       process.env = previous;
-      closeAll();
-      resetConfigForTest({
+      await resetPostgresTestDatabase();
+      resetConfigForTest(postgresTestConfig({
         CONTROL_PLANE_PORT: "9998",
         CONTROL_PLANE_HOST: "127.0.0.1",
         CONTROL_PLANE_PUBLIC_URL: "http://127.0.0.1:9998",
-        CONTROL_PLANE_DB_PATH: join(dataDir, "test.db"),
         JWT_ACCESS_SECRET: "test-access-secret-must-be-16+",
         JWT_REFRESH_SECRET: "test-refresh-secret-must-be-16+",
         FILE_TRANSFER_STORE: join(dataDir, "transfers"),
@@ -311,7 +317,7 @@ describe("admin hardening", () => {
         DEV_ADMIN_TOKEN: "test-admin-token-1234",
         CONTROL_PLANE_ENV: "test",
         METRICS_ENABLED: "false"
-      });
+      }));
       rmSync(prodDir, { recursive: true, force: true });
     }
   });
@@ -363,7 +369,11 @@ async function signupAndEnroll(label: string): Promise<{
   });
   expect(enrollment.statusCode).toBe(200);
   const body = enrollment.json();
-  expect(getDb().prepare("SELECT id FROM devices WHERE id = ?").get(body.device_id)).toBeTruthy();
+  const deviceRow = await getControlPlaneStore().one<{ id: string }>(
+    "SELECT id FROM devices WHERE id = $1",
+    [body.device_id]
+  );
+  expect(deviceRow).toBeTruthy();
   return {
     accessToken,
     deviceToken: body.device_access_token,

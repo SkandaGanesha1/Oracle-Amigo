@@ -25,10 +25,11 @@ const runId = Date.now();
 const workDir = join(tmpdir(), `oracle-amigo-relay-e2e-${runId}`);
 const cpPort = 19700 + Math.floor(Math.random() * 500);
 const controlPlaneUrl = `http://127.0.0.1:${cpPort}`;
+const localApiToken = "relay-e2e-local-api-token-000000000000";
 
 async function main(): Promise<void> {
   mkdirSync(workDir, { recursive: true });
-  const bobDocs = join(workDir, "bob-docs");
+  const bobDocs = join(workDir, "bob", "storage", "docs");
   mkdirSync(bobDocs, { recursive: true });
   const fileBytes = Buffer.from(`Oracle Amigo API design document\nrun=${runId}\n`, "utf8");
   const bobFile = join(bobDocs, "API_Design_v4_Final.txt");
@@ -111,13 +112,15 @@ async function main(): Promise<void> {
     });
     assert(Boolean(sent.relay_task_id), "Alice sent relay file request");
 
+    let lastBobInboxStatus: unknown = null;
     await waitFor(async () => {
+      lastBobInboxStatus = await agentGet(bob, "/relay/inbox/status");
       const pending = await agentGet(bob, "/approvals/pending");
-      return pending.approvals.some((a: { requesterAgentId: string }) => a.requesterAgentId === aliceEnroll.agent_instance_id);
-    }, "Bob approval card appears");
+      return pending.approvals.some((a: Record<string, unknown>) => approvalRequesterAgentId(a) === aliceEnroll.agent_instance_id);
+    }, () => `Bob approval card appears; inbox=${JSON.stringify(lastBobInboxStatus)}`);
 
     const pending = await agentGet(bob, "/approvals/pending");
-    const approval = pending.approvals.find((a: { requesterAgentId: string }) => a.requesterAgentId === aliceEnroll.agent_instance_id);
+    const approval = pending.approvals.find((a: Record<string, unknown>) => approvalRequesterAgentId(a) === aliceEnroll.agent_instance_id);
     assert(Boolean(approval), "Bob has approval");
     const approved = await agentJson(bob, `/approvals/${encodeURIComponent(approval.id)}/approve`, {
       idempotency_key: `approve-${approval.id}`
@@ -146,7 +149,7 @@ async function main(): Promise<void> {
 
     console.log("PASS two-agent relay file request");
   } finally {
-    for (const agent of agents) stopAgent(agent);
+    for (const agent of agents) await stopAgent(agent);
     await controlPlane.close();
     closeAll();
     try {
@@ -173,6 +176,8 @@ async function startAgent(name: "alice" | "bob", port: number): Promise<AgentPro
     AGENTIC_RELAY_MODE: "polling",
     AGENTIC_HEARTBEAT_INTERVAL_SECONDS: "2",
     AGENTIC_RELAY_POLL_INTERVAL_SECONDS: "1",
+    LOCAL_AGENT_API_TOKEN: localApiToken,
+    SANDBOX_FILE_SEARCH_ROOTS: storageRoot,
     LOCALAPPDATA: dir
   };
   const child = spawn(process.execPath, ["--import", "tsx", "src/server.ts"], {
@@ -188,8 +193,19 @@ async function startAgent(name: "alice" | "bob", port: number): Promise<AgentPro
   return agent;
 }
 
-function stopAgent(agent: AgentProc): void {
-  if (!agent.child.killed) agent.child.kill();
+async function stopAgent(agent: AgentProc): Promise<void> {
+  if (agent.child.killed || agent.child.exitCode !== null) return;
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(() => {
+      if (!agent.child.killed) agent.child.kill("SIGKILL");
+      resolve();
+    }, 1500);
+    agent.child.once("exit", () => {
+      clearTimeout(timer);
+      resolve();
+    });
+    agent.child.kill();
+  });
 }
 
 async function allocateAgentPorts(): Promise<[number, number]> {
@@ -217,7 +233,9 @@ async function getFreePort(): Promise<number> {
 }
 
 async function agentGet(agent: AgentProc, path: string): Promise<any> {
-  const res = await fetch(`http://127.0.0.1:${agent.port}${path}`);
+  const res = await fetch(`http://127.0.0.1:${agent.port}${path}`, {
+    headers: { "x-local-agent-token": localApiToken }
+  });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(`${agent.name} GET ${path} failed: ${res.status} ${JSON.stringify(body)}`);
   return body;
@@ -226,7 +244,7 @@ async function agentGet(agent: AgentProc, path: string): Promise<any> {
 async function agentJson(agent: AgentProc, path: string, payload: unknown): Promise<any> {
   const res = await fetch(`http://127.0.0.1:${agent.port}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "x-local-agent-token": localApiToken },
     body: JSON.stringify(payload)
   });
   const body = await res.json().catch(() => ({}));
@@ -234,20 +252,28 @@ async function agentJson(agent: AgentProc, path: string, payload: unknown): Prom
   return body;
 }
 
-async function waitFor(fn: () => Promise<boolean> | boolean, label: string, timeoutMs = 30_000): Promise<void> {
+async function waitFor(fn: () => Promise<boolean> | boolean, label: string | (() => string), timeoutMs = 30_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (await fn()) return;
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
-  throw new Error(`Timed out waiting for ${label}`);
+  const renderedLabel = typeof label === "function" ? label() : label;
+  throw new Error(`Timed out waiting for ${renderedLabel}`);
 }
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
 }
 
-main().catch((err) => {
+function approvalRequesterAgentId(approval: Record<string, unknown>): string | undefined {
+  const value = approval.requesterAgentId ?? approval.requester_agent_id;
+  return typeof value === "string" ? value : undefined;
+}
+
+main().then(() => {
+  process.exit(0);
+}).catch((err) => {
   console.error(err instanceof Error ? err.stack ?? err.message : String(err));
-  process.exitCode = 1;
+  process.exit(1);
 });

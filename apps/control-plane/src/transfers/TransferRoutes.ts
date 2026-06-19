@@ -26,7 +26,7 @@ export async function registerTransferRoutes(app: FastifyInstance, publicBaseUrl
     }
     try {
       const body = InitSchema.parse(req.body);
-      const result = initTransfer({
+      const result = await initTransfer({
         orgId: req.deviceContext.orgId,
         fromAgentInstanceId: req.deviceContext.agentInstanceId,
         toAgentInstanceId: body.to_agent_instance_id as never,
@@ -63,7 +63,7 @@ export async function registerTransferRoutes(app: FastifyInstance, publicBaseUrl
       } else {
         data = Buffer.alloc(0);
       }
-      const result = uploadTransfer(
+      const result = await uploadTransfer(
         req.deviceContext.orgId,
         transfer_id,
         req.deviceContext.agentInstanceId,
@@ -82,7 +82,7 @@ export async function registerTransferRoutes(app: FastifyInstance, publicBaseUrl
     }
     const { transfer_id } = req.params as { transfer_id: string };
     try {
-      const { data, fileName, sha256, fileSize } = downloadTransfer(
+      const { data, fileName, sha256, fileSize } = await downloadTransfer(
         req.deviceContext.orgId,
         transfer_id,
         req.deviceContext.agentInstanceId
@@ -105,7 +105,7 @@ export async function registerTransferRoutes(app: FastifyInstance, publicBaseUrl
     const { transfer_id } = req.params as { transfer_id: string };
     try {
       const body = ReceiptSchema.parse(req.body);
-      const result = recordTransferReceipt(
+      const result = await recordTransferReceipt(
         req.deviceContext.orgId,
         transfer_id,
         req.deviceContext.agentInstanceId,

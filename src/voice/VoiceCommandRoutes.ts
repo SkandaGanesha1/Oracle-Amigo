@@ -1,4 +1,4 @@
-import type { FastifyInstance, FastifyReply } from "fastify";
+import type { FastifyInstance, FastifyReply, RouteShorthandOptions } from "fastify";
 import { z, ZodError } from "zod";
 import {
   VoiceCommandConfirmRequestSchema,
@@ -21,15 +21,16 @@ const VoiceCommandListQuerySchema = z.object({
 export function registerVoiceCommandRoutes(
   server: FastifyInstance,
   service: VoiceCommandService,
-  getStatus: () => Record<string, unknown>
+  getStatus: () => Record<string, unknown>,
+  routeOptions: RouteShorthandOptions = {}
 ): void {
-  server.get("/voice/status", async () => ({
+  server.get("/voice/status", routeOptions, async () => ({
     ok: true,
     localAgent: "online",
     ...getStatus()
   }));
 
-  server.post("/voice/transcribe", async (request, reply) => {
+  server.post("/voice/transcribe", routeOptions, async (request, reply) => {
     try {
       const body = VoiceTranscribeRequestSchema.parse(request.body ?? {});
       return await transcribeVoiceAudio(body, reply);
@@ -38,7 +39,7 @@ export function registerVoiceCommandRoutes(
     }
   });
 
-  server.post("/voice/commands", async (request, reply) => {
+  server.post("/voice/commands", routeOptions, async (request, reply) => {
     try {
       const body = VoiceCommandRequestSchema.parse(request.body ?? {});
       const command = await service.createCommand(body);
@@ -48,7 +49,7 @@ export function registerVoiceCommandRoutes(
     }
   });
 
-  server.get("/voice/commands", async (request, reply) => {
+  server.get("/voice/commands", routeOptions, async (request, reply) => {
     try {
       const query = VoiceCommandListQuerySchema.parse(request.query ?? {});
       const commands = service.listCommands(query);
@@ -65,14 +66,14 @@ export function registerVoiceCommandRoutes(
     }
   });
 
-  server.get("/voice/commands/:id", async (request, reply) => {
+  server.get("/voice/commands/:id", routeOptions, async (request, reply) => {
     const { id } = CommandIdParamsSchema.parse(request.params);
     const command = service.getCommand(id);
     if (!command) return reply.status(404).send({ error: "VOICE_COMMAND_NOT_FOUND", message: "Voice command not found" });
     return voiceCommandResponse(command);
   });
 
-  server.get("/voice/commands/:id/events", async (request, reply) => {
+  server.get("/voice/commands/:id/events", routeOptions, async (request, reply) => {
     const { id } = CommandIdParamsSchema.parse(request.params);
     const command = service.getCommand(id);
     if (!command) return reply.status(404).send({ error: "VOICE_COMMAND_NOT_FOUND", message: "Voice command not found" });
@@ -88,7 +89,7 @@ export function registerVoiceCommandRoutes(
     request.raw.on("close", unsubscribe);
   });
 
-  server.post("/voice/commands/:id/confirm", async (request, reply) => {
+  server.post("/voice/commands/:id/confirm", routeOptions, async (request, reply) => {
     try {
       const { id } = CommandIdParamsSchema.parse(request.params);
       const body = VoiceCommandConfirmRequestSchema.parse(request.body ?? {});
@@ -99,7 +100,7 @@ export function registerVoiceCommandRoutes(
     }
   });
 
-  server.post("/voice/commands/:id/cancel", async (request, reply) => {
+  server.post("/voice/commands/:id/cancel", routeOptions, async (request, reply) => {
     try {
       const { id } = CommandIdParamsSchema.parse(request.params);
       const command = service.cancelCommand(id);

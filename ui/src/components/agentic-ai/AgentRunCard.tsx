@@ -1,5 +1,5 @@
 import { useState, useMemo } from "react";
-import { motion } from "framer-motion";
+import { motion } from "../primitives/MotionPrimitives";
 import { CheckCircle, Brain, Loader2, XCircle, SkipForward, Pause, StopCircle, FileText, HelpCircle, Timer, ChevronDown, ChevronRight } from "lucide-react";
 import { ThinkingBar } from "./ThinkingBar";
 import { AgenticReasoning } from "./AgenticReasoning";

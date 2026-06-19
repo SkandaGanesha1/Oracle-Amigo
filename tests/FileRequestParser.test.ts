@@ -23,6 +23,33 @@ describe("file request parser", () => {
     expect(parsed.confidence).toBeGreaterThan(0.5);
   });
 
+  it("removes remote target words and extracts pdf extension from ask requests", () => {
+    const parsed = parseFileRequest("Ask Docin to send me Harassment Certificate pdf file");
+
+    expect(parsed.exactFilename).toBeNull();
+    expect(parsed.extensions).toContain(".pdf");
+    expect(parsed.cleanQuery).toBe("harassment certificate");
+    expect(parsed.keywords).toEqual(["harassment", "certificate"]);
+    expect(parsed.requestWordsRemoved).toEqual(expect.arrayContaining(["remote_target", "send", "me", "pdf", "file"]));
+  });
+
+  it("extracts exact filenames before trailing from-target clauses", () => {
+    const parsed = parseFileRequest("Request NonPO invoice india.pdf from Docin");
+
+    expect(parsed.exactFilename).toBe("NonPO invoice india.pdf");
+    expect(parsed.extensions).toContain(".pdf");
+    expect(parsed.cleanQuery).toBe("nonpo invoice india");
+    expect(parsed.requestWordsRemoved).toContain("remote_target");
+  });
+
+  it("treats doc as an extension hint without polluting the query", () => {
+    const parsed = parseFileRequest("Share latest API design doc");
+
+    expect(parsed.exactFilename).toBeNull();
+    expect(parsed.extensions).toContain(".doc");
+    expect(parsed.cleanQuery).toBe("latest api design");
+  });
+
   it("exposes a class wrapper for parser consumers", () => {
     const parsed = new FileRequestParser().parse("Send me Job Offer-Associate Consultant.pdf file");
 

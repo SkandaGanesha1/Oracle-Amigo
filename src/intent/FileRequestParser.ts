@@ -3,8 +3,10 @@ import { z } from "zod";
 const REQUEST_WORDS = new Set([
   "a",
   "an",
+  "ask",
   "can",
   "could",
+  "docin",
   "document",
   "file",
   "files",
@@ -18,6 +20,7 @@ const REQUEST_WORDS = new Set([
   "me",
   "need",
   "please",
+  "request",
   "send",
   "share",
   "show",
@@ -74,16 +77,18 @@ export function parseFileRequest(input: string): FileRequestParseResult {
 export class FileRequestParser {
   parse(input: string): FileRequestParseResult {
     const originalText = input.trim();
-    const extracted = extractFilename(originalText);
+    const intentText = stripRemoteRouting(originalText);
+    const extracted = extractFilename(intentText);
     const stripped = extracted ? stripLeadingRequestWords(extracted) : null;
     const exactFilename = stripped?.filename ?? null;
-    const extensions = extensionHints(originalText, exactFilename);
+    const extensions = extensionHints(intentText, exactFilename);
     const cleanSource = exactFilename
       ? removeExtension(exactFilename)
-      : originalText;
-    const cleaned = cleanRequestText(cleanSource);
-    const requestWordsRemoved = [...new Set([...(stripped?.removed ?? []), ...cleaned.removed])];
-    const keywords = tokenize(cleaned.text);
+      : intentText;
+    const cleaned = cleanRequestText(cleanSource, extensions);
+    const routingRemoved = intentText === originalText ? [] : ["remote_target"];
+    const requestWordsRemoved = [...new Set([...(stripped?.removed ?? []), ...cleaned.removed, ...routingRemoved])];
+    const keywords = tokenize(cleaned.text, extensions);
 
     return FileRequestParseResultSchema.parse({
       originalText,
@@ -110,6 +115,14 @@ export function normalizeFilename(value: string): string {
     .replace(/\s+/g, " ");
 }
 
+function stripRemoteRouting(value: string): string {
+  let text = value.trim();
+  text = text.replace(/^\s*ask\s+("[^"]+"|'[^']+'|[A-Za-z][\w.-]*)\s+to\s+/i, "");
+  text = text.replace(/^\s*request\s+(.+?)\s+from\s+("[^"]+"|'[^']+'|[A-Za-z][\w.-]*)\s*$/i, "$1");
+  text = text.replace(/^\s*send\s+(?:a\s+)?file\s+request\s+to\s+("[^"]+"|'[^']+'|[A-Za-z][\w.-]*)\s+for\s+/i, "");
+  return text.trim();
+}
+
 function extractFilename(value: string): string | null {
   const match = FILE_NAME_PATTERN.exec(value);
   if (!match) return null;
@@ -128,13 +141,14 @@ function stripLeadingRequestWords(value: string): { filename: string; removed: s
   return { filename: parts.join(" ").trim(), removed };
 }
 
-function cleanRequestText(value: string): { text: string; removed: string[] } {
+function cleanRequestText(value: string, extensions: string[]): { text: string; removed: string[] } {
   const removed: string[] = [];
   const kept: string[] = [];
+  const extensionWords = new Set(extensions.map((item) => item.replace(/^\./, "")));
   for (const raw of value.split(/\s+/)) {
     const word = normalizeWord(raw);
     if (!word) continue;
-    if (REQUEST_WORDS.has(word)) {
+    if (REQUEST_WORDS.has(word) || extensionWords.has(word)) {
       removed.push(word);
       continue;
     }
@@ -163,14 +177,15 @@ function removeExtension(value: string): string {
   return value.replace(/\.[a-z0-9]+$/i, "");
 }
 
-function tokenize(value: string): string[] {
+function tokenize(value: string, extensions: string[] = []): string[] {
+  const extensionWords = new Set(extensions.map((item) => item.replace(/^\./, "")));
   return [...new Set(
     value
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, " ")
       .split(/\s+/)
       .map((item) => item.trim())
-      .filter((item) => item.length > 1 && !REQUEST_WORDS.has(item))
+      .filter((item) => item.length > 1 && !REQUEST_WORDS.has(item) && !extensionWords.has(item))
   )];
 }
 

@@ -15,7 +15,7 @@ export async function registerContactsRoutes(app: FastifyInstance): Promise<void
     }
     try {
       const body = RequestSchema.parse(req.body);
-      const result = requestContact(req.authContext.orgId, req.authContext.userId, body.target_user_id);
+      const result = await requestContact(req.authContext.orgId, req.authContext.userId, body.target_user_id);
       reply.send(result);
     } catch (err) {
       if (err instanceof ZodError) {
@@ -33,7 +33,7 @@ export async function registerContactsRoutes(app: FastifyInstance): Promise<void
     }
     const { contact_id } = req.params as { contact_id: string };
     try {
-      const result = acceptContact(req.authContext.orgId, contact_id, req.authContext.userId);
+      const result = await acceptContact(req.authContext.orgId, contact_id, req.authContext.userId);
       reply.send(result);
     } catch (err) {
       reply.code(400).send({ error: "CONTACT_ACCEPT_FAILED", message: err instanceof Error ? err.message : String(err) });
@@ -45,7 +45,7 @@ export async function registerContactsRoutes(app: FastifyInstance): Promise<void
       reply.code(401).send({ error: "UNAUTHORIZED" });
       return;
     }
-    const result = listContacts(req.authContext.orgId, req.authContext.userId);
+    const result = await listContacts(req.authContext.orgId, req.authContext.userId);
     reply.send({ contacts: result });
   });
 }

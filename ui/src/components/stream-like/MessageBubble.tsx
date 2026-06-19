@@ -130,6 +130,8 @@ interface MessageBubbleProps {
   onRetry?: (messageId: string) => void;
   grouped?: boolean;
   meta?: TimelineRowMeta;
+  ariaPosition?: number;
+  ariaSetSize?: number;
 }
 
 function agentSuggestions(text: string): string | null {
@@ -300,7 +302,7 @@ function mergeReactions(
   return Array.from(merged.values());
 }
 
-export function MessageBubble({ message, onRetry, grouped = false, meta }: MessageBubbleProps) {
+export function MessageBubble({ message, onRetry, grouped = false, meta, ariaPosition, ariaSetSize }: MessageBubbleProps) {
   const [linkCopied, setLinkCopied] = useState(false);
   const [showAgentThinking, setShowAgentThinking] = useState(false);
   const { reactions: localReactions } = useMessageReactions(message.id);
@@ -405,6 +407,10 @@ export function MessageBubble({ message, onRetry, grouped = false, meta }: Messa
           data-side={side}
           data-card={isStructuredCard ? "true" : "false"}
           data-grouped={groupedWithPrevious ? "true" : "false"}
+          role="article"
+          aria-label={`${isOutgoing ? "You" : label}, ${time}`}
+          aria-posinset={ariaPosition}
+          aria-setsize={ariaSetSize}
           layout
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}

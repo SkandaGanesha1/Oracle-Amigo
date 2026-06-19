@@ -247,6 +247,8 @@ export interface CloudStatus {
   inbox: { running: boolean; lastItemCount: number; lastError: string | null };
   tokenIssue?: "expired" | null;
   canRecoverDeviceToken?: boolean;
+  userAuthIssue?: "required" | "expired" | null;
+  canRecoverUserToken?: boolean;
   localPublicKeyFingerprint?: string | null;
   relayMode: string;
   controlPlane?: {
@@ -321,9 +323,14 @@ export interface FileCandidateApprovalCard {
   approval_id: string;
   task_id: string;
   requester: string;
+  requester_display_name?: string;
+  target_display_name?: string;
   request_text: string;
   candidates: CandidateFile[];
+  low_confidence_candidates?: CandidateFile[];
   selected_candidate_id: string | null;
+  approval_type?: string;
+  is_bound?: boolean;
   status: "pending" | "approved" | "rejected" | "feedback_requested" | "feedback_received" | "expired" | "feedback";
   feedback_text: string | null;
   expires_at: string;
@@ -751,6 +758,20 @@ export interface Mission {
   transferCount: number;
 }
 
+export interface TaskMissionProjection {
+  id: string;
+  title: string;
+  status: "running" | "completed" | "failed" | "cancelled" | "waiting";
+  source: "mission" | "a2a";
+  owner: string;
+  conversationId: string | null;
+  controlTaskId: string | null;
+  riskLevel: "low" | "medium" | "high" | "critical" | "unknown";
+  updatedAt: string;
+  stepCount: number;
+  message: string;
+}
+
 export interface RealtimeEvent {
   kind: string;
   entityType: "mission" | "approval" | "transfer" | "agent_run" | "conversation" | "inbox" | "voice_command" | "policy" | "notification" | string;
@@ -801,13 +822,21 @@ export interface VoiceCommandRealtimeEvent extends RealtimeEvent {
 export interface AgentProfileDetail {
   id: string;
   displayName: string;
-  email?: string | null;
-  did?: string;
-  registryTrustLevel?: RegistryTrustLevel;
+  email: string | null;
+  userId: string | null;
+  agentInstanceId: string | null;
+  deviceName: string;
+  presence: "online" | "stale" | "offline" | "unknown";
+  presenceUpdatedAt: string | null;
+  contactStatus: string;
+  trustLevel: TrustLevel;
+  registryDid: string | null;
+  registryTrustLevel: RegistryTrustLevel | null;
+  capabilities: string[];
+  conversationId: string | null;
+  lastInteractionAt: string | null;
   skills: SkillManifest[];
-  presence?: PeerPresence;
-  contact?: Contact;
-  registry?: RegistryAgent;
+  source: "local" | "contact" | "conversation" | "registry" | "unknown";
 }
 
 export interface UserAgentSettings {

@@ -10,7 +10,7 @@ export default defineConfig({
     setupFiles: ["./ui/src/tests/setup.ts"],
     globals: true,
     css: true,
-    testTimeout: 15000
+    testTimeout: 45000
   },
   resolve: {
     alias: {

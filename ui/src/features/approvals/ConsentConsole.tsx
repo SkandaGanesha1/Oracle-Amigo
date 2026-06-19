@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from "react";
-import { motion } from "framer-motion";
+import { drawerVariants, motion, motionTransition } from "../../components/primitives/MotionPrimitives";
 import { Shield, ShieldCheck, ShieldAlert, User, HardDrive, Clock, Ban, X, FileText, AlertTriangle, ExternalLink, Key, Globe, ArrowRight, Infinity, Eye } from "lucide-react";
 import { useConsent, useConsentAction } from "../../hooks/queries";
 import { ApprovalPolicyBadge } from "./ApprovalPolicyBadge";
@@ -131,10 +131,11 @@ export function ConsentConsole({ approvalId, onClose }: ConsentConsoleProps) {
     <motion.div
       ref={containerRef}
       tabIndex={-1}
-      initial={{ width: 0, opacity: 0 }}
-      animate={{ width: 320, opacity: 1 }}
-      exit={{ width: 0, opacity: 0 }}
-      transition={{ duration: 0.2, ease: "easeOut" }}
+      variants={drawerVariants}
+      initial="initial"
+      animate="animate"
+      exit="exit"
+      transition={motionTransition.panel}
       className="flex h-full w-80 shrink-0 flex-col border-l border-oa-border bg-oa-surface overflow-y-auto"
     >
       <div className="flex items-center justify-between border-b border-oa-border px-4 py-3">

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import type { Database as DB } from "better-sqlite3";
-import { getDb } from "../db/connection.js";
+import { getControlPlaneStore } from "../db/connection.js";
+import type { ControlPlaneStore } from "../db/ControlPlaneStore.js";
 import { appendAuditEvent } from "../audit/CloudAuditService.js";
 import type { Contact, ContactStatus, OrgId, UserId } from "../types/cloud.js";
 
@@ -14,21 +14,21 @@ export interface ContactRecord {
   updated_at: string;
 }
 
-export function requestContact(
+export async function requestContact(
   orgId: OrgId,
   requesterUserId: UserId,
   targetUserId: UserId,
-  opts: { db?: DB } = {}
-): ContactRecord {
-  const db = opts.db ?? getDb();
+  opts: { store?: ControlPlaneStore } = {}
+): Promise<ContactRecord> {
+  const db = opts.store ?? getControlPlaneStore();
   if (requesterUserId === targetUserId) {
     throw new Error("Cannot request a contact with yourself");
   }
-  const target = db.prepare("SELECT id FROM users WHERE org_id = ? AND id = ?").get(orgId, targetUserId);
+  const target = await db.one("SELECT id FROM users WHERE org_id = $1 AND id = $2", [orgId, targetUserId]);
   if (!target) throw new Error("Target user not found in this organization");
-  const existing = db.prepare(`
-    SELECT * FROM contacts WHERE org_id = ? AND requester_user_id = ? AND target_user_id = ?
-  `).get(orgId, requesterUserId, targetUserId) as Record<string, unknown> | undefined;
+  const existing = await db.one(`
+    SELECT * FROM contacts WHERE org_id = $1 AND requester_user_id = $2 AND target_user_id = $3
+  `, [orgId, requesterUserId, targetUserId]);
   const now = new Date().toISOString();
   if (existing) {
     if (existing.status === "blocked") {
@@ -41,11 +41,11 @@ export function requestContact(
     return rowToContact(existing);
   }
   const id = `con_${randomUUID()}`;
-  db.prepare(`
+  await db.execute(`
     INSERT INTO contacts (id, org_id, requester_user_id, target_user_id, status, created_at, updated_at)
-    VALUES (?, ?, ?, ?, 'pending', ?, ?)
-  `).run(id, orgId, requesterUserId, targetUserId, now, now);
-  appendAuditEvent({
+    VALUES ($1, $2, $3, $4, 'pending', $5, $6)
+  `, [id, orgId, requesterUserId, targetUserId, now, now]);
+  await appendAuditEvent({
     orgId, actorUserId: requesterUserId, eventType: "CONTACT_REQUESTED",
     details: { contact_id: id, target_user_id: targetUserId }
   }, db);
@@ -55,21 +55,21 @@ export function requestContact(
   };
 }
 
-export function acceptContact(
+export async function acceptContact(
   orgId: OrgId,
   contactId: string,
   acceptingUserId: UserId,
-  opts: { db?: DB } = {}
-): ContactRecord {
-  const db = opts.db ?? getDb();
-  const row = db.prepare("SELECT * FROM contacts WHERE org_id = ? AND id = ?").get(orgId, contactId) as Record<string, unknown> | undefined;
+  opts: { store?: ControlPlaneStore } = {}
+): Promise<ContactRecord> {
+  const db = opts.store ?? getControlPlaneStore();
+  const row = await db.one("SELECT * FROM contacts WHERE org_id = $1 AND id = $2", [orgId, contactId]);
   if (!row) throw new Error("Contact request not found");
   if (String(row.target_user_id) !== acceptingUserId) throw new Error("Only the target user may accept this contact");
   if (row.status === "accepted") return rowToContact(row);
   if (row.status === "blocked" || row.status === "declined") throw new Error(`Contact is ${row.status}`);
   const now = new Date().toISOString();
-  db.prepare("UPDATE contacts SET status = 'accepted', updated_at = ? WHERE id = ?").run(now, contactId);
-  appendAuditEvent({
+  await db.execute("UPDATE contacts SET status = 'accepted', updated_at = $1 WHERE id = $2", [now, contactId]);
+  await appendAuditEvent({
     orgId, actorUserId: acceptingUserId, eventType: "CONTACT_ACCEPTED",
     details: { contact_id: contactId, requester_user_id: row.requester_user_id }
   }, db);
@@ -81,16 +81,16 @@ export function acceptContact(
   };
 }
 
-export function listContacts(
+export async function listContacts(
   orgId: OrgId,
   userId: UserId,
-  opts: { db?: DB } = {}
-): ContactRecord[] {
-  const db = opts.db ?? getDb();
-  const rows = db.prepare(`
-    SELECT * FROM contacts WHERE org_id = ? AND (requester_user_id = ? OR target_user_id = ?)
+  opts: { store?: ControlPlaneStore } = {}
+): Promise<ContactRecord[]> {
+  const db = opts.store ?? getControlPlaneStore();
+  const rows = await db.query(`
+    SELECT * FROM contacts WHERE org_id = $1 AND (requester_user_id = $2 OR target_user_id = $3)
     ORDER BY updated_at DESC
-  `).all(orgId, userId, userId) as Array<Record<string, unknown>>;
+  `, [orgId, userId, userId]);
   return rows.map(rowToContact);
 }
 

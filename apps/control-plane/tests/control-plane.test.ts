@@ -5,8 +5,8 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApp } from "../src/main.js";
 import { resetConfigForTest } from "../src/config.js";
-import { closeAll } from "../src/db/connection.js";
-import { getDb } from "../src/db/connection.js";
+import { closeAll, getControlPlaneStore } from "../src/db/connection.js";
+import { postgresTestConfig, resetPostgresTestDatabase } from "./postgresTestHarness.js";
 import type { FastifyInstance } from "fastify";
 import { verifySignedCard } from "../../../src/protocol/a2a-v1/AgentCardV1.js";
 import type { A2Av1AgentCard } from "../../../src/protocol/a2a-v1/types.js";
@@ -17,15 +17,14 @@ let cardPublicKeyPem = "";
 
 beforeAll(async () => {
   dataDir = mkdtempSync(join(tmpdir(), "control-plane-test-"));
-  const dbPath = join(dataDir, "test.db");
   const store = join(dataDir, "transfers");
   const cardKeys = generateKeyPairSync("rsa", { modulusLength: 2048 });
   cardPublicKeyPem = cardKeys.publicKey.export({ type: "spki", format: "pem" }).toString();
-  resetConfigForTest({
+  await resetPostgresTestDatabase();
+  resetConfigForTest(postgresTestConfig({
     CONTROL_PLANE_PORT: "9999",
     CONTROL_PLANE_HOST: "127.0.0.1",
     CONTROL_PLANE_PUBLIC_URL: "http://127.0.0.1:9999",
-    CONTROL_PLANE_DB_PATH: dbPath,
     JWT_ACCESS_SECRET: "test-access-secret-must-be-16+",
     JWT_REFRESH_SECRET: "test-refresh-secret-must-be-16+",
     FILE_TRANSFER_STORE: store,
@@ -43,16 +42,16 @@ beforeAll(async () => {
     AGENT_CARD_SIGNING_PRIVATE_KEY_PEM: cardKeys.privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
     AGENT_CARD_SIGNING_KEY_ID: "test-control-plane-card",
     METRICS_ENABLED: "false"
-  });
+  }));
   // Close any existing connection from prior tests
-  closeAll();
+  await closeAll();
   app = await buildApp();
   await app.ready();
 });
 
 afterAll(async () => {
   if (app) await app.close();
-  // On Windows, better-sqlite3 may hold the file briefly; ignore cleanup errors
+  await closeAll();
   try { rmSync(dataDir, { recursive: true, force: true }); } catch { /* ignore */ }
 });
 
@@ -73,6 +72,24 @@ describe("control-plane", () => {
     const body = res.json();
     expect(body.status).toBe("ok");
     expect(body.service).toBe("oracle-amigo-control-plane");
+  });
+
+  it("GET /livez returns liveness status", async () => {
+    const res = await app.inject({ method: "GET", url: "/livez" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({
+      status: "ok",
+      service: "oracle-amigo-control-plane"
+    });
+  });
+
+  it("GET /ready returns readiness status", async () => {
+    const res = await app.inject({ method: "GET", url: "/ready" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({
+      status: "ready",
+      service: "oracle-amigo-control-plane"
+    });
   });
 
   it("POST /v1/auth/signup creates a user and returns tokens", async () => {
@@ -299,8 +316,10 @@ describe("control-plane", () => {
   });
 
   it("GET /v1/agents/:id/card does not expose cards across orgs", async () => {
-    getDb().prepare("INSERT INTO organizations (id, name, slug, created_at) VALUES (?, ?, ?, ?)")
-      .run("org_other_card_test", "Other Org", "other-org", new Date().toISOString());
+    await getControlPlaneStore().execute(
+      "INSERT INTO organizations (id, name, slug, created_at) VALUES ($1, $2, $3, $4)",
+      ["org_other_card_test", "Other Org", "other-org", new Date().toISOString()]
+    );
     const otherSignup = await app.inject({
       method: "POST",
       url: "/v1/auth/signup",
@@ -349,7 +368,7 @@ describe("control-plane", () => {
   });
 
   it("denies heartbeat after the device is revoked", async () => {
-    getDb().prepare("UPDATE devices SET status = 'revoked' WHERE id = ?").run(deviceId);
+    await getControlPlaneStore().execute("UPDATE devices SET status = 'revoked' WHERE id = $1", [deviceId]);
     const res = await app.inject({
       method: "POST",
       url: "/v1/presence/heartbeat",

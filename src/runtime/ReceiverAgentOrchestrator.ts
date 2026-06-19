@@ -19,7 +19,7 @@ import { appendAuditEvent } from "../security/AuditHashChain.js";
 import { ChatRepository } from "../chat/ChatRepository.js";
 import { FileSearchService } from "../file-search/FileSearchService.js";
 import { LocalCloudIdentityStore, defaultProfileId } from "../cloud/LocalCloudIdentityStore.js";
-import { resolveFileRequestCandidates, toReceiverApprovalCandidatePayload } from "./FileRequestCandidateResolver.js";
+import { resolveFileRequestCandidates, toApprovalCandidatePayload, toReceiverApprovalCandidatePayload } from "./FileRequestCandidateResolver.js";
 import type { RelayInboxMessage } from "../cloud/RelayClient.js";
 import { sendNotification } from "../notification/NotificationBridgeClient.js";
 import { signApprovalCallback } from "../security/SecurityGuards.js";
@@ -114,7 +114,10 @@ export class ReceiverAgentOrchestrator {
         file_query: fileQuery,
         requester_agent_instance_id: message.from_agent_instance_id,
         status: "pending",
-        candidates: candidates.map(toReceiverApprovalCandidatePayload),
+        candidates: candidates.map(toApprovalCandidatePayload),
+        low_confidence_candidates: resolved.lowConfidenceCandidates.map(toApprovalCandidatePayload),
+        approval_type: candidates.length > 0 ? "file.transfer.offer" : "file.search.refinement",
+        is_bound: false,
         candidate_count: candidates.length,
         parsed_filename: resolved.parsed.exactFilename,
         search_source: resolved.source,

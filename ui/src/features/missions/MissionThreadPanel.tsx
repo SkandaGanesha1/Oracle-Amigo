@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
-import { AnimatePresence, motion } from "framer-motion";
 import { Bot, MessageSquarePlus, Send, User, X } from "lucide-react";
 import { useCreateMissionThreadMessage, useMissionThread } from "../../hooks/queries";
+import { AnimatePresence, drawerVariants, m, motionTransition } from "../../components/primitives/MotionPrimitives";
 
 interface MissionThreadPanelProps {
   missionId: string | null;
@@ -53,11 +53,12 @@ export function MissionThreadPanel({ missionId, missionTitle, open, onClose }: M
   return (
     <AnimatePresence>
       {open && (
-        <motion.aside
-          initial={{ width: 0, opacity: 0 }}
-          animate={{ width: 360, opacity: 1 }}
-          exit={{ width: 0, opacity: 0 }}
-          transition={{ duration: 0.2, ease: "easeOut" }}
+        <m.aside
+          variants={drawerVariants}
+          initial="initial"
+          animate="animate"
+          exit="exit"
+          transition={motionTransition.panel}
           className="glass-panel flex h-full w-[360px] shrink-0 flex-col overflow-hidden border-y-0 border-r-0"
           aria-label="Mission thread"
         >
@@ -154,7 +155,7 @@ export function MissionThreadPanel({ missionId, missionTitle, open, onClose }: M
               </button>
             </div>
           </div>
-        </motion.aside>
+        </m.aside>
       )}
     </AnimatePresence>
   );

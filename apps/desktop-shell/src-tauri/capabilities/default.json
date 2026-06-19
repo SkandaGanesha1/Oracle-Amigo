@@ -1,0 +1,59 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Desktop shell can host the Agentic Chat UI and start only named Oracle Amigo sidecar placeholders.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    {
+      "identifier": "shell:allow-spawn",
+      "allow": [
+        {
+          "name": "dev-local-agent",
+          "cmd": "npm.cmd",
+          "args": ["--prefix", "../..", "run", "dev:agent"]
+        },
+        {
+          "name": "dev-notification-bridge",
+          "cmd": "npm.cmd",
+          "args": ["--prefix", "../..", "run", "dev:notification-bridge"]
+        },
+        {
+          "name": "dev-quick-voice",
+          "cmd": "npm.cmd",
+          "args": ["--prefix", "../..", "run", "tauri:voice-dev"]
+        }
+      ]
+    },
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [
+        {
+          "name": "open-logs",
+          "cmd": "explorer.exe",
+          "args": ["%LOCALAPPDATA%\\OracleAmigo\\profiles\\default\\logs"]
+        }
+      ]
+    },
+    {
+      "identifier": "shell:allow-spawn",
+      "allow": [
+        {
+          "name": "dev-local-agent",
+          "sidecar": true,
+          "args": false
+        },
+        {
+          "name": "dev-notification-bridge",
+          "sidecar": true,
+          "args": false
+        },
+        {
+          "name": "dev-quick-voice",
+          "sidecar": true,
+          "args": false
+        }
+      ]
+    }
+  ]
+}

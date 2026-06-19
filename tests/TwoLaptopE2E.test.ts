@@ -51,6 +51,7 @@ describeE2E("Two-laptop end-to-end (control plane + 2 local agents)", () => {
       CONTROL_PLANE_PORT: String(cpPort),
       CONTROL_PLANE_HOST: "127.0.0.1",
       CONTROL_PLANE_PUBLIC_URL: `http://127.0.0.1:${cpPort}`,
+      CONTROL_PLANE_DB_DRIVER: "sqlite",
       CONTROL_PLANE_DB_PATH: join(dataDir, "test.db"),
       JWT_ACCESS_SECRET: "e2e-access-secret-must-be-16+",
       JWT_REFRESH_SECRET: "e2e-refresh-secret-must-be-16+",

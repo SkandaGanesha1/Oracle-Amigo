@@ -1,5 +1,5 @@
-import type { FileCandidateApprovalCard, TrustRelationship, TrustLevel, UserAgentSettings, VoiceCommandListResult, VoiceCommandRecord } from "../types";
-import type { MissionsListResult, ConsentActionRequest, TrustGraphResult } from "./types";
+import type { AgentProfileDetail, FileCandidateApprovalCard, UserAgentSettings, VoiceCommandListResult, VoiceCommandRecord } from "../types";
+import type { MissionsListResult, ConsentActionRequest } from "./types";
 import { localAgentClient } from "./localAgentClient";
 import { cloudAuthApi } from "./cloudAuthApi";
 import { cloudDirectoryApi } from "./cloudDirectoryApi";
@@ -52,6 +52,7 @@ export const api = {
   contacts: cloudDirectoryApi.contacts,
   requestContact: cloudDirectoryApi.requestContact,
   acceptContact: cloudDirectoryApi.acceptContact,
+  agentProfiles: () => localAgentClient.get<{ count: number; profiles: AgentProfileDetail[] }>("/agent-profiles"),
   conversations: chatApi.conversations,
   createConversation: chatApi.createConversation,
   conversationMessages: chatApi.messages,
@@ -159,26 +160,6 @@ export const api = {
       await approvalsApi.reject(req.consentId);
     }
     return { ok: true };
-  },
-
-  trustGraph: async (): Promise<TrustGraphResult> => {
-    const result = await cloudDirectoryApi.contacts();
-    const contacts: Record<string, unknown>[] = (result?.contacts ?? []) as unknown as Record<string, unknown>[];
-    const relationships: TrustRelationship[] = contacts.map((contact) => ({
-      agentPairId: String(contact.id ?? ""),
-      localAgentInstanceId: "",
-      remoteAgentInstanceId: String((contact as Record<string, unknown>).requester_user_id ?? (contact as Record<string, unknown>).target_user_id ?? ""),
-      remoteAgentName: String((contact as Record<string, unknown>).display_name ?? (contact as Record<string, unknown>).email ?? "Unknown agent"),
-      remoteAgentOwnerName: String((contact as Record<string, unknown>).display_name ?? (contact as Record<string, unknown>).email ?? "Unknown"),
-      trustLevel: "unverified" as TrustLevel,
-      capabilities: ["request files", "send messages"],
-      permissionScope: "Request files from local vault",
-      isBlocked: false,
-      lastInteractionAt: String((contact as Record<string, unknown>).updated_at ?? null),
-      requestCount: 0,
-      createdAt: String((contact as Record<string, unknown>).updated_at ?? new Date().toISOString()),
-    }));
-    return { relationships };
   }
 };
 
@@ -226,6 +207,7 @@ export function mapApproval(row: Record<string, unknown>): FileCandidateApproval
           }]
         : [],
     selected_candidate_id: selectedFileId ? String(selectedFileId) : null,
+    is_bound: Boolean(row.is_bound ?? row.isBound ?? (selectedFileId && boundFilePath)),
     status: String(row.status ?? "pending") as FileCandidateApprovalCard["status"],
     feedback_text: feedbackText ? String(feedbackText) : null,
     expires_at: String(expiresAt)

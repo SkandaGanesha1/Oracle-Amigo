@@ -20,12 +20,15 @@ The product chat UI lives in `ui/` and builds into `public/`. It does not share 
 - `MessageComposer`: multiline send, Enter/Shift+Enter behavior, file-request preview, command suggestions.
 - `ThinkingBar`: client-side grouped agent reasoning stream. `ChatWindow` collapses backend `agent_status` messages by run/task into one `thinking_bar` timeline item, so the main feed shows a continuous human-readable progress bar instead of separate technical debug bubbles.
 - `ThreadDrawer` and `MessageActions`: Slack-like local message threads, reactions, copy, pin, and retry controls.
-- `RightInspectorPanel`: split-view inspector with activity, agent, files, alerts, settings, and chat context tabs for trust/risk/data/audit review.
+- `RightInspectorPanel`: split-view inspector with activity, chat context, memory, agent, files, alerts, settings, and timeline tabs for trust/risk/data/audit review.
 - `ApprovalCenter`: approve/reject/feedback and exact candidate metadata.
 - Chat approval cards embed biometric approval plus redaction/watermark controls before a file transfer decision.
-- `MissionsPage`: reads canonical `/missions` projections instead of grouping A2A tasks and agent runs client-side. Mission controls only call pause/resume/cancel/retry when a server projection has an A2A task ID.
-- `VaultBrowser`: uses `/files/search` for typed search terms and falls back to indexed-file listing when no query is present.
+- `AgentDirectory`: reads `/agent-profiles`, a local-agent facade that joins contacts, directory presence, registry trust, skills, and linked conversations. It does not synthesize online status from contacts.
+- `TaskListView`: reads canonical `/missions` plus `/a2a/tasks` through a combined projection hook; it no longer derives task rows from chat status messages.
+- `MissionsPage`: reads canonical `/missions` projections instead of grouping A2A tasks and agent runs client-side. Mission controls only call pause/resume/cancel/retry when a server projection has an A2A task ID, and details link back to chat, approvals, and audit.
+- `VaultBrowser`: uses `/files/search` for indexed-file retrieval and keeps stored-file filtering as a separate local UI filter.
 - `SettingsPanel`: hydrates privacy, notification, autonomy, and file-access controls from `/settings/user-agent` and persists security-affecting changes through the same backend record.
+- `MemoryInspector`: reads short-term, episodic, and long-term memory routes and is available in the right inspector for the active conversation.
 - `ReceivedFilesView`: received files, hash, received time, open/download and verify actions.
 - `AuditTimeline`: local audit event filtering and IDs.
 - `SettingsPanel`: control plane, enrollment, heartbeat, relay, notification, storage, and privacy toggles.
@@ -44,7 +47,7 @@ Typed frontend API modules:
 - `ui/src/api/auditApi.ts`
 - `ui/src/api/types.ts`
 
-Hooks are in `ui/src/hooks/queries.ts` and include cloud status, current profile, directory, contacts, conversations, messages, send, file request, approvals, files, audit, diagnostics, missions, voice commands, user-agent settings, and realtime transport startup.
+Hooks are in `ui/src/hooks/queries.ts` and include cloud status, current profile, directory, contacts, agent profiles, conversations, messages, send, file request, approvals, files, audit, diagnostics, missions, task projections, voice commands, user-agent settings, and realtime transport startup.
 
 ## Realtime
 
@@ -55,7 +58,7 @@ Hooks are in `ui/src/hooks/queries.ts` and include cloud status, current profile
 - `SseTransport`
 - `WebSocketTransport`
 
-The app starts `SseTransport` against same-origin `/events` and keeps the existing polling intervals as fallback. `/events` emits normalized `mission_update` and `voice_command_update` snapshots in phase one; targeted cache hydration can be added per event kind, while query invalidation remains the safe default.
+The app starts `SseTransport` against same-origin `/events` and keeps the existing polling intervals as fallback. `/events` emits normalized mission, voice, chat/conversation, and status snapshots. `SseTransport` invalidates precise React Query keys when entity IDs are present and falls back to broader invalidation for wildcard snapshots.
 
 ## Message Types
 

@@ -3,21 +3,24 @@ global:
   evaluation_interval: 15s
 
 scrape_configs:
+  # Prometheus runs in a container while these app processes run on the Windows host.
+  # Podman exposes the host through this DNS alias; scraping 127.0.0.1 would hit
+  # the Prometheus container itself, and hard-coded VM gateway IPs can time out.
   - job_name: "control-plane"
     static_configs:
-      - targets: ["10.0.2.2:8080"]
+      - targets: ["host.containers.internal:8080"]
         labels:
           service: "control-plane"
 
   - job_name: "admin-portal"
     static_configs:
-      - targets: ["10.0.2.2:3398"]
+      - targets: ["host.containers.internal:3398"]
         labels:
           service: "admin-portal"
 
   - job_name: "local-agent"
     static_configs:
-      - targets: ["10.0.2.2:3401"]
+      - targets: ["host.containers.internal:3401"]
         labels:
           service: "local-agent"
 

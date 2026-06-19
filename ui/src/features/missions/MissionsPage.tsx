@@ -1,4 +1,5 @@
 import { useState, useMemo } from "react";
+import { Link } from "react-router-dom";
 import { useMissions, usePauseMission, useResumeMission, useCancelMission, useRetryMission } from "../../hooks/queries";
 import { Clock, CheckCircle2, XCircle, PauseCircle, PlayCircle, Ban, RefreshCw, Bot, Workflow, Search, type LucideIcon } from "lucide-react";
 import { MissionTimeline } from "./MissionTimeline";
@@ -237,6 +238,21 @@ export function MissionsPage() {
                                 {mission.voiceCommandId && <span className="rounded-full border border-oa-border px-2 py-1">Voice linked</span>}
                               </div>
                             )}
+                            <div className="flex flex-wrap gap-2 text-[10px]">
+                              {mission.conversationId && (
+                                <Link className="rounded-full border border-oa-border px-2 py-1 text-oa-blue hover:bg-oa-blue/10" to={`/chats/${mission.conversationId}`}>
+                                  Open chat
+                                </Link>
+                              )}
+                              {(mission.approvals?.length ?? 0) > 0 && (
+                                <Link className="rounded-full border border-oa-border px-2 py-1 text-oa-amber hover:bg-oa-amber/10" to="/approvals">
+                                  Open approval
+                                </Link>
+                              )}
+                              <Link className="rounded-full border border-oa-border px-2 py-1 text-oa-text-muted hover:bg-oa-surface-2" to="/audit">
+                                Open audit
+                              </Link>
+                            </div>
                             {mission.steps.slice(0, 6).map((step) => (
                               <div key={step.id} className="rounded-lg border border-oa-border bg-oa-bg px-3 py-2">
                                 <div className="flex items-center justify-between gap-2">

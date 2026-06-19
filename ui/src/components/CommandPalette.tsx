@@ -1,4 +1,3 @@
-import { AnimatePresence, motion } from "framer-motion";
 import Fuse from "fuse.js";
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import {
@@ -8,6 +7,7 @@ import {
 import { useNavigate } from "react-router-dom";
 import { useUniversalSearch } from "../hooks/queries";
 import type { UniversalSearchResult, UniversalSearchResultType } from "../api/types";
+import { AnimatePresence, m, modalPanelVariants, motionTransition, overlayVariants } from "./primitives/MotionPrimitives";
 
 interface CommandEntry {
   id: string;
@@ -157,12 +157,21 @@ export function CommandPalette() {
       aria-modal="true"
       aria-label="Command palette"
     >
-      <motion.div className="fixed inset-0 bg-black/60 backdrop-blur-sm" onClick={close} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} />
-      <motion.div
-        initial={{ opacity: 0, y: 18, scale: 0.98 }}
-        animate={{ opacity: 1, y: 0, scale: 1 }}
-        exit={{ opacity: 0, y: 10, scale: 0.98 }}
-        transition={{ duration: 0.18, ease: "easeOut" }}
+      <m.div
+        className="fixed inset-0 bg-black/60 backdrop-blur-sm"
+        onClick={close}
+        variants={overlayVariants}
+        initial="initial"
+        animate="animate"
+        exit="exit"
+        transition={motionTransition.quick}
+      />
+      <m.div
+        variants={modalPanelVariants}
+        initial="initial"
+        animate="animate"
+        exit="exit"
+        transition={motionTransition.quick}
         className="glass-panel-strong relative flex w-full max-w-lg flex-col overflow-hidden rounded-xl"
       >
         <div className="flex items-center gap-3 border-b border-oa-border px-4 py-3">
@@ -253,7 +262,7 @@ export function CommandPalette() {
             <span><kbd className="rounded border border-oa-border bg-oa-bg px-1 py-0.5">Esc</kbd> Close</span>
           </div>
         </div>
-      </motion.div>
+      </m.div>
     </div>
     )}
     </AnimatePresence>

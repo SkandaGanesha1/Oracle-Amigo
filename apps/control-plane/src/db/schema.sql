@@ -141,15 +141,29 @@ CREATE TABLE IF NOT EXISTS relay_tasks (
   a2a_task_id TEXT NOT NULL,
   type TEXT NOT NULL,
   payload_json TEXT NOT NULL,
-  status TEXT NOT NULL CHECK (status IN ('pending', 'delivered', 'completed', 'cancelled', 'expired')),
+  status TEXT NOT NULL CHECK (status IN ('accepted', 'queued', 'delivered_to_remote_agent', 'stored_by_remote_agent', 'waiting_approval', 'approved', 'transfer_started', 'completed', 'failed', 'expired')),
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  max_attempts INTEGER NOT NULL DEFAULT 5,
+  last_error TEXT,
+  next_retry_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
+  accepted_at TEXT,
+  queued_at TEXT,
   delivered_at TEXT,
-  completed_at TEXT
+  stored_at TEXT,
+  waiting_approval_at TEXT,
+  approved_at TEXT,
+  transfer_started_at TEXT,
+  completed_at TEXT,
+  failed_at TEXT,
+  expired_at TEXT,
+  expires_at TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_relay_tasks_to_status ON relay_tasks(org_id, to_agent_instance_id, status);
 CREATE INDEX IF NOT EXISTS idx_relay_tasks_from ON relay_tasks(org_id, from_agent_instance_id);
+CREATE INDEX IF NOT EXISTS idx_relay_tasks_org_retry ON relay_tasks(org_id, to_agent_instance_id, next_retry_at, attempt_count);
 
 CREATE TABLE IF NOT EXISTS relay_messages (
   id TEXT PRIMARY KEY,
@@ -158,10 +172,13 @@ CREATE TABLE IF NOT EXISTS relay_messages (
   from_agent_instance_id TEXT NOT NULL,
   to_agent_instance_id TEXT NOT NULL,
   payload_json TEXT NOT NULL,
-  status TEXT NOT NULL CHECK (status IN ('pending', 'delivered', 'acked', 'responded', 'expired')),
+  status TEXT NOT NULL CHECK (status IN ('queued', 'delivered', 'acked', 'responded', 'failed', 'expired')),
   idempotency_key TEXT,
   created_at TEXT NOT NULL,
   delivered_at TEXT,
+  acked_at TEXT,
+  failed_at TEXT,
+  expires_at TEXT,
   UNIQUE(org_id, from_agent_instance_id, idempotency_key)
 );
 

@@ -19,9 +19,23 @@ These routes are local-agent routes, not control-plane routes. They are same-ori
 | `POST` | `/missions/:taskId/resume` | Resume an A2A-backed mission task. |
 | `POST` | `/missions/:taskId/cancel` | Cancel an A2A-backed mission task. |
 | `POST` | `/missions/:taskId/retry` | Retry an A2A-backed mission task. |
-| `GET` | `/events` | Stream normalized realtime SSE snapshots for missions and voice commands, with polling fallback on the frontend. |
+| `GET` | `/events` | Stream normalized realtime SSE snapshots for missions, voice commands, chat/conversation updates, and status updates, with polling fallback on the frontend. |
+| `GET` | `/agent-profiles` | Return backend-backed agent profile cards joined from contacts, directory presence, registry trust, skills, and linked conversations. |
 | `GET` | `/settings/user-agent` | Load persisted user-agent privacy, notification, autonomy, and file-access settings. |
 | `PUT` | `/settings/user-agent` | Replace persisted user-agent settings after Zod validation and append an audit event. |
+| `GET` | `/voice/status` | Return local Quick Voice readiness, enrollment, heartbeat, and inbox status. |
+| `POST` | `/voice/commands` | Create a parsed Quick Voice command preview after Zod validation. |
+| `GET` | `/voice/commands` | List local Quick Voice command history with bounded pagination. |
+| `GET` | `/voice/commands/:id` | Return one Quick Voice command. |
+| `GET` | `/voice/commands/:id/events` | Stream command-specific Quick Voice SSE events. |
+| `POST` | `/voice/commands/:id/confirm` | Confirm a previewed Quick Voice command before relay/file-request execution. |
+| `POST` | `/voice/commands/:id/cancel` | Cancel a pending Quick Voice command. |
+| `POST` | `/intent/classify` | Classify local user text through the deterministic intent extractor after redaction. |
+| `POST` | `/intent/rewrite` | Rewrite local retrieval queries after redaction. |
+| `GET` | `/receiver/approvals` | List receiver-side file-transfer approvals for local UI/voice flows. |
+| `GET` | `/receiver/approvals/:id` | Return one receiver-side approval. |
+| `POST` | `/receiver/approvals/:id/approve` | Approve a receiver-side transfer with a selected local file path. |
+| `POST` | `/receiver/approvals/:id/reject` | Reject a receiver-side transfer. |
 
 Mission projections include `id`, `source`, `status`, `participants`, `risk`, `dataMovement`, `steps`, `artifacts`, `approvals`, `transfers`, `agentRunIds`, `a2aTaskIds`, `voiceCommandId`, linked `conversationId`, timestamps, and failure/retry metadata. Sensitive command traces and local paths remain redacted before they are returned to the UI.
 
@@ -65,7 +79,7 @@ Mission projections include `id`, `source`, `status`, `participants`, `risk`, `d
 | Method | Route | Auth | Purpose |
 |---|---|---|---|
 | `POST` | `/v1/relay/a2a/send` | device bearer token | Send an org-local relay task to another active agent instance. |
-| `GET` | `/v1/relay/a2a/inbox` | device bearer token | Poll pending relay tasks for the token-bound agent instance. |
+| `GET` | `/v1/relay/a2a/inbox` | device bearer token | Poll queued or retry-eligible relay tasks for the token-bound agent instance. |
 | `POST` | `/v1/relay/a2a/:relay_task_id/ack` | device bearer token | Acknowledge delivery for a task addressed to the token-bound agent instance. |
 | `POST` | `/v1/relay/a2a/:relay_task_id/respond` | device bearer token | Respond to a task addressed to the token-bound agent instance. |
 | `GET` | `/v1/relay/a2a/tasks/:relay_task_id` | device bearer token | Fetch a relay task where the token-bound agent instance is sender or receiver. |
@@ -83,6 +97,7 @@ Mission projections include `id`, `source`, `status`, `participants`, `risk`, `d
 
 | Method | Route | Auth | Purpose |
 |---|---|---|---|
+| `GET` | `/v1/admin/info` | admin session or admin token | Return control-plane version and runtime information. |
 | `GET` | `/v1/admin/users` | admin session or admin token | List users. |
 | `GET` | `/v1/admin/devices` | admin session or admin token | List devices. |
 | `GET` | `/v1/admin/agent-instances` | admin session or admin token | List agent instances. |
@@ -91,6 +106,7 @@ Mission projections include `id`, `source`, `status`, `participants`, `risk`, `d
 | `GET` | `/v1/admin/transfers` | admin session or admin token | List transfers. |
 | `GET` | `/v1/admin/approvals` | admin session or admin token | List approval-related relay activity. |
 | `GET` | `/v1/admin/audit` | admin session or admin token | List audit events. |
+| `GET` | `/v1/admin/orgs/:org_id/snapshot` | admin session or admin token | Return an org-scoped admin snapshot for support/debugging. |
 | `POST` | `/v1/admin/devices/:device_id/revoke` | admin session or admin token | Revoke a device, its device tokens, associated agent instances, and presence. |
 | `POST` | `/v1/admin/users/:user_id/disable` | admin session or admin token | Disable a user and revoke their refresh/device tokens. |
 | `POST` | `/v1/admin/agent-instances/:agent_instance_id/disable` | admin session or admin token | Disable an agent instance so it cannot heartbeat or poll relay. |
@@ -106,3 +122,5 @@ Admin authentication routes remain under `/v1/admin/auth/*` and are documented i
 - A local agent must not upload a file before explicit user approval binds the approval ID, task ID, selected file, local path, file name, size, SHA-256, sender, receiver, and timestamp.
 - A2A extended agent cards require auth; public agent-card data must not expose internal diagnostic capabilities.
 - LLM output is advisory only. Sensitive actions are controlled by deterministic route validation, policy checks, and approval state.
+- Quick Voice routes are local-agent protected. Creating or confirming a voice command cannot bypass local UI session/API-token checks, Zod validation, deterministic target resolution, or file-transfer approval gates.
+- Receiver approval and intent helper routes are local-agent protected because they can include local file paths or sensitive user text.

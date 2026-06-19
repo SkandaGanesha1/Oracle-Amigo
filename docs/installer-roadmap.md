@@ -7,8 +7,28 @@ This document tracks the path from "works on the developer's machine" to "ships 
 - Source-only distribution. Users need Node.js 20+, run `npm install`, and start the agent manually.
 - Configuration is via `.env` files.
 - The Windows notification bridge is a separate C# program the user must compile and register themselves.
+- Desktop Shell Skeleton exists as the first Tauri v2 packaging boundary for the Agentic Chat UI, tray placeholders, local health checks, and sidecar placeholders. No production signing claim.
 
 The two-laptop demo runs but the setup takes 20+ minutes and requires the user to be comfortable with command-line tools.
+
+## Phase 0.5: Desktop Shell Skeleton
+
+**Exit criterion:** Developers can run a Tauri desktop shell that hosts the built Agentic Chat UI and exposes placeholder management hooks for local sidecars.
+
+| Task | Status |
+| --- | --- |
+| Create `apps/desktop-shell/` Tauri v2 shell | Done |
+| Load chat UI from Vite in dev and `public/` in build mode | Done |
+| Add tray placeholders for open/status/restart/logs/quit | Done |
+| Add graceful local-agent health check for `/health` | Done |
+| Document `externalBin` sidecar strategy and placeholder binaries folder | Done |
+| Keep secrets and profile data out of bundled resources | Done |
+| Add static shell configuration tests and Rust health-check test | Done |
+| Replace placeholder sidecars with real packaged binaries | Next |
+| Add process supervision, restart policy, and log routing | Next |
+| Implement native SecretStore backends for Windows Credential Manager/DPAPI and macOS Keychain | Next |
+| Add start-at-login controls | Next |
+| Add signed Windows installer and update channel | Next |
 
 ## Phase A: Packaged Local Agent (Windows / macOS / Linux)
 
@@ -17,6 +37,7 @@ The two-laptop demo runs but the setup takes 20+ minutes and requires the user t
 | Task | Status |
 | --- | --- |
 | Bundle the Node.js agent + sqlite-vec native extension as a single executable (using `pkg` or `bun build --compile`) | TBD |
+| Replace development `SECRET_STORE=file` with native credential storage for cloud tokens and local private keys | TBD |
 | Code-sign the binary (Windows: Authenticode, macOS: Developer ID, Linux: GPG) | TBD |
 | Create platform-specific installers (Windows: MSI/EXE via WiX or NSIS, macOS: DMG/PKG, Linux: AppImage/deb/rpm) | TBD |
 | Ship a "Start at login" hook on each platform | TBD |
@@ -41,7 +62,7 @@ The two-laptop demo runs but the setup takes 20+ minutes and requires the user t
 | Write a multi-stage `Dockerfile` for the control plane (build stage + runtime stage) | TBD |
 | Provide a `docker-compose.yml` with the control plane + a reverse proxy + (optional) Postgres | TBD |
 | Helm chart for Kubernetes deployment (with HPA, PVC for SQLite/Postgres, ingress, TLS) | TBD |
-| Document the production secrets management (where to put `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET`, `DEV_ADMIN_TOKEN`) | TBD |
+| Document the production secrets management (where to put `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET`, admin secrets, and local `SECRET_STORE` requirements) | TBD |
 
 ## Phase D: Auto-Update Channel
 

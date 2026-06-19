@@ -1,5 +1,6 @@
 import { AlertTriangle, Bot, CheckCircle2, FileCheck2, FileText, MessageCircle, ShieldAlert } from "lucide-react";
 import type { InboxItem, InboxItemKind } from "../../api/types";
+import { m, motionTransition } from "../primitives/MotionPrimitives";
 
 const KIND_ICON: Record<InboxItemKind, typeof ShieldAlert> = {
   approval: ShieldAlert,
@@ -26,10 +27,13 @@ export function InboxItemRow({
 }) {
   const Icon = KIND_ICON[item.kind] ?? Bot;
   return (
-    <button
+    <m.button
+      layout="position"
       type="button"
       onClick={onSelect}
       data-selected={selected ? "true" : "false"}
+      whileTap={{ scale: 0.995 }}
+      transition={motionTransition.quick}
       className="oa-inbox-row group flex w-full gap-3 px-3 py-3 text-left transition-colors hover:bg-white/[0.045] data-[selected=true]:bg-oa-blue/10 data-[selected=true]:shadow-[inset_0_0_0_1px_rgba(88,166,255,0.25)]"
     >
       <div className={`mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${
@@ -54,10 +58,12 @@ export function InboxItemRow({
         <time className="text-[11px] text-oa-text-muted">{formatInboxTime(item.updatedAt)}</time>
         <div className="flex gap-1 opacity-0 transition-opacity group-hover:opacity-100">
           {item.actions.slice(0, 3).map((action) => (
-            <span
+            <m.span
               key={action.id}
               role="button"
               tabIndex={-1}
+              whileTap={{ scale: 0.97 }}
+              transition={motionTransition.quick}
               onClick={(event) => {
                 event.stopPropagation();
                 onQuickAction(action.id, item);
@@ -67,11 +73,11 @@ export function InboxItemRow({
               }`}
             >
               {action.label}
-            </span>
+            </m.span>
           ))}
         </div>
       </div>
-    </button>
+    </m.button>
   );
 }
 

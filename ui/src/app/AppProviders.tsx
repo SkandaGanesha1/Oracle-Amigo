@@ -3,6 +3,7 @@ import { BrowserRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toast } from "@heroui/react/toast";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { MotionConfig } from "motion/react";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -18,10 +19,12 @@ export function AppProviders({ children }: PropsWithChildren) {
   return (
     <BrowserRouter>
       <QueryClientProvider client={queryClient}>
-        <TooltipProvider>
-          <Toast.Provider placement="bottom end" />
-          {children}
-        </TooltipProvider>
+        <MotionConfig reducedMotion="user" transition={{ type: "spring", stiffness: 420, damping: 34, mass: 0.8 }}>
+          <TooltipProvider>
+            <Toast.Provider placement="bottom end" />
+            {children}
+          </TooltipProvider>
+        </MotionConfig>
       </QueryClientProvider>
     </BrowserRouter>
   );

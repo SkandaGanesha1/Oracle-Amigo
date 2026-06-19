@@ -2,7 +2,7 @@
 
 The Admin Portal is the operator-facing web application for the Oracle Amigo control plane. It replaces the in-chat **Admin Console** tab (Phase 15) with a standalone React app served by its own Fastify adapter on a separate port, with production-grade operator auth (Argon2id password + TOTP 2FA + recovery codes + HttpOnly session cookie).
 
-> **Scope:** read-only monitoring (KPIs, users, devices, presence, tasks, transfers, audit) + operator auth (bootstrap, login, MFA, recovery, session). There are no destructive actions in the UI; the control plane deliberately exposes no `POST /v1/admin/*` mutation endpoints. All destructive operations happen out-of-band (SQLite, curl) and are visible in the Cloud Audit Log.
+> **Scope:** monitoring (KPIs, users, devices, presence, tasks, transfers, audit), operator auth (bootstrap, login, MFA, recovery, session), and explicit administrative revocation actions. The control plane exposes narrowly scoped `POST /v1/admin/devices/:device_id/revoke`, `POST /v1/admin/users/:user_id/disable`, and `POST /v1/admin/agent-instances/:agent_instance_id/disable` mutation endpoints. These require admin auth and are covered by control-plane tests.
 
 ## Why a separate portal
 
@@ -29,7 +29,7 @@ operator browser
     |  GET /v1/admin/*       (cookie forwarded)
     v
 +-------------------------------------------+
-|  127.0.0.1:8080   apps/control-plane/     |   <-- auth + read-only data
+|  127.0.0.1:8080   apps/control-plane/     |   <-- auth + admin data/actions
 +-------------------------------------------+
 ```
 
@@ -75,6 +75,19 @@ NODE_ENV=production \
 
 Put a reverse proxy (Caddy, nginx) in front of `:3398` with TLS. The proxy must forward `Cookie` (request) and `Set-Cookie` (response) headers verbatim. `@fastify/http-proxy` v11.5+ does this by default.
 
+## Quick start (Podman pilot)
+
+From repo root:
+
+```powershell
+podman machine start
+podman compose -f deploy/docker-compose.pilot.yml up --build
+```
+
+Open `http://localhost:8088`.
+
+The pilot uses HTTP and development cookie mode for LAN demos. Production must use HTTPS at the browser-facing origin, `CONTROL_PLANE_ENV=production`, `ADMIN_COOKIE_HOST_PREFIX=true`, strong rotated secrets, and RS256 JWT keys. See `deploy/README.md` and `docs/cloud-deployment-plan.md`.
+
 ## Operator journey
 
 ### 1. First-admin bootstrap
@@ -115,8 +128,8 @@ The session is an HttpOnly, SameSite=Strict cookie. Prod uses `__Host-admin_sess
 | --- | --- | --- | --- |
 | `#/` | `OverviewPage` | 5s | KPI cards (users, devices, instances, online, open tasks, active transfers, audit events), recent activity, live presence. |
 | `#/users` | `UsersPage` | 15s | Searchable user list. |
-| `#/devices` | `DevicesPage` | 15s | Devices with fingerprint + last-seen. |
-| `#/instances` | `AgentInstancesPage` | 10s | Agent instances with status pill. |
+| `#/devices` | `DevicesPage` | 15s | Devices with fingerprint, last-seen, and revoke controls when authorized. |
+| `#/instances` | `AgentInstancesPage` | 10s | Agent instances with status pill and disable controls when authorized. |
 | `#/presence` | `PresencePage` | 5s | Online / stale / offline counters. |
 | `#/tasks` | `TasksPage` | 10s | A2A relay tasks (latest 500). |
 | `#/transfers` | `TransfersPage` | 10s | Virtualized; "expiring soon" badge. |
@@ -209,7 +222,7 @@ It walks the events in ascending `id` order, recomputes the hash, compares it to
 | `GET` | `/v1/admin/auth/me` | — | `200 { user: { id, email, display_name, totp_enrolled, is_disabled, created_at } }` with valid session, or `401` |
 | `POST` | `/v1/admin/auth/logout` | — | `204` + `Set-Cookie: ...; Max-Age=0` |
 
-The read-only data endpoints under `/v1/admin/*` (users, devices, agent-instances, presence, tasks, transfers, audit) are unchanged from Phase 15 — see [`admin-monitoring.md`](./admin-monitoring.md). They now require a valid session cookie in addition to (or instead of) `X-Admin-Token`; the `requireAdmin` middleware accepts either.
+The data endpoints under `/v1/admin/*` (users, devices, agent-instances, presence, tasks, transfers, audit, approvals, and org snapshots) are described in [`admin-monitoring.md`](./admin-monitoring.md). They require a valid admin session cookie or `X-Admin-Token`; the `requireAdmin` middleware accepts either. Revocation and disable mutations remain explicit operator actions and should be audited by the control plane.
 
 ## Security model
 

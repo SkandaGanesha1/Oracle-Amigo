@@ -1,5 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { getDb } from "../db/connection.js";
+import { getDefaultSecretStore } from "../security/secrets/SecretStoreFactory.js";
+import { fromSecretRef, profileSecretPrefix, toSecretRef, type SecretStore } from "../security/secrets/SecretStore.js";
 
 export interface LocalCloudIdentity {
   profileId: string;
@@ -49,12 +51,12 @@ export function defaultControlPlaneUrl(): string {
 }
 
 export class LocalCloudIdentityStore {
-  constructor(private db: DatabaseSync = getDb()) {}
+  constructor(private db: DatabaseSync = getDb(), private secrets: SecretStore = getDefaultSecretStore()) {}
 
   get(profileId = defaultProfileId()): LocalCloudIdentity | null {
     const row = this.db.prepare("SELECT * FROM local_cloud_identity WHERE profile_id = ?").get(profileId) as
       Record<string, unknown> | undefined;
-    return row ? rowToIdentity(row) : null;
+    return row ? rowToIdentity(row, this.secrets) : null;
   }
 
   getOrCreate(profileId = defaultProfileId(), controlPlaneUrl = defaultControlPlaneUrl()): LocalCloudIdentity {
@@ -86,6 +88,7 @@ export class LocalCloudIdentityStore {
       createdAt: existing?.createdAt ?? now,
       updatedAt: now
     };
+    const secretRefs = persistTokenSecrets(this.secrets, profileId, next);
 
     this.db.prepare(`
       INSERT INTO local_cloud_identity
@@ -122,11 +125,11 @@ export class LocalCloudIdentityStore {
       next.agentId,
       next.agentInstanceId,
       next.relayInboxUrl,
-      next.userAccessToken,
-      next.deviceAccessToken,
-      next.refreshToken,
-      next.userRefreshToken,
-      next.deviceRefreshToken,
+      secretRefs.userAccessToken,
+      secretRefs.deviceAccessToken,
+      secretRefs.refreshToken,
+      secretRefs.userRefreshToken,
+      secretRefs.deviceRefreshToken,
       next.status,
       next.createdAt,
       next.updatedAt
@@ -135,6 +138,9 @@ export class LocalCloudIdentityStore {
   }
 
   clearTokens(profileId = defaultProfileId()): LocalCloudIdentity {
+    for (const field of TOKEN_FIELDS) {
+      this.secrets.delete(tokenSecretName(profileId, field));
+    }
     return this.save(profileId, {
       userAccessToken: null,
       deviceAccessToken: null,
@@ -146,9 +152,36 @@ export class LocalCloudIdentityStore {
   }
 }
 
-function rowToIdentity(row: Record<string, unknown>): LocalCloudIdentity {
+const TOKEN_FIELDS = [
+  "userAccessToken",
+  "deviceAccessToken",
+  "refreshToken",
+  "userRefreshToken",
+  "deviceRefreshToken"
+] as const;
+
+type TokenField = typeof TOKEN_FIELDS[number];
+
+const TOKEN_COLUMNS: Record<TokenField, string> = {
+  userAccessToken: "user_access_token",
+  deviceAccessToken: "device_access_token",
+  refreshToken: "refresh_token",
+  userRefreshToken: "user_refresh_token",
+  deviceRefreshToken: "device_refresh_token"
+};
+
+const TOKEN_SECRET_SLUGS: Record<TokenField, string> = {
+  userAccessToken: "user-access-token",
+  deviceAccessToken: "device-access-token",
+  refreshToken: "refresh-token",
+  userRefreshToken: "user-refresh-token",
+  deviceRefreshToken: "device-refresh-token"
+};
+
+function rowToIdentity(row: Record<string, unknown>, secrets: SecretStore): LocalCloudIdentity {
+  const profileId = String(row.profile_id);
   return {
-    profileId: String(row.profile_id),
+    profileId,
     controlPlaneUrl: String(row.control_plane_url),
     orgId: nullable(row.org_id),
     userId: nullable(row.user_id),
@@ -158,15 +191,52 @@ function rowToIdentity(row: Record<string, unknown>): LocalCloudIdentity {
     agentId: nullable(row.agent_id),
     agentInstanceId: nullable(row.agent_instance_id),
     relayInboxUrl: nullable(row.relay_inbox_url),
-    userAccessToken: nullable(row.user_access_token),
-    deviceAccessToken: nullable(row.device_access_token),
-    refreshToken: nullable(row.refresh_token),
-    userRefreshToken: nullable(row.user_refresh_token) ?? nullable(row.refresh_token),
-    deviceRefreshToken: nullable(row.device_refresh_token),
+    userAccessToken: readTokenSecret(secrets, profileId, "userAccessToken", row),
+    deviceAccessToken: readTokenSecret(secrets, profileId, "deviceAccessToken", row),
+    refreshToken: readTokenSecret(secrets, profileId, "refreshToken", row),
+    userRefreshToken: readTokenSecret(secrets, profileId, "userRefreshToken", row) ?? readTokenSecret(secrets, profileId, "refreshToken", row),
+    deviceRefreshToken: readTokenSecret(secrets, profileId, "deviceRefreshToken", row),
     status: String(row.status) as LocalCloudIdentity["status"],
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at)
   };
+}
+
+function persistTokenSecrets(
+  secrets: SecretStore,
+  profileId: string,
+  identity: Pick<LocalCloudIdentity, TokenField>
+): Record<TokenField, string | null> {
+  const refs = {} as Record<TokenField, string | null>;
+  for (const field of TOKEN_FIELDS) {
+    const name = tokenSecretName(profileId, field);
+    const value = identity[field];
+    if (value) {
+      secrets.set(name, value);
+      refs[field] = toSecretRef(name);
+    } else {
+      secrets.delete(name);
+      refs[field] = null;
+    }
+  }
+  return refs;
+}
+
+function readTokenSecret(
+  secrets: SecretStore,
+  profileId: string,
+  field: TokenField,
+  row: Record<string, unknown>
+): string | null {
+  const raw = nullable(row[TOKEN_COLUMNS[field]]);
+  if (!raw) return null;
+  const refName = fromSecretRef(raw);
+  if (refName) return secrets.get(refName);
+  return raw;
+}
+
+function tokenSecretName(profileId: string, field: TokenField): string {
+  return `${profileSecretPrefix(profileId)}/cloud/${TOKEN_SECRET_SLUGS[field]}`;
 }
 
 function nullable(value: unknown): string | null {

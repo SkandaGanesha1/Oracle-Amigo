@@ -12,6 +12,8 @@ import { TasksPage } from "../pages/TasksPage";
 import { AuditPage } from "../pages/AuditPage";
 import { SettingsPage } from "../pages/SettingsPage";
 import { useCloudStatus } from "../hooks/queries";
+import { isCloudUserSessionReady, useCloudUserSession } from "../api/cloudUserSessionStore";
+import { useLocalUiSession } from "../api/localUiSessionStore";
 
 function ChatRedirect() {
   const params = useParams<{ conversationId?: string }>();
@@ -20,23 +22,38 @@ function ChatRedirect() {
 
 function RouteGate() {
   const location = useLocation();
+  const localSession = useLocalUiSession();
+  const cloudSession = useCloudUserSession();
   const { data, isLoading, isError } = useCloudStatus();
   const cloud = data?.cloud;
   const status = cloud?.status ?? "disconnected";
+  const hasActiveUserAuth = Boolean(cloud?.hasUserAccessToken && data?.userAuthIssue == null);
+  const hasActiveDeviceAuth = Boolean(cloud?.hasDeviceAccessToken && data?.tokenIssue !== "expired");
+  const cloudAuthMessage =
+    cloudSession.message ??
+    (data?.userAuthIssue === "expired"
+      ? "Cloud login expired. Please sign in again."
+      : data?.userAuthIssue === "required" || cloud?.hasUserAccessToken === false
+        ? "Please sign in to continue."
+        : null);
 
-  if (isLoading) {
+  if (localSession.status === "blocked" || cloudSession.status === "blocked") {
+    return <Navigate to="/login" replace state={{ from: location.pathname, cloudAuthMessage }} />;
+  }
+
+  if (localSession.status === "checking" || localSession.status === "recovering" || isLoading || (hasActiveUserAuth && !isCloudUserSessionReady(cloudSession.status))) {
     return (
       <div className="flex h-full w-full items-center justify-center bg-oa-bg text-sm text-oa-text-muted">
-        Checking local agent status...
+        {localSession.status === "recovering" ? "Refreshing local UI session..." : "Checking local agent status..."}
       </div>
     );
   }
 
-  if (isError || status === "disconnected") {
-    return <Navigate to="/login" replace state={{ from: location.pathname }} />;
+  if (isError || status === "disconnected" || !hasActiveUserAuth) {
+    return <Navigate to="/login" replace state={{ from: location.pathname, cloudAuthMessage }} />;
   }
 
-  if (status !== "enrolled" || !cloud?.hasDeviceAccessToken || data?.tokenIssue === "expired") {
+  if (status !== "enrolled" || !hasActiveDeviceAuth) {
     return <Navigate to="/enroll" replace state={{ from: location.pathname }} />;
   }
 
@@ -44,9 +61,19 @@ function RouteGate() {
 }
 
 function EnrollmentGate() {
+  const cloudSession = useCloudUserSession();
   const { data, isLoading, isError } = useCloudStatus();
   const cloud = data?.cloud;
   const status = cloud?.status ?? "disconnected";
+  const hasActiveUserAuth = Boolean(cloud?.hasUserAccessToken && data?.userAuthIssue == null);
+  const hasActiveDeviceAuth = Boolean(cloud?.hasDeviceAccessToken && data?.tokenIssue !== "expired");
+  const cloudAuthMessage =
+    cloudSession.message ??
+    (data?.userAuthIssue === "expired"
+      ? "Cloud login expired. Please sign in again."
+      : data?.userAuthIssue === "required" || cloud?.hasUserAccessToken === false
+        ? "Please sign in to continue."
+        : null);
 
   if (isLoading) {
     return (
@@ -56,8 +83,10 @@ function EnrollmentGate() {
     );
   }
 
-  if (isError || status === "disconnected") return <Navigate to="/login" replace />;
-  if (status === "enrolled" && cloud?.hasDeviceAccessToken && data?.tokenIssue !== "expired") return <Navigate to="/inbox" replace />;
+  if (cloudSession.status === "blocked" || isError || status === "disconnected" || !hasActiveUserAuth) {
+    return <Navigate to="/login" replace state={{ cloudAuthMessage }} />;
+  }
+  if (status === "enrolled" && hasActiveDeviceAuth) return <Navigate to="/inbox" replace />;
   return <DeviceEnrollmentScreen />;
 }
 

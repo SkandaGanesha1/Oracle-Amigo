@@ -7,7 +7,7 @@ import { Cpu, FileText, Inbox, ListChecks, LoaderCircle, LogOut, ScrollText, Sea
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import oracleLogoUrl from "../../../UI_images/oracle_logo.png";
 import { OracleAvatar } from "../components/primitives/OracleAvatar";
-import { useCloudStatus, useContacts, useConversations, useDirectorySearch, useLogout, usePendingApprovals, useStartConversation } from "../hooks/queries";
+import { isCloudUserReady, useCloudStatus, useContacts, useConversations, useDirectorySearch, useLogout, usePendingApprovals, useStartConversation } from "../hooks/queries";
 import { buildRailUsers, safePersonName, type RailUser } from "./userRailModel";
 import type { AgentInstance, DirectoryUser, PeerPresence } from "../types";
 import { ProfileDetails } from "../features/inspector/ProfileDetails";
@@ -17,16 +17,16 @@ export function UserRail() {
   const location = useLocation();
   const { data: conversationsData } = useConversations();
   const { data: cloudStatus } = useCloudStatus();
-  const { data: contactsData } = useContacts(cloudStatus?.cloud?.status === "enrolled");
-  const { data: directorySnapshot } = useDirectorySearch("", cloudStatus?.cloud?.status === "enrolled");
+  const cloudDirectoryEnabled = isCloudUserReady(cloudStatus);
+  const { data: contactsData } = useContacts(cloudDirectoryEnabled);
   const { approvalCards } = usePendingApprovals();
   const createConversation = useStartConversation();
   const [searchOpen, setSearchOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const conversations = conversationsData?.conversations ?? [];
   const users = useMemo(
-    () => buildRailUsers(conversations, cloudStatus, contactsData?.contacts ?? [], directorySnapshot?.users ?? []),
-    [cloudStatus, contactsData, conversations, directorySnapshot]
+    () => buildRailUsers(conversations, cloudStatus, contactsData?.contacts ?? []),
+    [cloudStatus, contactsData, conversations]
   );
   const unread = conversations.reduce((sum, conversation) => sum + (conversation.unread ?? 0), 0);
   const pendingApprovals = approvalCards.filter((card) => card.status === "pending").length;

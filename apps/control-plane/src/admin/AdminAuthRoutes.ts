@@ -92,7 +92,7 @@ export async function registerAdminAuthRoutes(app: FastifyInstance): Promise<voi
 
   app.post("/v1/admin/auth/setup/start", async (_req, reply) => {
     try {
-      const result = startSetup();
+      const result = await startSetup();
       reply.send({
         challenge: result.challenge,
         provisioning_uri: result.provisioningUri,
@@ -165,7 +165,7 @@ export async function registerAdminAuthRoutes(app: FastifyInstance): Promise<voi
   app.post("/v1/admin/auth/mfa/verify", async (req, reply) => {
     try {
       const body = MfaSchema.parse(req.body);
-      const result = verifyMfaTotp(body.challenge, body.totp_code, sessionContext(req));
+      const result = await verifyMfaTotp(body.challenge, body.totp_code, sessionContext(req));
       setSessionCookie(reply, result.session.token, result.session.absoluteExpiresAt);
       reply.send({
         user: {
@@ -183,7 +183,7 @@ export async function registerAdminAuthRoutes(app: FastifyInstance): Promise<voi
   app.post("/v1/admin/auth/mfa/recovery", async (req, reply) => {
     try {
       const body = RecoverySchema.parse(req.body);
-      const result = verifyMfaRecovery(body.challenge, body.recovery_code, sessionContext(req));
+      const result = await verifyMfaRecovery(body.challenge, body.recovery_code, sessionContext(req));
       setSessionCookie(reply, result.session.token, result.session.absoluteExpiresAt);
       reply.send({
         user: {
@@ -201,7 +201,7 @@ export async function registerAdminAuthRoutes(app: FastifyInstance): Promise<voi
 
   app.get("/v1/admin/auth/me", async (req, reply) => {
     const rawToken = readSessionCookie(req);
-    const user = meFromSession(rawToken);
+    const user = await meFromSession(rawToken);
     if (!user) {
       reply.code(401).send({ error: "UNAUTHORIZED", message: "No active admin session" });
       return;
@@ -219,7 +219,7 @@ export async function registerAdminAuthRoutes(app: FastifyInstance): Promise<voi
   app.post("/v1/admin/auth/logout", async (req, reply) => {
     const rawToken = readSessionCookie(req);
     if (rawToken !== null) {
-      logout(rawToken);
+      await logout(rawToken);
     }
     clearSessionCookie(reply);
     reply.code(204).send();
@@ -232,12 +232,12 @@ export function readSessionCookie(req: FastifyRequest): string | null {
   return cookies[sessionCookieName()] ?? null;
 }
 
-export function attachSessionContext(req: FastifyRequest): void {
+export async function attachSessionContext(req: FastifyRequest): Promise<void> {
   const rawToken = readSessionCookie(req);
   if (!rawToken) return;
-  const resolved = resolveSession(rawToken);
+  const resolved = await resolveSession(rawToken);
   if (resolved) {
     (req as { adminContext?: ResolvedSession }).adminContext = resolved;
-    touchSession(resolved.sessionId);
+    await touchSession(resolved.sessionId);
   }
 }

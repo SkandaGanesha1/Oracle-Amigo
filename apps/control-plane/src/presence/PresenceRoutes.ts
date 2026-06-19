@@ -26,7 +26,7 @@ export async function registerPresenceRoutes(app: FastifyInstance): Promise<void
         reply.code(403).send({ error: "AGENT_INSTANCE_MISMATCH" });
         return;
       }
-      const result = recordHeartbeat(req.deviceContext.orgId, body);
+      const result = await recordHeartbeat(req.deviceContext.orgId, body);
       reply.send(result);
     } catch (err) {
       if (err instanceof ZodError) {

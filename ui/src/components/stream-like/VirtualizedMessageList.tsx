@@ -313,7 +313,8 @@ function VirtualList({
           overflowAnchor: "none",
         }}
         onScroll={handleScroll}
-        role="log"
+        role="feed"
+        aria-busy={loadingBefore ? "true" : "false"}
         aria-live="polite"
         aria-label="Message list"
         aria-relevant="additions"
@@ -367,6 +368,8 @@ function VirtualList({
                   onRetry={onRetry}
                   grouped={rowMeta?.groupedWithPrevious}
                   meta={rowMeta}
+                  ariaPosition={virtualItem.index + 1}
+                  ariaSetSize={messages.length}
                 />
               </div>
             );

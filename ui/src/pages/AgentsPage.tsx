@@ -2,39 +2,19 @@ import { useState } from "react";
 import { AgentDirectory } from "../features/agents";
 import { AgentProfile } from "../features/agents/AgentProfile";
 import { TrustGraph } from "../features/agents/TrustGraph";
-import { useContacts, useConversations } from "../hooks/queries";
+import { useAgentProfiles } from "../hooks/queries";
 import { User, Share2, Shield, type LucideIcon } from "lucide-react";
 
 type ViewMode = "directory" | "graph";
 
 export function AgentsPage() {
-  const { data: contactsData } = useContacts();
-  const { data: conversationsData } = useConversations();
+  const { data: profiles = [] } = useAgentProfiles();
   const [view, setView] = useState<ViewMode>("directory");
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
 
-  const contacts = contactsData?.contacts ?? [];
-  const convs = conversationsData?.conversations ?? [];
-
-  const selectedAgent = selectedAgentId
-    ? contacts.find((c) => c.target_user_id === selectedAgentId) ?? null
+  const agentProfile = selectedAgentId
+    ? profiles.find((profile) => profile.id === selectedAgentId) ?? null
     : null;
-  const selectedAgentRecord = selectedAgent as unknown as { display_name?: unknown } | null;
-  const selectedAgentDisplayName =
-    typeof selectedAgentRecord?.display_name === "string"
-      ? selectedAgentRecord.display_name
-      : selectedAgent?.target_user_id?.slice(0, 12) ?? "Agent";
-
-  const agentProfile = selectedAgent ? {
-    id: selectedAgent.target_user_id ?? selectedAgentId!,
-    displayName: selectedAgentDisplayName,
-    targetUserId: selectedAgent.target_user_id ?? selectedAgentId!,
-    trustLevel: (selectedAgent.status === "accepted" ? "verified" : "unverified") as "verified" | "unverified" | "external" | "local",
-    presence: "online" as const,
-    capabilities: [],
-    deviceName: "Remote agent",
-    status: selectedAgent.status,
-  } : null;
 
   const tabs: { value: ViewMode; label: string; icon: LucideIcon }[] = [
     { value: "directory", label: "Agents", icon: User },
@@ -62,7 +42,7 @@ export function AgentsPage() {
             );
           })}
           <span className="ml-auto text-[10px] text-oa-text-muted">
-            {contacts.length + convs.filter((c) => c.agentInstanceId).length} agents
+            {profiles.length} agents
           </span>
         </div>
 

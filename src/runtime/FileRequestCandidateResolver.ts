@@ -34,6 +34,7 @@ export type ResolveFileRequestCandidatesResult = {
   searchQuery: string;
   parsed: FileRequestParseResult;
   candidates: FileRequestCandidate[];
+  lowConfidenceCandidates: FileRequestCandidate[];
   searchedRoots: string[];
   source: "live" | "index" | "filename-index" | "none";
 };
@@ -66,6 +67,7 @@ export async function resolveFileRequestCandidates(
       searchQuery,
       parsed,
       candidates: filenameFirst,
+      lowConfidenceCandidates: await findLowConfidenceOtherTypes(parsed, extensions, filenameFirst, limit),
       searchedRoots: fileSearch.getRoots(),
       source: "filename-index"
     };
@@ -86,6 +88,7 @@ export async function resolveFileRequestCandidates(
       searchQuery,
       parsed,
       candidates: indexedPreflight,
+      lowConfidenceCandidates: await findLowConfidenceOtherTypes(parsed, extensions, indexedPreflight, limit),
       searchedRoots: fileSearch.getRoots(),
       source: "index"
     };
@@ -104,6 +107,7 @@ export async function resolveFileRequestCandidates(
       searchQuery,
       parsed,
       candidates: liveCandidates,
+      lowConfidenceCandidates: [],
       searchedRoots: live.roots,
       source: "live"
     };
@@ -114,6 +118,7 @@ export async function resolveFileRequestCandidates(
     searchQuery,
     parsed,
     candidates: [],
+    lowConfidenceCandidates: await findLowConfidenceOtherTypes(parsed, extensions, [], limit),
     searchedRoots: live.roots,
     source: "none"
   };
@@ -219,4 +224,29 @@ async function hashFile(filePath: string): Promise<string> {
 
 function normalizeExtensions(values: string[] = []): string[] {
   return [...new Set(values.map((value) => value.trim().toLowerCase().replace(/^\./, "")).filter(Boolean))];
+}
+
+async function findLowConfidenceOtherTypes(
+  parsed: FileRequestParseResult,
+  requestedExtensions: string[],
+  primary: FileRequestCandidate[],
+  limit: number
+): Promise<FileRequestCandidate[]> {
+  if (requestedExtensions.length === 0) return [];
+  const requested = new Set(requestedExtensions.map((value) => value.replace(/^\./, "").toLowerCase()));
+  const primaryIds = new Set(
+    primary
+      .map((candidate) => Number(candidate.id))
+      .filter((id) => Number.isSafeInteger(id))
+  );
+  const matches = searchFileRequest(parsed, {
+    extensions: [],
+    excludeIds: [...primaryIds]
+  }).filter((match) => !requested.has(match.extension.replace(/^\./, "").toLowerCase()));
+  const candidates = await fromIndexedMatches(matches.slice(0, limit), "filename-index");
+  return candidates.map((candidate) => ({
+    ...candidate,
+    score: Math.min(candidate.score, 0.49),
+    reason: `${candidate.reason}; requested extension hidden`
+  }));
 }

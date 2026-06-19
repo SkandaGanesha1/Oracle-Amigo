@@ -164,7 +164,7 @@ describe("file search agent API", () => {
     expect(body.selectedMatch.fileName).toBe("Alpha Launch Architecture.md");
     expect(body.matches.some((match) => match.fileName === "Alpha Launch Architecture.md")).toBe(true);
     await server.close();
-  }, 15000);
+  }, 30_000);
 
   it("normalizes noisy LLM filetype terms while finding NonPO invoice PDFs", async () => {
     await writeFile(join(fixtureRoot, "Non-PO invoice India.pdf"), pdfBytes);

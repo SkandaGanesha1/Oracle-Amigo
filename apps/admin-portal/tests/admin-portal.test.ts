@@ -33,6 +33,10 @@ beforeAll(async () => {
     required: true,
     has_any_admin: false
   }));
+  stubUpstream.get("/livez", async () => ({
+    status: "ok",
+    service: "oracle-amigo-control-plane"
+  }));
   await stubUpstream.listen({ port: 0, host: "127.0.0.1" });
   const stubAddress = stubUpstream.server.address();
   if (!stubAddress || typeof stubAddress === "string") throw new Error("stub upstream did not bind");
@@ -73,6 +77,25 @@ describe("admin portal reverse-proxy + static + SPA fallback", () => {
     expect(body.status).toBe("ok");
     expect(body.service).toBe("oracle-amigo-admin-portal");
     expect(body.upstream).toBe(`http://127.0.0.1:${stubPort}`);
+  });
+
+  it("GET /livez returns liveness status", async () => {
+    const res = await portal.inject({ method: "GET", url: "/livez" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({
+      status: "ok",
+      service: "oracle-amigo-admin-portal"
+    });
+  });
+
+  it("GET /ready returns readiness status when the control plane is live", async () => {
+    const res = await portal.inject({ method: "GET", url: "/ready" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({
+      status: "ready",
+      service: "oracle-amigo-admin-portal",
+      upstream: `http://127.0.0.1:${stubPort}`
+    });
   });
 
   it("GET /v1/admin/auth/setup-status proxies to upstream and returns its body", async () => {

@@ -1,5 +1,5 @@
-import type { Database as DB } from "better-sqlite3";
-import { getDb } from "../db/connection.js";
+import { getControlPlaneStore } from "../db/connection.js";
+import type { ControlPlaneStore } from "../db/ControlPlaneStore.js";
 import { appendAuditEvent } from "../audit/CloudAuditService.js";
 import type { AgentInstanceId, OrgId, PresenceStatus } from "../types/cloud.js";
 
@@ -23,15 +23,15 @@ export interface HeartbeatResult {
   next_heartbeat_seconds: number;
 }
 
-export function recordHeartbeat(
+export async function recordHeartbeat(
   orgId: OrgId,
   input: HeartbeatInput,
-  opts: { db?: DB } = {}
-): HeartbeatResult {
-  const db = opts.db ?? getDb();
-  const inst = db.prepare(`
-    SELECT * FROM agent_instances WHERE org_id = ? AND id = ?
-  `).get(orgId, input.agent_instance_id) as Record<string, unknown> | undefined;
+  opts: { store?: ControlPlaneStore } = {}
+): Promise<HeartbeatResult> {
+  const db = opts.store ?? getControlPlaneStore();
+  const inst = await db.one(`
+    SELECT * FROM agent_instances WHERE org_id = $1 AND id = $2
+  `, [orgId, input.agent_instance_id]);
   if (!inst) throw new Error("Agent instance not found");
   if (input.device_id && String(inst.device_id) !== input.device_id) {
     throw new Error("Device mismatch for agent instance");
@@ -42,9 +42,9 @@ export function recordHeartbeat(
   if (String(inst.status) === "revoked") throw new Error("Agent instance has been revoked");
   const now = new Date().toISOString();
   const capabilitiesJson = JSON.stringify(input.capabilities ?? []);
-  db.prepare(`
+  await db.execute(`
     INSERT INTO presence (agent_instance_id, org_id, user_id, agent_id, device_id, status, last_heartbeat_at, current_version, capabilities_json, agent_card_hash, local_queue_depth)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
     ON CONFLICT(agent_instance_id) DO UPDATE SET
       status=excluded.status,
       last_heartbeat_at=excluded.last_heartbeat_at,
@@ -52,16 +52,16 @@ export function recordHeartbeat(
       capabilities_json=excluded.capabilities_json,
       agent_card_hash=excluded.agent_card_hash,
       local_queue_depth=excluded.local_queue_depth
-  `).run(
+  `, [
     input.agent_instance_id, orgId,
     String(inst.user_id), String(inst.agent_id), String(inst.device_id),
     input.status, now, input.version ?? null, capabilitiesJson,
     input.agent_card_hash ?? null,
     input.local_queue_depth ?? 0
-  );
-  db.prepare("UPDATE agent_instances SET last_seen_at = ? WHERE id = ?").run(now, input.agent_instance_id);
-  db.prepare("UPDATE devices SET last_seen_at = ? WHERE id = ?").run(now, String(inst.device_id));
-  appendAuditEvent({
+  ]);
+  await db.execute("UPDATE agent_instances SET last_seen_at = $1 WHERE id = $2", [now, input.agent_instance_id]);
+  await db.execute("UPDATE devices SET last_seen_at = $1 WHERE id = $2", [now, String(inst.device_id)]);
+  await appendAuditEvent({
     orgId, actorAgentInstanceId: input.agent_instance_id, eventType: "PRESENCE_HEARTBEAT",
     details: {
       status: input.status, version: input.version ?? null,
@@ -75,35 +75,35 @@ export function recordHeartbeat(
   };
 }
 
-export function recomputeStalePresence(db: DB = getDb()): number {
+export async function recomputeStalePresence(store: ControlPlaneStore = getControlPlaneStore()): Promise<number> {
   const now = Date.now();
   const onlineCutoff = new Date(now - HEARTBEAT_ONLINE_THRESHOLD_MS).toISOString();
   const staleCutoff = new Date(now - HEARTBEAT_STALE_THRESHOLD_MS).toISOString();
   let count = 0;
-  const r1 = db.prepare(`
+  const r1 = await store.execute(`
     UPDATE presence SET status = 'stale'
-    WHERE status = 'online' AND last_heartbeat_at < ?
-  `).run(onlineCutoff);
+    WHERE status = 'online' AND last_heartbeat_at < $1
+  `, [onlineCutoff]);
   count += Number(r1.changes);
-  const r2 = db.prepare(`
+  const r2 = await store.execute(`
     UPDATE presence SET status = 'offline'
-    WHERE status = 'stale' AND last_heartbeat_at < ?
-  `).run(staleCutoff);
+    WHERE status = 'stale' AND last_heartbeat_at < $1
+  `, [staleCutoff]);
   count += Number(r2.changes);
   return count;
 }
 
-export function listPresence(
+export async function listPresence(
   orgId: string,
-  opts: { db?: DB; status?: PresenceStatus } = {}
-): Array<Record<string, unknown>> {
-  const db = opts.db ?? getDb();
+  opts: { store?: ControlPlaneStore; status?: PresenceStatus } = {}
+): Promise<Array<Record<string, unknown>>> {
+  const db = opts.store ?? getControlPlaneStore();
   if (opts.status) {
-    return db.prepare(`
-      SELECT * FROM presence WHERE org_id = ? AND status = ? ORDER BY last_heartbeat_at DESC
-    `).all(orgId, opts.status) as Array<Record<string, unknown>>;
+    return db.query(`
+      SELECT * FROM presence WHERE org_id = $1 AND status = $2 ORDER BY last_heartbeat_at DESC
+    `, [orgId, opts.status]);
   }
-  return db.prepare(`
-    SELECT * FROM presence WHERE org_id = ? ORDER BY last_heartbeat_at DESC
-  `).all(orgId) as Array<Record<string, unknown>>;
+  return db.query(`
+    SELECT * FROM presence WHERE org_id = $1 ORDER BY last_heartbeat_at DESC
+  `, [orgId]);
 }

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { AnimatePresence, motion } from "framer-motion";
 import { Bell, CheckCircle2, ShieldAlert, X } from "lucide-react";
 import { useNotifications } from "../../hooks/queries";
+import { AnimatePresence, m, modalPanelVariants, motionTransition } from "../primitives/MotionPrimitives";
 
 const severityClass: Record<string, string> = {
   info: "text-oa-blue",
@@ -38,10 +38,12 @@ export function NotificationCenter() {
 
       <AnimatePresence>
         {open && (
-          <motion.div
-            initial={{ opacity: 0, y: 8, scale: 0.98 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 8, scale: 0.98 }}
+          <m.div
+            variants={modalPanelVariants}
+            initial="initial"
+            animate="animate"
+            exit="exit"
+            transition={motionTransition.quick}
             className="glass-panel-strong absolute right-0 top-12 z-50 w-[360px] overflow-hidden rounded-xl"
           >
             <div className="flex items-center justify-between border-b border-oa-border px-3 py-2.5">
@@ -82,7 +84,7 @@ export function NotificationCenter() {
                 ))
               )}
             </div>
-          </motion.div>
+          </m.div>
         )}
       </AnimatePresence>
     </div>

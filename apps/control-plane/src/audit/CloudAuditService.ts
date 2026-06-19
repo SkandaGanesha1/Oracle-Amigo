@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { Database as DB } from "better-sqlite3";
-import { getDb } from "../db/connection.js";
+import { getControlPlaneStore } from "../db/connection.js";
+import type { ControlPlaneStore } from "../db/ControlPlaneStore.js";
 import type { AuditEvent, OrgId, UserId, AgentInstanceId, AuditEventId } from "../types/cloud.js";
 
 export interface AppendAuditEventInput {
@@ -11,21 +11,22 @@ export interface AppendAuditEventInput {
   details: Record<string, unknown>;
 }
 
-export function appendAuditEvent(input: AppendAuditEventInput, db?: DB): AuditEvent {
-  const conn = db ?? getDb();
+export async function appendAuditEvent(input: AppendAuditEventInput, store?: ControlPlaneStore): Promise<AuditEvent> {
+  const conn = store ?? getControlPlaneStore();
   const id = `aud_${randomUUID()}`;
   const now = new Date().toISOString();
   const detailsJson = JSON.stringify(input.details);
-  const last = conn
-    .prepare("SELECT event_hash FROM audit_events WHERE org_id = ? ORDER BY created_at DESC, id DESC LIMIT 1")
-    .get(input.orgId) as { event_hash: string | null } | undefined;
+  const last = await conn.one<{ event_hash: string | null }>(
+    "SELECT event_hash FROM audit_events WHERE org_id = $1 ORDER BY created_at DESC, id DESC LIMIT 1",
+    [input.orgId]
+  );
   const previousHash = last?.event_hash ?? null;
   const payloadToHash = `${id}|${input.orgId}|${input.actorUserId ?? ""}|${input.actorAgentInstanceId ?? ""}|${input.eventType}|${detailsJson}|${previousHash ?? ""}|${now}`;
   const eventHash = createHash("sha256").update(payloadToHash).digest("hex");
-  conn.prepare(`
+  await conn.execute(`
     INSERT INTO audit_events (id, org_id, actor_user_id, actor_agent_instance_id, event_type, details_json, previous_hash, event_hash, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+  `, [
     id,
     input.orgId,
     input.actorUserId ?? null,
@@ -35,7 +36,7 @@ export function appendAuditEvent(input: AppendAuditEventInput, db?: DB): AuditEv
     previousHash,
     eventHash,
     now
-  );
+  ]);
   return {
     id: id as AuditEventId,
     orgId: input.orgId,
@@ -49,19 +50,18 @@ export function appendAuditEvent(input: AppendAuditEventInput, db?: DB): AuditEv
   };
 }
 
-export function listAuditEvents(orgId: OrgId, limit = 200, db?: DB): AuditEvent[] {
-  const conn = db ?? getDb();
-  const rows = conn
-    .prepare("SELECT * FROM audit_events WHERE org_id = ? ORDER BY created_at DESC LIMIT ?")
-    .all(orgId, limit) as Array<Record<string, unknown>>;
+export async function listAuditEvents(orgId: OrgId, limit = 200, store?: ControlPlaneStore): Promise<AuditEvent[]> {
+  const conn = store ?? getControlPlaneStore();
+  const rows = await conn.query("SELECT * FROM audit_events WHERE org_id = $1 ORDER BY created_at DESC LIMIT $2", [
+    orgId,
+    limit
+  ]);
   return rows.map(rowToAudit);
 }
 
-export function verifyAuditChain(orgId: OrgId, db?: DB): { valid: boolean; brokenAt?: string } {
-  const conn = db ?? getDb();
-  const rows = conn
-    .prepare("SELECT * FROM audit_events WHERE org_id = ? ORDER BY created_at ASC, id ASC")
-    .all(orgId) as Array<Record<string, unknown>>;
+export async function verifyAuditChain(orgId: OrgId, store?: ControlPlaneStore): Promise<{ valid: boolean; brokenAt?: string }> {
+  const conn = store ?? getControlPlaneStore();
+  const rows = await conn.query("SELECT * FROM audit_events WHERE org_id = $1 ORDER BY created_at ASC, id ASC", [orgId]);
   let previousHash: string | null = null;
   for (const row of rows) {
     const payload = `${row.id}|${row.org_id}|${row.actor_user_id ?? ""}|${row.actor_agent_instance_id ?? ""}|${row.event_type}|${row.details_json}|${previousHash ?? ""}|${row.created_at}`;

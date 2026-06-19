@@ -1,5 +1,5 @@
-import type { Database as DB } from "better-sqlite3";
-import { getDb } from "../db/connection.js";
+import { getControlPlaneStore } from "../db/connection.js";
+import type { ControlPlaneStore } from "../db/ControlPlaneStore.js";
 import type { OrgId, UserId } from "../types/cloud.js";
 import { agentCardUrl, relayInboxUrl } from "../enrollment/CloudAgentCard.js";
 
@@ -40,37 +40,36 @@ export interface DirectoryAgentInstance {
   last_seen_at: string | null;
 }
 
-export function searchUsers(
+export async function searchUsers(
   orgId: OrgId,
   query: string,
-  opts: { limit?: number; db?: DB; publicBaseUrl?: string } = {}
-): DirectoryUser[] {
-  const db = opts.db ?? getDb();
+  opts: { limit?: number; store?: ControlPlaneStore; publicBaseUrl?: string } = {}
+): Promise<DirectoryUser[]> {
+  const db = opts.store ?? getControlPlaneStore();
   const publicBaseUrl = opts.publicBaseUrl ?? "http://localhost:8080";
   const limit = opts.limit ?? 50;
   const q = `%${query.toLowerCase().trim()}%`;
-  const userRows = db.prepare(`
+  const userRows = await db.query<{ id: string; display_name: string; email: string }>(`
     SELECT u.id, u.display_name, u.email
     FROM users u
-    WHERE u.org_id = ? AND u.status = 'active'
-      AND (lower(u.email) LIKE ? OR lower(u.display_name) LIKE ?)
+    WHERE u.org_id = $1 AND u.status = 'active'
+      AND (lower(u.email) LIKE $2 OR lower(u.display_name) LIKE $3)
     ORDER BY u.display_name
-    LIMIT ?
-  `).all(orgId, q, q, limit) as Array<{ id: string; display_name: string; email: string }>;
+    LIMIT $4
+  `, [orgId, q, q, limit]);
 
   if (userRows.length === 0) return [];
   const userIds = userRows.map((u) => u.id);
-  const placeholders = userIds.map(() => "?").join(",");
-  const instanceRows = db.prepare(`
+  const instanceRows = await db.query(`
     SELECT ai.id AS instance_id, ai.agent_id, ai.device_id, ai.user_id, ai.status,
            ai.relay_inbox_id, ai.agent_card_hash,
            d.device_name, p.status AS presence_status, p.last_heartbeat_at, p.capabilities_json
     FROM agent_instances ai
     JOIN devices d ON d.id = ai.device_id
     LEFT JOIN presence p ON p.agent_instance_id = ai.id
-    WHERE ai.org_id = ? AND ai.user_id IN (${placeholders})
+    WHERE ai.org_id = $1 AND ai.user_id = ANY($2::text[])
       AND ai.status = 'active'
-  `).all(orgId, ...userIds) as Array<Record<string, unknown>>;
+  `, [orgId, userIds]);
 
   const byUser = new Map<string, DirectoryUser>();
   for (const u of userRows) {
@@ -116,17 +115,17 @@ export function searchUsers(
   return Array.from(byUser.values());
 }
 
-export function getUserAgents(
+export async function getUserAgents(
   orgId: OrgId,
   userId: UserId,
-  opts: { db?: DB; publicBaseUrl?: string } = {}
-): DirectoryUser | null {
-  const db = opts.db ?? getDb();
+  opts: { store?: ControlPlaneStore; publicBaseUrl?: string } = {}
+): Promise<DirectoryUser | null> {
+  const db = opts.store ?? getControlPlaneStore();
   const publicBaseUrl = opts.publicBaseUrl ?? "http://localhost:8080";
-  const userRow = db.prepare(`
+  const userRow = await db.one<{ id: string; display_name: string; email: string }>(`
     SELECT id, display_name, email FROM users
-    WHERE org_id = ? AND id = ? AND status = 'active'
-  `).get(orgId, userId) as { id: string; display_name: string; email: string } | undefined;
+    WHERE org_id = $1 AND id = $2 AND status = 'active'
+  `, [orgId, userId]);
   if (!userRow) return null;
   const result: DirectoryUser = {
     user_id: userRow.id,
@@ -137,15 +136,15 @@ export function getUserAgents(
     presence: "offline",
     agents: []
   };
-  const instanceRows = db.prepare(`
+  const instanceRows = await db.query(`
     SELECT ai.id AS instance_id, ai.agent_id, ai.device_id, ai.user_id, ai.status,
            ai.relay_inbox_id, ai.agent_card_hash,
            d.device_name, p.status AS presence_status, p.last_heartbeat_at, p.capabilities_json
     FROM agent_instances ai
     JOIN devices d ON d.id = ai.device_id
     LEFT JOIN presence p ON p.agent_instance_id = ai.id
-    WHERE ai.org_id = ? AND ai.user_id = ? AND ai.status = 'active'
-  `).all(orgId, userId) as Array<Record<string, unknown>>;
+    WHERE ai.org_id = $1 AND ai.user_id = $2 AND ai.status = 'active'
+  `, [orgId, userId]);
   for (const inst of instanceRows) {
     let caps: string[] = [];
     try { caps = inst.capabilities_json ? JSON.parse(String(inst.capabilities_json)) : []; } catch { caps = []; }
@@ -171,14 +170,14 @@ export function getUserAgents(
   return result;
 }
 
-export function getAgentInstance(
+export async function getAgentInstance(
   orgId: OrgId,
   agentInstanceId: string,
-  opts: { db?: DB; publicBaseUrl?: string } = {}
-): DirectoryAgentInstance | null {
-  const db = opts.db ?? getDb();
+  opts: { store?: ControlPlaneStore; publicBaseUrl?: string } = {}
+): Promise<DirectoryAgentInstance | null> {
+  const db = opts.store ?? getControlPlaneStore();
   const publicBaseUrl = opts.publicBaseUrl ?? "http://localhost:8080";
-  const row = db.prepare(`
+  const row = await db.one(`
     SELECT ai.id AS instance_id, ai.agent_id, ai.device_id, ai.user_id,
            ai.agent_card_hash, u.display_name, u.email,
            d.device_name, p.status AS presence_status, p.last_heartbeat_at
@@ -186,10 +185,10 @@ export function getAgentInstance(
     JOIN users u ON u.id = ai.user_id
     JOIN devices d ON d.id = ai.device_id
     LEFT JOIN presence p ON p.agent_instance_id = ai.id
-    WHERE ai.org_id = ? AND ai.id = ?
+    WHERE ai.org_id = $1 AND ai.id = $2
       AND ai.status = 'active'
       AND u.status = 'active'
-  `).get(orgId, agentInstanceId) as Record<string, unknown> | undefined;
+  `, [orgId, agentInstanceId]);
   if (!row) return null;
   return {
     user_id: String(row.user_id),

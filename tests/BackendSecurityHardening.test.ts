@@ -1,13 +1,16 @@
 import { mkdtempSync, rmSync } from "node:fs";
+import { createServer } from "node:http";
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { AddressInfo } from "node:net";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { _resetDb, getDb } from "../src/db/connection.js";
 import { FileSearchService } from "../src/file-search/FileSearchService.js";
 import { buildServer } from "../src/server.js";
 import { assertPublicHttpsUrl, assertPublicHttpsUrlResolved } from "../src/security/SecurityGuards.js";
 import { getAnpSession, listAnpSessions, upsertAnpSession } from "../src/security/anp/AnpSession.js";
+import { LocalCloudIdentityStore } from "../src/cloud/LocalCloudIdentityStore.js";
 
 const token = "local-agent-token-for-security-tests-123456";
 
@@ -88,6 +91,99 @@ describe("backend security hardening", () => {
     await server.close();
   });
 
+  it("clears stale user cloud tokens after refresh failure without clearing device enrollment", async () => {
+    const server = buildServer(undefined, new FileSearchService([allowedRoot]));
+    const store = new LocalCloudIdentityStore();
+    store.save("default", {
+      controlPlaneUrl: "http://127.0.0.1:1",
+      orgId: "org_test",
+      userId: "usr_test",
+      userEmail: "user@example.com",
+      displayName: "Test User",
+      deviceId: "dev_test",
+      agentId: "agt_test",
+      agentInstanceId: "agi_test",
+      relayInboxUrl: "http://127.0.0.1:8080/v1/relay/a2a/inbox",
+      userAccessToken: "stale-user-token",
+      refreshToken: "stale-user-refresh-token",
+      userRefreshToken: "stale-user-refresh-token",
+      deviceAccessToken: "device-token",
+      deviceRefreshToken: "device-refresh-token",
+      status: "enrolled"
+    });
+
+    const contacts = await server.inject({
+      method: "GET",
+      url: "/cloud/contacts",
+      headers: { "x-local-agent-token": token }
+    });
+
+    expect(contacts.statusCode).toBe(401);
+    expect(contacts.json()).toMatchObject({ error: "CLOUD_USER_TOKEN_EXPIRED" });
+    const updated = store.get("default");
+    expect(updated?.userAccessToken).toBeNull();
+    expect(updated?.userRefreshToken).toBeNull();
+    expect(updated?.deviceAccessToken).toBe("device-token");
+    expect(updated?.deviceRefreshToken).toBe("device-refresh-token");
+    expect(updated?.status).toBe("enrolled");
+
+    await server.close();
+  });
+
+  it("clears stale user cloud tokens after downstream control-plane auth rejection", async () => {
+    const fakeControlPlane = createServer((_req, res) => {
+      res.writeHead(401, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "UNAUTHORIZED", message: "Refresh token has been revoked" }));
+    });
+    await new Promise<void>((resolve) => fakeControlPlane.listen(0, "127.0.0.1", resolve));
+    const address = fakeControlPlane.address() as AddressInfo;
+    const controlPlaneUrl = `http://127.0.0.1:${address.port}`;
+    const server = buildServer(undefined, new FileSearchService([allowedRoot]));
+    const store = new LocalCloudIdentityStore();
+    store.save("default", {
+      controlPlaneUrl,
+      orgId: "org_test",
+      userId: "usr_test",
+      userEmail: "user@example.com",
+      displayName: "Test User",
+      deviceId: "dev_test",
+      agentId: "agt_test",
+      agentInstanceId: "agi_test",
+      relayInboxUrl: `${controlPlaneUrl}/v1/relay/a2a/inbox`,
+      userAccessToken: "stale-user-token",
+      refreshToken: null,
+      userRefreshToken: null,
+      deviceAccessToken: "device-token",
+      deviceRefreshToken: "device-refresh-token",
+      status: "enrolled"
+    });
+
+    try {
+      const contacts = await server.inject({
+        method: "GET",
+        url: "/cloud/contacts",
+        headers: { "x-local-agent-token": token }
+      });
+
+      expect(contacts.statusCode).toBe(401);
+      expect(contacts.json()).toEqual({
+        error: "CLOUD_USER_TOKEN_EXPIRED",
+        message: "Cloud login expired. Please sign in again."
+      });
+      const updated = store.get("default");
+      expect(updated?.userAccessToken).toBeNull();
+      expect(updated?.userRefreshToken).toBeNull();
+      expect(updated?.deviceAccessToken).toBe("device-token");
+      expect(updated?.deviceRefreshToken).toBe("device-refresh-token");
+      expect(updated?.status).toBe("enrolled");
+    } finally {
+      await server.close();
+      await new Promise<void>((resolve, reject) => {
+        fakeControlPlane.close((err) => err ? reject(err) : resolve());
+      });
+    }
+  });
+
   it("reports local UI session runtime support in health diagnostics", async () => {
     const server = buildServer(undefined, new FileSearchService([allowedRoot]));
 
@@ -156,7 +252,19 @@ describe("backend security hardening", () => {
       { method: "GET", url: "/relay/task/relay_1/status" },
       { method: "POST", url: "/relay/send-message", payload: { peer_user_id: "usr_2", text: "hello" } },
       { method: "POST", url: "/relay/send-file-request", payload: { peer_user_id: "usr_2", text: "send file" } },
+      { method: "GET", url: "/voice/status" },
+      { method: "POST", url: "/voice/commands", payload: { transcript: "Ask Docin to send invoice.pdf", source: "voice-launcher" } },
+      { method: "GET", url: "/voice/commands" },
+      { method: "GET", url: "/voice/commands/vc_1" },
+      { method: "POST", url: "/voice/commands/vc_1/confirm", payload: {} },
+      { method: "POST", url: "/voice/commands/vc_1/cancel", payload: {} },
+      { method: "GET", url: "/receiver/approvals" },
+      { method: "GET", url: "/receiver/approvals/approval_1" },
+      { method: "POST", url: "/receiver/approvals/approval_1/approve", payload: { selected_file_path: join(allowedRoot, "safe.txt") } },
+      { method: "POST", url: "/receiver/approvals/approval_1/reject", payload: { reason: "No" } },
       { method: "GET", url: "/memory/conversations" },
+      { method: "POST", url: "/intent/classify", payload: { text: "Find invoice.pdf" } },
+      { method: "POST", url: "/intent/rewrite", payload: { query: "invoice pdf" } },
       { method: "GET", url: "/chat/conversations" },
       { method: "GET", url: "/policy/summary" },
       { method: "GET", url: "/anp/identity" },

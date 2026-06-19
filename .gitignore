@@ -63,3 +63,4 @@ public/assets/index-*.js
 
 # New voice service artifacts if any
 
+.agents/skills/

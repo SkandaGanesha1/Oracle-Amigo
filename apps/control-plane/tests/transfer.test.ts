@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApp } from "../src/main.js";
 import { resetConfigForTest } from "../src/config.js";
-import { closeAll, getDb } from "../src/db/connection.js";
+import { closeAll, getControlPlaneStore } from "../src/db/connection.js";
+import { postgresTestConfig, resetPostgresTestDatabase } from "./postgresTestHarness.js";
 import type { FastifyInstance } from "fastify";
 
 let app: FastifyInstance;
@@ -55,11 +56,11 @@ async function signupAndEnroll(email: string): Promise<{ accessToken: string; de
 
 beforeAll(async () => {
   dataDir = mkdtempSync(join(tmpdir(), "cp-transfer-"));
-  resetConfigForTest({
+  await resetPostgresTestDatabase();
+  resetConfigForTest(postgresTestConfig({
     CONTROL_PLANE_PORT: "9998",
     CONTROL_PLANE_HOST: "127.0.0.1",
     CONTROL_PLANE_PUBLIC_URL: "http://127.0.0.1:9998",
-    CONTROL_PLANE_DB_PATH: join(dataDir, "test.db"),
     JWT_ACCESS_SECRET: "test-access-secret-must-be-16+",
     JWT_REFRESH_SECRET: "test-refresh-secret-must-be-16+",
     FILE_TRANSFER_STORE: join(dataDir, "transfers"),
@@ -76,8 +77,8 @@ beforeAll(async () => {
     ARGON2_PARALLELISM: "1",
     CONTROL_PLANE_ENV: "test",
     METRICS_ENABLED: "false"
-  });
-  closeAll();
+  }));
+  await closeAll();
   app = await buildApp();
   await app.ready();
   const alice = await signupAndEnroll(`alice-${Date.now()}-a@example.com`);
@@ -93,6 +94,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   if (app) await app.close();
+  await closeAll();
   try { rmSync(dataDir, { recursive: true, force: true }); } catch { /* ignore */ }
 });
 
@@ -116,10 +118,13 @@ describe("file transfer relay", () => {
     const { transfer_id, upload_url } = init.json();
     expect(transfer_id).toBeTruthy();
     expect(upload_url).toContain(transfer_id);
-    const keyRow = getDb().prepare("SELECT wrapped_key FROM transfer_encryption_keys WHERE transfer_id = ?")
-      .get(transfer_id) as { wrapped_key: string };
-    expect(keyRow.wrapped_key).toMatch(/^v2\./);
-    expect(keyRow.wrapped_key).not.toMatch(/^[a-f0-9]{64}$/i);
+    const keyRow = await getControlPlaneStore().one<{ wrapped_key: string }>(
+      "SELECT wrapped_key FROM transfer_encryption_keys WHERE transfer_id = $1",
+      [transfer_id]
+    );
+    expect(keyRow).toBeTruthy();
+    expect(keyRow!.wrapped_key).toMatch(/^v2\./);
+    expect(keyRow!.wrapped_key).not.toMatch(/^[a-f0-9]{64}$/i);
 
     const put = await app.inject({
       method: "PUT",

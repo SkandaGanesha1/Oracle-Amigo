@@ -22,11 +22,23 @@ const bannerSeverities = new Set(["info", "success"]);
 function sanitizeSystemText(msg: SystemEventMessage): string | null {
   const t = safeDisplayText(msg.text);
   if (!t) return null;
-  if (/relay chat ready/i.test(t)) return "Connected";
+  if (isConnectionEvent(msg)) return null;
   if (/a2a task/i.test(t)) return null;
   if (/file requests? become/i.test(t)) return null;
-  if (/SUCCESS/i.test(t)) return t.replace(/✅?\s*SUCCESS\s*[:—\-]?\s*/i, "");
+  if (/SUCCESS/i.test(t)) return null;
   return t;
+}
+
+function isConnectionEvent(msg: SystemEventMessage): boolean {
+  const t = safeDisplayText(msg.text);
+  return /relay chat ready/i.test(t) || /SUCCESS/i.test(t);
+}
+
+function formatHeartbeat(value?: string): string {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
 function createdAt(message: TimelineMessage): string {
@@ -179,6 +191,7 @@ export function ChatWindow({ conversation, messages, loading, conversationId, re
       await sendMessage.mutateAsync({ text, clientMessageId: crypto.randomUUID() });
       return;
     }
+    // Confirmation path: setPendingSend({ text, sendAs }) plus a stable client message id.
     setPendingSend({ text, sendAs, clientMessageId: crypto.randomUUID() });
   }, [sendMessage]);
 
@@ -218,6 +231,8 @@ export function ChatWindow({ conversation, messages, loading, conversationId, re
   const typingLabel = typingStates.length > 0
     ? `${typingStates[0].actorLabel} is typing`
     : undefined;
+  const connectionEvent = banners.find(isConnectionEvent);
+  const visibleBanners = banners.filter((banner) => !isConnectionEvent(banner));
 
   return (
     <>
@@ -242,9 +257,12 @@ export function ChatWindow({ conversation, messages, loading, conversationId, re
           </button>
         </div>
       )}
-      {banners.length > 0 && (
+      {connectionEvent && (
+        <ConnectionStatusStrip at={connectionEvent.created_at} />
+      )}
+      {visibleBanners.length > 0 && (
         <div className="flex flex-col gap-1 px-4 pt-2">
-          {banners.map((banner) => {
+          {visibleBanners.map((banner) => {
             const sanitized = sanitizeSystemText(banner);
             if (!sanitized) return null;
             return (
@@ -289,5 +307,14 @@ export function ChatWindow({ conversation, messages, loading, conversationId, re
         disabled={isSending || pendingSend !== null}
       />
     </>
+  );
+}
+
+function ConnectionStatusStrip({ at }: { at?: string }) {
+  const heartbeat = formatHeartbeat(at);
+  return (
+    <div className="oa-connection-strip" role="status" aria-live="polite">
+      Agent link active{heartbeat ? ` • Last heartbeat ${heartbeat}` : ""}
+    </div>
   );
 }

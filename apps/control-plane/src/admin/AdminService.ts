@@ -1,5 +1,5 @@
-import type { Database as DB } from "better-sqlite3";
-import { getDb } from "../db/connection.js";
+import { getControlPlaneStore } from "../db/connection.js";
+import type { ControlPlaneStore } from "../db/ControlPlaneStore.js";
 import { listAuditEvents } from "../audit/CloudAuditService.js";
 import { recomputeStalePresence, listPresence } from "../presence/PresenceService.js";
 import { loadConfig } from "../config.js";
@@ -17,34 +17,41 @@ export interface AdminSnapshot {
   audit_events: Array<Record<string, unknown>>;
 }
 
-export function getFullSnapshot(
+const ADMIN_TRANSFER_COLUMNS = `
+  id, org_id, relay_task_id, from_agent_instance_id, to_agent_instance_id,
+  file_name, file_size, sha256, encryption_key_id, encryption_algo, status,
+  expires_at, created_at, completed_at
+`;
+
+export async function getFullSnapshot(
   orgId: OrgId,
-  opts: { db?: DB; limit?: number } = {}
-): AdminSnapshot {
-  const db = opts.db ?? getDb();
+  opts: { store?: ControlPlaneStore; limit?: number } = {}
+): Promise<AdminSnapshot> {
+  const db = opts.store ?? getControlPlaneStore();
   const limit = opts.limit ?? 200;
-  recomputeStalePresence(db);
-  const orgRow = db.prepare("SELECT * FROM organizations WHERE id = ?").get(orgId);
+  await recomputeStalePresence(db);
+  const orgRow = await db.one("SELECT * FROM organizations WHERE id = $1", [orgId]);
   return {
     organizations: orgRow ? [orgRow as Record<string, unknown>] : [],
-    users: db.prepare("SELECT * FROM users WHERE org_id = ? ORDER BY created_at DESC LIMIT ?").all(orgId, limit) as Array<Record<string, unknown>>,
-    devices: db.prepare("SELECT * FROM devices WHERE org_id = ? ORDER BY created_at DESC LIMIT ?").all(orgId, limit) as Array<Record<string, unknown>>,
-    agents: db.prepare("SELECT * FROM agents WHERE org_id = ? ORDER BY created_at DESC LIMIT ?").all(orgId, limit) as Array<Record<string, unknown>>,
-    agent_instances: db.prepare("SELECT * FROM agent_instances WHERE org_id = ? ORDER BY created_at DESC LIMIT ?").all(orgId, limit) as Array<Record<string, unknown>>,
-    presence: listPresence(orgId, { db }),
-    relay_tasks: db.prepare("SELECT * FROM relay_tasks WHERE org_id = ? ORDER BY created_at DESC LIMIT ?").all(orgId, limit) as Array<Record<string, unknown>>,
-    file_transfers: db.prepare("SELECT * FROM file_transfers WHERE org_id = ? ORDER BY created_at DESC LIMIT ?").all(orgId, limit) as Array<Record<string, unknown>>,
-    audit_events: listAuditEvents(orgId, limit, db) as unknown as Array<Record<string, unknown>>
+    users: await db.query("SELECT * FROM users WHERE org_id = $1 ORDER BY created_at DESC LIMIT $2", [orgId, limit]),
+    devices: await db.query("SELECT * FROM devices WHERE org_id = $1 ORDER BY created_at DESC LIMIT $2", [orgId, limit]),
+    agents: await db.query("SELECT * FROM agents WHERE org_id = $1 ORDER BY created_at DESC LIMIT $2", [orgId, limit]),
+    agent_instances: await db.query("SELECT * FROM agent_instances WHERE org_id = $1 ORDER BY created_at DESC LIMIT $2", [orgId, limit]),
+    presence: await listPresence(orgId, { store: db }),
+    relay_tasks: await db.query("SELECT * FROM relay_tasks WHERE org_id = $1 ORDER BY created_at DESC LIMIT $2", [orgId, limit]),
+    file_transfers: await db.query(`SELECT ${ADMIN_TRANSFER_COLUMNS} FROM file_transfers WHERE org_id = $1 ORDER BY created_at DESC LIMIT $2`, [orgId, limit]),
+    audit_events: await listAuditEvents(orgId, limit, db) as unknown as Array<Record<string, unknown>>
   };
 }
 
-export function listAllUsersAcrossOrgs(db: DB = getDb()): Array<Record<string, unknown>> {
-  return db.prepare(`
+export async function listAllUsersAcrossOrgs(store: ControlPlaneStore = getControlPlaneStore(), limit = 500): Promise<Array<Record<string, unknown>>> {
+  return store.query(`
     SELECT u.*, o.slug AS org_slug
     FROM users u
     JOIN organizations o ON o.id = u.org_id
     ORDER BY u.created_at DESC
-  `).all() as Array<Record<string, unknown>>;
+    LIMIT $1
+  `, [limit]);
 }
 
 export function getControlPlaneInfo(): { env: string; version: string; uptimeSeconds: number } {

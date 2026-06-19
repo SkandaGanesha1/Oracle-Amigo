@@ -17,8 +17,18 @@ export type AgentStatus = "active" | "disabled";
 export type AgentInstanceStatus = "active" | "disabled" | "revoked";
 export type ContactStatus = "pending" | "accepted" | "blocked" | "declined";
 export type PresenceStatus = "online" | "stale" | "offline" | "revoked";
-export type RelayTaskStatus = "pending" | "delivered" | "completed" | "cancelled" | "expired";
-export type RelayMessageStatus = "pending" | "delivered" | "acked" | "responded" | "expired";
+export type RelayTaskStatus =
+  | "accepted"
+  | "queued"
+  | "delivered_to_remote_agent"
+  | "stored_by_remote_agent"
+  | "waiting_approval"
+  | "approved"
+  | "transfer_started"
+  | "completed"
+  | "failed"
+  | "expired";
+export type RelayMessageStatus = "queued" | "delivered" | "acked" | "responded" | "failed" | "expired";
 export type TransferStatus = "initialized" | "uploading" | "ready" | "downloading" | "completed" | "expired" | "failed";
 
 export interface Organization {
@@ -111,8 +121,18 @@ export interface RelayTask {
   status: RelayTaskStatus;
   createdAt: string;
   updatedAt: string;
+  acceptedAt?: string | null;
+  queuedAt?: string | null;
   deliveredAt: string | null;
+  storedAt?: string | null;
   completedAt: string | null;
+  failedAt?: string | null;
+  expiredAt?: string | null;
+  expiresAt?: string | null;
+  attemptCount?: number;
+  maxAttempts?: number;
+  lastError?: string | null;
+  nextRetryAt?: string | null;
   response?: Record<string, unknown> | null;
 }
 
@@ -127,6 +147,9 @@ export interface RelayMessage {
   idempotencyKey: string | null;
   createdAt: string;
   deliveredAt: string | null;
+  ackedAt?: string | null;
+  failedAt?: string | null;
+  expiresAt?: string | null;
 }
 
 export interface FileTransfer {

@@ -1,5 +1,6 @@
 import { useCallback, useState } from "react";
-import { FolderOpen, Search, Shield, X } from "lucide-react";
+import { useNavigate } from "react-router-dom";
+import { CheckCircle2, ExternalLink, FolderOpen, Search, Shield, X } from "lucide-react";
 import { DocumentPreviewCard, PreviewButton, type ChatDocumentPreview } from "../stream-like/DocumentPreviewCard";
 import { useApproveFileRequest, useIndexedFiles, useRebindApprovalFile, useRejectFileRequest, useSubmitApprovalFeedback } from "../../hooks/queries";
 import { BiometricApproveButton } from "../../features/approvals/BiometricApproveButton";
@@ -19,6 +20,14 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function decodeFileName(name: string): string {
+  try {
+    return decodeURIComponent(name);
+  } catch {
+    return name.replace(/%20/g, " ");
+  }
+}
+
 function candidateToPreview(file: CandidateFile | undefined, status: FileCandidateApprovalMessage["card"]["status"]): ChatDocumentPreview {
   if (!file) {
     return {
@@ -35,7 +44,7 @@ function candidateToPreview(file: CandidateFile | undefined, status: FileCandida
     name: file.file_name,
     mimeType: file.extension ? `.${file.extension}` : "unknown",
     sizeLabel: formatSize(file.size_bytes),
-    previewText: file.match_reason,
+    matchLabel: file.match_reason || "Exact filename match",
     status: status === "approved" ? "approved" : status === "rejected" ? "blocked" : "pending_approval",
     sensitivity: file.match_score > 0.85 ? "high" : "medium",
     leavesDevice: true,
@@ -48,6 +57,7 @@ interface ApprovalCardMessageProps {
 }
 
 export function ApprovalCardMessage({ message }: ApprovalCardMessageProps) {
+  const navigate = useNavigate();
   const card = message.card;
   const { mutate: approve, isPending: isApproving } = useApproveFileRequest();
   const { mutate: reject, isPending: isRejecting } = useRejectFileRequest();
@@ -67,6 +77,8 @@ export function ApprovalCardMessage({ message }: ApprovalCardMessageProps) {
   const previewFile = candidateToPreview(selectedFile, card.status);
   const requester = formatRequester(card.requester);
   const risk = previewFile.sensitivity ?? "medium";
+  const displayFileName = decodeFileName(selectedFile?.file_name ?? previewFile.name);
+  const requestLine = requester === "You" ? `You requested ${displayFileName}` : `${requester} wants to send ${displayFileName}`;
 
   const handleApprove = useCallback(() => {
     if (selectedId) approve({ approvalId: card.approval_id, feedback: undefined });
@@ -92,36 +104,38 @@ export function ApprovalCardMessage({ message }: ApprovalCardMessageProps) {
     });
   }, [rebindFile, card.approval_id]);
 
+  const handleViewAudit = useCallback(() => {
+    navigate(`/audit?q=${encodeURIComponent(displayFileName)}`);
+  }, [displayFileName, navigate]);
+
   return (
     <section className="oa-agent-card" role="region" aria-label={`Approval request: ${card.request_text}`}>
       <div className="oa-agent-card-header">
         <div className="min-w-0">
           <div className="oa-agent-card-kicker">Approval required</div>
-          <h3 className="oa-agent-card-title">Review file before sending</h3>
-          <p className="oa-agent-card-subtitle">
-            {requester === "You" ? "Requested by you" : `Requested by ${requester}`} · {card.request_text}
-          </p>
+          <h3 className="oa-agent-card-title">Review file transfer</h3>
+          <p className="oa-agent-card-subtitle">{requestLine}</p>
         </div>
-        <span className={`oa-risk-pill ${risk}`}>{risk}</span>
+        <span className={`oa-risk-pill ${risk}`}>{risk} risk</span>
       </div>
+
+      <RiskSummary risk={risk} />
 
       <DocumentPreviewCard
         file={previewFile}
-        secondaryAction={<PreviewButton />}
         primaryAction={card.status === "pending" && selectedId ? (
-          <>
-            <BiometricApproveButton onApprove={handleApprove} disabled={disabled} />
-            <button
-              type="button"
-              disabled={disabled}
-              onClick={handleReject}
-              className="oa-doc-action danger"
-            >
-              <X size={16} aria-hidden="true" />
-              Deny
-            </button>
-          </>
-        ) : undefined}
+          <ApprovalActionBar
+            disabled={disabled}
+            onApprove={handleApprove}
+            onReject={handleReject}
+            onViewAudit={handleViewAudit}
+          />
+        ) : (
+          <button type="button" onClick={handleViewAudit} className="oa-doc-action" aria-label="View audit for file transfer">
+            <ExternalLink size={16} aria-hidden="true" />
+            View audit
+          </button>
+        )}
       />
 
       {card.candidates.length > 1 && (
@@ -224,6 +238,71 @@ export function ApprovalCardMessage({ message }: ApprovalCardMessageProps) {
         </div>
       )}
     </section>
+  );
+}
+
+function RiskSummary({ risk }: { risk: string }) {
+  const title = `${risk} risk`;
+  const description = risk === "high"
+    ? "This file leaves this device and matches a sensitive category."
+    : "This file leaves this device and needs explicit approval.";
+  const checks = ["File hash verified", "Recipient confirmed", "User approval required", "No previous approval found"];
+
+  return (
+    <section className="oa-risk-summary" aria-label="Risk summary">
+      <div className="oa-risk-summary-head">
+        <Shield size={18} aria-hidden="true" />
+        <div>
+          <h4 className="oa-risk-summary-title">{title}</h4>
+          <p className="oa-risk-summary-copy">{description}</p>
+        </div>
+      </div>
+      <ul className="oa-risk-checklist">
+        {checks.map((check) => (
+          <li key={check}>
+            <CheckCircle2 size={14} aria-hidden="true" />
+            {check}
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+function ApprovalActionBar({
+  disabled,
+  onApprove,
+  onReject,
+  onViewAudit
+}: {
+  disabled: boolean;
+  onApprove: () => void;
+  onReject: () => void;
+  onViewAudit: () => void;
+}) {
+  return (
+    <div className="oa-approval-action-bar" aria-label="File transfer actions">
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={onApprove}
+        className="oa-doc-action primary"
+        aria-label="Approve and send file"
+      >
+        <CheckCircle2 size={16} aria-hidden="true" />
+        Approve and send
+      </button>
+      <PreviewButton />
+      <BiometricApproveButton onApprove={onApprove} disabled={disabled} />
+      <button type="button" onClick={onViewAudit} className="oa-doc-action" aria-label="View audit for file transfer">
+        <ExternalLink size={16} aria-hidden="true" />
+        View audit
+      </button>
+      <button type="button" disabled={disabled} onClick={onReject} className="oa-doc-action danger" aria-label="Deny file transfer">
+        <X size={16} aria-hidden="true" />
+        Deny
+      </button>
+    </div>
   );
 }
 

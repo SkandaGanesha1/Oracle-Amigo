@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { Database as DB } from "better-sqlite3";
-import { getDb } from "../db/connection.js";
+import { getControlPlaneStore } from "../db/connection.js";
+import type { ControlPlaneStore } from "../db/ControlPlaneStore.js";
 import { issueDeviceToken } from "./../auth/TokenService.js";
 import { appendAuditEvent } from "./../audit/CloudAuditService.js";
 import type {
@@ -58,10 +58,10 @@ export async function enroll(
   input: EnrollmentInput,
   opts: {
     publicBaseUrl: string;
-    db?: DB;
+    store?: ControlPlaneStore;
   }
 ): Promise<EnrollmentResult> {
-  const conn = opts.db ?? getDb();
+  const conn = opts.store ?? getControlPlaneStore();
   const now = new Date().toISOString();
   const publicKey = input.device.public_key.trim();
   if (!publicKey) throw new Error("public_key is required");
@@ -73,25 +73,27 @@ export async function enroll(
   }
   const fingerprint = fingerprintPublicKey(publicKey);
 
+  return conn.transaction(async (tx) => {
   let device: Device | null = null;
-  const existingDevice = conn
-    .prepare("SELECT * FROM devices WHERE org_id = ? AND public_key_fingerprint = ?")
-    .get(auth.orgId, fingerprint) as Record<string, unknown> | undefined;
+  const existingDevice = await tx.one("SELECT * FROM devices WHERE org_id = $1 AND public_key_fingerprint = $2", [
+    auth.orgId,
+    fingerprint
+  ]);
   if (existingDevice) {
     if (existingDevice.user_id !== auth.userId) {
       throw new Error("Device public key already enrolled by another user");
     }
-    conn.prepare(`
-      UPDATE devices SET device_name = ?, os = ?, os_version = ?, did = ?, status = 'active', last_seen_at = ?
-      WHERE id = ?
-    `).run(
+    await tx.execute(`
+      UPDATE devices SET device_name = $1, os = $2, os_version = $3, did = $4, status = 'active', last_seen_at = $5
+      WHERE id = $6
+    `, [
       input.device.device_name.trim(),
       input.device.os ?? null,
       input.device.os_version ?? null,
       input.device.did ?? null,
       now,
       existingDevice.id
-    );
+    ]);
     device = {
       id: String(existingDevice.id),
       orgId: String(existingDevice.org_id),
@@ -108,10 +110,10 @@ export async function enroll(
     };
   } else {
     const deviceId = `dev_${randomUUID()}`;
-    conn.prepare(`
+    await tx.execute(`
       INSERT INTO devices (id, org_id, user_id, device_name, os, os_version, public_key, public_key_fingerprint, did, status, created_at, last_seen_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
-    `).run(
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'active', $10, $11)
+    `, [
       deviceId, auth.orgId, auth.userId,
       input.device.device_name.trim(),
       input.device.os ?? null,
@@ -119,7 +121,7 @@ export async function enroll(
       publicKey, fingerprint,
       input.device.did ?? null,
       now, now
-    );
+    ]);
     device = {
       id: deviceId, orgId: auth.orgId, userId: auth.userId,
       deviceName: input.device.device_name.trim(),
@@ -132,11 +134,13 @@ export async function enroll(
 
   // Find or create the personal agent (1:1 user:agent by default)
   let agent: Agent | null = null;
-  const existingAgent = conn
-    .prepare("SELECT * FROM agents WHERE org_id = ? AND owner_user_id = ? AND display_name = ?")
-    .get(auth.orgId, auth.userId, input.agent.display_name.trim()) as Record<string, unknown> | undefined;
+  const existingAgent = await tx.one("SELECT * FROM agents WHERE org_id = $1 AND owner_user_id = $2 AND display_name = $3", [
+    auth.orgId,
+    auth.userId,
+    input.agent.display_name.trim()
+  ]);
   if (existingAgent) {
-    conn.prepare("UPDATE agents SET status = 'active' WHERE id = ?").run(existingAgent.id);
+    await tx.execute("UPDATE agents SET status = 'active' WHERE id = $1", [existingAgent.id]);
     agent = {
       id: String(existingAgent.id),
       orgId: String(existingAgent.org_id),
@@ -147,10 +151,10 @@ export async function enroll(
     };
   } else {
     const agentId = `agt_${randomUUID()}`;
-    conn.prepare(`
+    await tx.execute(`
       INSERT INTO agents (id, org_id, owner_user_id, display_name, status, created_at)
-      VALUES (?, ?, ?, ?, 'active', ?)
-    `).run(agentId, auth.orgId, auth.userId, input.agent.display_name.trim(), now);
+      VALUES ($1, $2, $3, $4, 'active', $5)
+    `, [agentId, auth.orgId, auth.userId, input.agent.display_name.trim(), now]);
     agent = {
       id: agentId, orgId: auth.orgId, ownerUserId: auth.userId,
       displayName: input.agent.display_name.trim(),
@@ -162,14 +166,16 @@ export async function enroll(
   const agentCardJson = JSON.stringify(input.agent.agent_card);
   const agentCardHash = hashAgentCard(input.agent.agent_card);
   let instance: AgentInstance | null = null;
-  const existingInstance = conn
-    .prepare("SELECT * FROM agent_instances WHERE org_id = ? AND agent_id = ? AND device_id = ?")
-    .get(auth.orgId, agent.id, device.id) as Record<string, unknown> | undefined;
+  const existingInstance = await tx.one("SELECT * FROM agent_instances WHERE org_id = $1 AND agent_id = $2 AND device_id = $3", [
+    auth.orgId,
+    agent.id,
+    device.id
+  ]);
   if (existingInstance) {
-    conn.prepare(`
-      UPDATE agent_instances SET agent_card_json = ?, agent_card_hash = ?, version = ?, status = 'active', last_seen_at = ?
-      WHERE id = ?
-    `).run(agentCardJson, agentCardHash, input.agent.version ?? null, now, existingInstance.id);
+    await tx.execute(`
+      UPDATE agent_instances SET agent_card_json = $1, agent_card_hash = $2, version = $3, status = 'active', last_seen_at = $4
+      WHERE id = $5
+    `, [agentCardJson, agentCardHash, input.agent.version ?? null, now, existingInstance.id]);
     instance = {
       id: String(existingInstance.id),
       orgId: String(existingInstance.org_id),
@@ -187,14 +193,14 @@ export async function enroll(
   } else {
     const instanceId = `agi_${randomUUID()}`;
     const relayInboxId = `rin_${randomUUID()}`;
-    conn.prepare(`
+    await tx.execute(`
       INSERT INTO agent_instances (id, org_id, agent_id, device_id, user_id, agent_card_json, agent_card_hash, relay_inbox_id, version, status, created_at, last_seen_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
-    `).run(
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'active', $10, $11)
+    `, [
       instanceId, auth.orgId, agent.id, device.id, auth.userId,
       agentCardJson, agentCardHash, relayInboxId,
       input.agent.version ?? null, now, now
-    );
+    ]);
     instance = {
       id: instanceId, orgId: auth.orgId, agentId: agent.id, deviceId: device.id, userId: auth.userId,
       agentCardJson, agentCardHash, relayInboxId,
@@ -205,18 +211,18 @@ export async function enroll(
 
   // Upsert presence row
   const capabilitiesJson = JSON.stringify(input.agent.capabilities ?? []);
-  conn.prepare(`
+  await tx.execute(`
     INSERT INTO presence (agent_instance_id, org_id, user_id, agent_id, device_id, status, last_heartbeat_at, current_version, capabilities_json, agent_card_hash, local_queue_depth)
-    VALUES (?, ?, ?, ?, ?, 'online', ?, ?, ?, ?, 0)
+    VALUES ($1, $2, $3, $4, $5, 'online', $6, $7, $8, $9, 0)
     ON CONFLICT(agent_instance_id) DO UPDATE SET
       status='online', last_heartbeat_at=excluded.last_heartbeat_at,
       current_version=excluded.current_version,
       capabilities_json=excluded.capabilities_json,
       agent_card_hash=excluded.agent_card_hash
-  `).run(
+  `, [
     instance.id, auth.orgId, auth.userId, agent.id, device.id,
     now, input.agent.version ?? null, capabilitiesJson, agentCardHash
-  );
+  ]);
 
   // Issue device token + opaque refresh token
   const deviceToken = issueDeviceToken({
@@ -228,26 +234,26 @@ export async function enroll(
   });
   const opaqueRefresh = (await import("./../auth/TokenService.js")).generateOpaqueToken();
   const deviceRefreshId = `drt_${randomUUID()}`;
-  conn.prepare(`
+  await tx.execute(`
     INSERT INTO device_tokens (id, org_id, user_id, device_id, token_hash, expires_at, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(
+    VALUES ($1, $2, $3, $4, $5, $6, $7)
+  `, [
     `dat_${randomUUID()}`, auth.orgId, auth.userId, device.id,
     deviceToken.tokenHash,
     new Date(Date.now() + deviceToken.expiresIn * 1000).toISOString(),
     now
-  );
-  conn.prepare(`
+  ]);
+  await tx.execute(`
     INSERT INTO device_tokens (id, org_id, user_id, device_id, token_hash, expires_at, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(
+    VALUES ($1, $2, $3, $4, $5, $6, $7)
+  `, [
     deviceRefreshId, auth.orgId, auth.userId, device.id,
     opaqueRefresh.hash,
     new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
     now
-  );
+  ]);
 
-  appendAuditEvent({
+  await appendAuditEvent({
     orgId: auth.orgId,
     actorUserId: auth.userId,
     actorAgentInstanceId: instance.id,
@@ -260,7 +266,7 @@ export async function enroll(
       agent_card_hash: agentCardHash,
       version: input.agent.version ?? null
     }
-  }, conn);
+  }, tx);
 
   const relayInboxUrl = `${opts.publicBaseUrl}/v1/relay/a2a/inbox`;
   const agentCardUrl = `${opts.publicBaseUrl}/v1/agents/${instance.id}/card`;
@@ -278,4 +284,5 @@ export async function enroll(
     refresh_token: opaqueRefresh.token,
     expires_in: deviceToken.expiresIn
   };
+  });
 }

@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { ShieldAlert, Bot, Clock, Users, MessageSquarePlus, Bell, AlertTriangle, Loader2 } from "lucide-react";
-import { useConversations, usePendingApprovals, useAgentRuns, useContacts } from "../../hooks/queries";
+import { isCloudUserReady, useConversations, usePendingApprovals, useAgentRuns, useContacts, useCloudStatus } from "../../hooks/queries";
 import { SidebarToggle } from "../../components/SidebarToggle";
 import { OracleAvatar } from "../../components/primitives/OracleAvatar";
 import { useSidebar } from "../../components/SidebarContext";
@@ -32,7 +32,9 @@ export function IntentInbox() {
   const { data: convsData, isLoading: convsLoading } = useConversations();
   const { approvalCards, isLoading: approvalsLoading } = usePendingApprovals();
   const { data: runsData, isLoading: runsLoading } = useAgentRuns();
-  const { data: contactsData } = useContacts();
+  const { data: cloudStatus } = useCloudStatus();
+  const cloudContactsEnabled = isCloudUserReady(cloudStatus);
+  const { data: contactsData } = useContacts(cloudContactsEnabled);
 
   const isLoading = convsLoading || approvalsLoading || runsLoading;
 

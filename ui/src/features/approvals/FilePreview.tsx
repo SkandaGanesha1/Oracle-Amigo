@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { motion } from "framer-motion";
+import { modalPanelVariants, motion, motionTransition, overlayVariants } from "../../components/primitives/MotionPrimitives";
 import { X, FileText, FileImage, FileCode, FileSpreadsheet, Download, ShieldCheck } from "lucide-react";
 import { formatSize } from "../../lib/format";
 
@@ -38,9 +38,11 @@ export function FilePreview({ fileName, filePath, fileSize, onClose }: FilePrevi
 
   return (
     <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
+      variants={overlayVariants}
+      initial="initial"
+      animate="animate"
+      exit="exit"
+      transition={motionTransition.quick}
       role="dialog"
       aria-modal="true"
       aria-label="File Preview"
@@ -48,9 +50,11 @@ export function FilePreview({ fileName, filePath, fileSize, onClose }: FilePrevi
       onClick={onClose}
     >
       <motion.div
-        initial={{ scale: 0.95, opacity: 0 }}
-        animate={{ scale: 1, opacity: 1 }}
-        exit={{ scale: 0.95, opacity: 0 }}
+        variants={modalPanelVariants}
+        initial="initial"
+        animate="animate"
+        exit="exit"
+        transition={motionTransition.quick}
         onClick={(e) => e.stopPropagation()}
         className="relative flex w-full max-w-lg flex-col rounded-xl border border-oa-border bg-oa-surface shadow-2xl"
       >

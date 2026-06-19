@@ -2,12 +2,14 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { InboxBucketRail } from "../../components/inbox/InboxBucketRail";
 import { InboxDetailPanel } from "../../components/inbox/InboxDetailPanel";
+import { InboxEmptyState } from "../../components/inbox/InboxEmptyState";
 import { InboxItemList } from "../../components/inbox/InboxItemList";
 import { InboxShell } from "../../components/inbox/InboxShell";
 import { InboxToolbar } from "../../components/inbox/InboxToolbar";
 import { useInboxItemAction, useInboxItems } from "../../hooks/queries";
 import type { InboxActionId, InboxBucket, InboxItem } from "../../api/types";
 import type { InboxServerAction } from "../../api/inboxApi";
+import { AnimatePresence } from "../../components/primitives/MotionPrimitives";
 
 const DEFAULT_BUCKET: InboxBucket = "needs_my_approval";
 const SERVER_ACTIONS = new Set<InboxActionId>(["approve", "deny", "ask_why", "snooze", "archive"]);
@@ -94,7 +96,7 @@ export function IntentFirstInbox() {
   }
 
   return (
-    <InboxShell>
+    <InboxShell detailOpen={Boolean(selectedItem)}>
       <InboxBucketRail activeBucket={bucket} counts={counts} onBucketChange={(next) => { setBucket(next); setSelectedId(null); }} />
       <main className="oa-inbox-list min-h-0 min-w-0 overflow-y-auto border-r border-oa-border">
         <InboxToolbar
@@ -111,11 +113,59 @@ export function IntentFirstInbox() {
           selectedId={selectedItem?.id ?? null}
           onSelect={setSelectedId}
           onQuickAction={(action, item) => void handleAction(action, item)}
+          emptyState={<BucketAwareEmptyState bucket={bucket} />}
         />
       </main>
-      <InboxDetailPanel item={selectedItem} privacyMode={privacyMode} onAction={(action, item) => void handleAction(action, item)} />
+      <AnimatePresence initial={false}>
+        {selectedItem ? (
+          <InboxDetailPanel
+            key={selectedItem.id}
+            item={selectedItem}
+            privacyMode={privacyMode}
+            onAction={(action, item) => void handleAction(action, item)}
+          />
+        ) : null}
+      </AnimatePresence>
     </InboxShell>
   );
+}
+
+function BucketAwareEmptyState({ bucket }: { bucket: InboxBucket }) {
+  const copy: Record<InboxBucket, { title: string; message: string }> = {
+    needs_my_approval: {
+      title: "No approvals pending",
+      message: "Nothing needs your approval in this bucket. Completed approvals live in Completed."
+    },
+    agent_working: {
+      title: "No agents working",
+      message: "No active agent work is running for this view."
+    },
+    waiting_on_others: {
+      title: "Nothing waiting on others",
+      message: "No handoffs or responses are blocking progress."
+    },
+    risky_sensitive: {
+      title: "No risky transfers",
+      message: "Sensitive or high-risk work will appear here when it needs attention."
+    },
+    mentions: {
+      title: "No mentions",
+      message: "Messages that need your response will appear here."
+    },
+    completed: {
+      title: "No completed work in this filter",
+      message: "Completed items may be hidden by the current search."
+    },
+    failed_blocked: {
+      title: "No failed or blocked work",
+      message: "Failures and blocked tasks will appear here when they need recovery."
+    },
+    archived: {
+      title: "Archive is empty",
+      message: "Archived work will appear here."
+    }
+  };
+  return <InboxEmptyState title={copy[bucket].title} message={copy[bucket].message} />;
 }
 
 function emptyCounts(): Record<InboxBucket, number> {

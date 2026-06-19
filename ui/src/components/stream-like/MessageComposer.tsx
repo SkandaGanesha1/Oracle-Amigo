@@ -1,10 +1,9 @@
 import EmojiPicker, { Theme } from "emoji-picker-react";
-import { useState, useCallback, useRef, useMemo } from "react";
+import { useState, useCallback, useMemo } from "react";
 import { PromptInput, PromptInputTextarea, PromptInputActions, PromptInputAction } from "~/components/ui/prompt-input";
-import { ArrowUp, Paperclip, Command, User, Plus, Smile } from "lucide-react";
+import { ArrowUp, Command, FileSearch, User, Smile } from "lucide-react";
 import { Popover } from "radix-ui";
 import { FileRequestIntentChip, matchFileRequestIntent } from "../../features/chat/FileRequestIntentChip";
-import { AttachmentPreview } from "./AttachmentPreview";
 import { SuggestedPrompts } from "../chat/SuggestedPrompts";
 import type { SuggestedPrompt } from "../../types";
 
@@ -46,11 +45,10 @@ export function MessageComposer({ conversationId, onSend, disabled, availableAge
   const [showMentions, setShowMentions] = useState(false);
   const [mentionQuery, setMentionQuery] = useState("");
   const [mentionIndex, setMentionIndex] = useState(0);
-  const [attachment, setAttachment] = useState<{ name: string; size: number } | null>(null);
   const [emojiPickerOpen, setEmojiPickerOpen] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const isFileRequest = matchFileRequestIntent(text);
+  const composerMode = isFileRequest ? "file_request" : "normal";
 
   const filteredCommands = text.startsWith("/")
     ? SLASH_COMMANDS.filter((c) => c.command.startsWith(text.toLowerCase()))
@@ -156,15 +154,21 @@ export function MessageComposer({ conversationId, onSend, disabled, availableAge
     }
   }
 
-  function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (file) {
-      setAttachment({ name: file.name, size: file.size });
-    }
-  }
-
   function openCommandPalette() {
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", ctrlKey: true, bubbles: true }));
+  }
+
+  function startFileRequest() {
+    if (!text.trim()) {
+      setText("/request-file ");
+    } else if (!isFileRequest) {
+      setText(`/request-file ${text.trim()}`);
+    }
+    setShowCommands(false);
+    setShowMentions(false);
+    requestAnimationFrame(() => {
+      document.querySelector<HTMLTextAreaElement>("[data-oa-composer-input='true']")?.focus();
+    });
   }
 
   function insertSuggestedPrompt(prompt: string) {
@@ -182,19 +186,11 @@ export function MessageComposer({ conversationId, onSend, disabled, availableAge
         <SuggestedPrompts prompts={DEFAULT_SUGGESTED_PROMPTS} onSelect={insertSuggestedPrompt} />
       </div>
 
-      {isFileRequest && (
-        <div className="mb-2 flex items-center gap-2 px-1">
+      {composerMode === "file_request" && (
+        <div className="oa-composer-mode-row">
           <FileRequestIntentChip visible={true} />
-          <span className="text-[10px] text-oa-text-muted">Message will be sent as a file request to the agent</span>
+          <span>Send file request? The agent must ask before any file leaves this device.</span>
         </div>
-      )}
-
-      {attachment && (
-        <AttachmentPreview
-          fileName={attachment.name}
-          fileSize={attachment.size}
-          onRemove={() => setAttachment(null)}
-        />
       )}
 
       <PromptInput
@@ -271,22 +267,25 @@ export function MessageComposer({ conversationId, onSend, disabled, availableAge
         )}
 
         <div className="flex items-end gap-2">
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            className="oa-composer-icon"
-            aria-label="Add attachment"
-            title="Add attachment"
-          >
-            <Plus className="h-5 w-5" />
-          </button>
           <PromptInputTextarea
             placeholder="Type a message or / for commands... @ to mention"
             onKeyDown={handleKeyDown}
             className="oa-composer-input"
             rows={1}
+            data-oa-composer-input="true"
           />
           <PromptInputActions className="oa-composer-actions">
+            <PromptInputAction tooltip="Request a file">
+              <button
+                type="button"
+                onClick={startFileRequest}
+                className="oa-composer-icon"
+                aria-label="Start file request"
+                aria-pressed={composerMode === "file_request"}
+              >
+                <FileSearch className="h-4 w-4" />
+              </button>
+            </PromptInputAction>
             <PromptInputAction tooltip="Open command bar">
               <button
                 type="button"
@@ -297,22 +296,6 @@ export function MessageComposer({ conversationId, onSend, disabled, availableAge
                 <Command className="h-4 w-4" />
               </button>
             </PromptInputAction>
-            <PromptInputAction tooltip="Attach file">
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                className="oa-composer-icon"
-                aria-label="Attach file"
-              >
-                <Paperclip className="h-4 w-4" />
-              </button>
-            </PromptInputAction>
-            <input
-              ref={fileInputRef}
-              type="file"
-              className="hidden"
-              onChange={handleFileSelect}
-            />
             <Popover.Root open={emojiPickerOpen} onOpenChange={setEmojiPickerOpen}>
               <PromptInputAction tooltip="Emoji">
                 <Popover.Trigger asChild>

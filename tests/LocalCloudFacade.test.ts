@@ -32,6 +32,7 @@ beforeAll(async () => {
     CONTROL_PLANE_PORT: String(port),
     CONTROL_PLANE_HOST: "127.0.0.1",
     CONTROL_PLANE_PUBLIC_URL: controlPlaneUrl,
+    CONTROL_PLANE_DB_DRIVER: "sqlite",
     CONTROL_PLANE_DB_PATH: join(dataDir, "control-plane.db"),
     JWT_ACCESS_SECRET: "test-access-secret-must-be-16+",
     JWT_REFRESH_SECRET: "test-refresh-secret-must-be-16+",
@@ -351,6 +352,104 @@ describe("local cloud facade", () => {
       canRecoverDeviceToken: true
     });
     expect(status.json().localPublicKeyFingerprint).toMatch(/^[a-f0-9]{16}$/);
+    if (previous) {
+      store.save("test-profile", {
+        controlPlaneUrl: previous.controlPlaneUrl,
+        orgId: previous.orgId,
+        userId: previous.userId,
+        userEmail: previous.userEmail,
+        displayName: previous.displayName,
+        deviceId: previous.deviceId,
+        agentId: previous.agentId,
+        agentInstanceId: previous.agentInstanceId,
+        relayInboxUrl: previous.relayInboxUrl,
+        userAccessToken: previous.userAccessToken,
+        deviceAccessToken: previous.deviceAccessToken,
+        refreshToken: previous.refreshToken,
+        userRefreshToken: previous.userRefreshToken,
+        deviceRefreshToken: previous.deviceRefreshToken,
+        status: previous.status
+      });
+    }
+  }, 60_000);
+
+  it("reports missing user auth in cloud status without probing contacts", async () => {
+    const store = new LocalCloudIdentityStore();
+    const previous = store.get("test-profile");
+    store.save("test-profile", {
+      status: "enrolled",
+      userAccessToken: null,
+      refreshToken: null,
+      userRefreshToken: null,
+      deviceAccessToken: "device-token",
+      deviceRefreshToken: "device-refresh-token",
+      agentInstanceId: "agi_missing_user_auth"
+    });
+
+    const status = await localAgent.inject({ method: "GET", url: "/cloud/status" });
+    expect(status.statusCode).toBe(200);
+    expect(status.json()).toMatchObject({
+      userAuthIssue: "required",
+      canRecoverUserToken: false,
+      cloud: {
+        status: "enrolled",
+        hasUserAccessToken: false,
+        hasDeviceAccessToken: true
+      }
+    });
+
+    if (previous) {
+      store.save("test-profile", {
+        controlPlaneUrl: previous.controlPlaneUrl,
+        orgId: previous.orgId,
+        userId: previous.userId,
+        userEmail: previous.userEmail,
+        displayName: previous.displayName,
+        deviceId: previous.deviceId,
+        agentId: previous.agentId,
+        agentInstanceId: previous.agentInstanceId,
+        relayInboxUrl: previous.relayInboxUrl,
+        userAccessToken: previous.userAccessToken,
+        deviceAccessToken: previous.deviceAccessToken,
+        refreshToken: previous.refreshToken,
+        userRefreshToken: previous.userRefreshToken,
+        deviceRefreshToken: previous.deviceRefreshToken,
+        status: previous.status
+      });
+    }
+  }, 60_000);
+
+  it("clears expired user auth during cloud status instead of waiting for contacts to fail", async () => {
+    const store = new LocalCloudIdentityStore();
+    const previous = store.get("test-profile");
+    const expiredToken = `header.${Buffer.from(JSON.stringify({ exp: 1 })).toString("base64url")}.sig`;
+    store.save("test-profile", {
+      status: "enrolled",
+      userAccessToken: expiredToken,
+      refreshToken: "stale-user-refresh-token",
+      userRefreshToken: "stale-user-refresh-token",
+      deviceAccessToken: "device-token",
+      deviceRefreshToken: "device-refresh-token",
+      agentInstanceId: "agi_expired_user_auth"
+    });
+
+    const status = await localAgent.inject({ method: "GET", url: "/cloud/status" });
+    expect(status.statusCode).toBe(200);
+    expect(status.json()).toMatchObject({
+      userAuthIssue: "expired",
+      canRecoverUserToken: false,
+      cloud: {
+        status: "enrolled",
+        hasUserAccessToken: false,
+        hasDeviceAccessToken: true
+      }
+    });
+    const updated = store.get("test-profile");
+    expect(updated?.userAccessToken).toBeNull();
+    expect(updated?.userRefreshToken).toBeNull();
+    expect(updated?.deviceAccessToken).toBe("device-token");
+    expect(updated?.deviceRefreshToken).toBe("device-refresh-token");
+
     if (previous) {
       store.save("test-profile", {
         controlPlaneUrl: previous.controlPlaneUrl,

@@ -1,12 +1,18 @@
 import { useEffect, useMemo, useCallback, useSyncExternalStore } from "react";
-import { AlertTriangle, Bot, CheckCircle2, Clock3, ShieldAlert } from "lucide-react";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, mapApproval } from "../api/client";
 import { fileIndexApi } from "../api/client";
-import type { ChatSendRequest, ChatSendResult, Conversation, ConversationMessagesResult, CreateConversationRequest, FileCandidateApprovalCard, RegistryTrustLevel, TimelineMessage, ConsentRecord, WorkflowEvent, CloudStatus, MissionThreadMessage, PolicyRule, UserAgentSettings } from "../api/types";
+import { ApiRequestError } from "../api/localAgentClient";
+import {
+  isCloudUserSessionReady,
+  markCloudUserBlocked,
+  reconcileCloudUserSessionFromStatus,
+  useCloudUserSession
+} from "../api/cloudUserSessionStore";
+import { isLocalUiSessionReady, useLocalUiSession } from "../api/localUiSessionStore";
+import type { AgentProfileDetail, ChatSendRequest, ChatSendResult, Conversation, ConversationMessagesResult, CreateConversationRequest, FileCandidateApprovalCard, RegistryTrustLevel, TimelineMessage, ConsentRecord, WorkflowEvent, CloudStatus, MissionThreadMessage, PolicyRule, TaskMissionProjection, TrustRelationship, UserAgentSettings } from "../api/types";
 import type { InboxItemsParams, InboxServerAction } from "../api/inboxApi";
-import type { ActionableInboxItem, TriageGroup, UniversalSearchResult } from "../types/agentic";
-import { generateHumanReadableTitle } from "../lib/agentic-utils";
+import type { UniversalSearchResult } from "../types/agentic";
 import { SseTransport } from "../realtime/RealtimeTransport";
 import { toast } from "../components/primitives/OracleToast";
 
@@ -133,6 +139,8 @@ export const queryKeys = {
   currentProfile: ["current-profile"] as const,
   directory: (query: string) => ["directory", query] as const,
   contacts: ["contacts"] as const,
+  agentProfiles: ["agent", "profiles"] as const,
+  agentProfile: (id: string) => ["agent", "profiles", id] as const,
   conversations: ["chat", "conversations"] as const,
   conversationMessages: (conversationId: string) => ["chat", "conversations", conversationId, "messages"] as const,
   chatThread: (conversationId: string, threadId: string) => ["chat", "conversations", conversationId, "threads", threadId] as const,
@@ -248,31 +256,166 @@ function structurallyShareMessages(oldValue: unknown, newValue: unknown): unknow
 }
 
 export function useCloudStatus() {
-  return useQuery({ queryKey: queryKeys.cloudStatus, queryFn: api.cloudStatus, refetchInterval: 5000 });
+  const query = useQuery({ queryKey: queryKeys.cloudStatus, queryFn: api.cloudStatus, refetchInterval: 5000 });
+  useEffect(() => {
+    reconcileCloudUserSessionFromStatus(query.data);
+  }, [query.data]);
+  return query;
 }
 
 export function useCurrentProfile() {
-  return useQuery({ queryKey: queryKeys.currentProfile, queryFn: api.me });
-}
-
-export function useDirectorySearch(query: string, enabled = query.trim().length > 0) {
+  const queryClient = useQueryClient();
+  const localSession = useLocalUiSession();
+  const cloudSession = useCloudUserSession();
+  const { data: cloudStatus } = useCloudStatus();
+  const cloudEnabled =
+    isLocalUiSessionReady(localSession.status) &&
+    isCloudUserSessionReady(cloudSession.status) &&
+    isCloudUserReady(cloudStatus);
   return useQuery({
-    queryKey: queryKeys.directory(query),
-    queryFn: () => api.directoryUsers(query),
-    enabled,
-    staleTime: 5000
+    queryKey: queryKeys.currentProfile,
+    queryFn: async () => {
+      try {
+        return await api.me();
+      } catch (error) {
+        if (handleCloudAuthError(queryClient, error)) {
+          return null;
+        }
+        throw error;
+      }
+    },
+    enabled: cloudEnabled,
+    retry: (failureCount, error) => !isCloudAuthError(error) && !(error instanceof ApiRequestError && error.status === 401) && failureCount < 1
   });
 }
 
+function isCloudAuthError(error: unknown): error is ApiRequestError {
+  if (!(error instanceof ApiRequestError) || error.status !== 401) return false;
+  const details = error.details;
+  if (!details || typeof details !== "object") return false;
+  const code = "error" in details ? String((details as { error?: unknown }).error ?? "") : "";
+  return code === "CLOUD_USER_TOKEN_EXPIRED" || code === "CLOUD_USER_TOKEN_REQUIRED";
+}
+
+function cloudAuthIssueFromError(error: ApiRequestError): "required" | "expired" {
+  const details = error.details;
+  const code = details && typeof details === "object" && "error" in details
+    ? String((details as { error?: unknown }).error ?? "")
+    : "";
+  return code === "CLOUD_USER_TOKEN_REQUIRED" ? "required" : "expired";
+}
+
+function handleCloudAuthError(queryClient: ReturnType<typeof useQueryClient>, error: unknown): boolean {
+  if (!isCloudAuthError(error)) return false;
+  markCloudUserBlocked(cloudAuthIssueFromError(error), error.message);
+  void queryClient.cancelQueries({ queryKey: queryKeys.contacts });
+  void queryClient.cancelQueries({ queryKey: ["directory"] });
+  void queryClient.cancelQueries({ queryKey: queryKeys.currentProfile });
+  queryClient.setQueryData(queryKeys.contacts, { contacts: [] });
+  queryClient.removeQueries({ queryKey: ["directory"] });
+  queryClient.removeQueries({ queryKey: queryKeys.currentProfile });
+  void queryClient.invalidateQueries({ queryKey: queryKeys.cloudStatus });
+  return true;
+}
+
+export function useDirectorySearch(query: string, enabled = query.trim().length > 0) {
+  const queryClient = useQueryClient();
+  const localSession = useLocalUiSession();
+  const cloudSession = useCloudUserSession();
+  const { data: cloudStatus } = useCloudStatus();
+  const normalizedQuery = query.trim();
+  const cloudEnabled =
+    enabled &&
+    normalizedQuery.length > 0 &&
+    isLocalUiSessionReady(localSession.status) &&
+    isCloudUserSessionReady(cloudSession.status) &&
+    isCloudUserReady(cloudStatus);
+
+  return useQuery({
+    queryKey: queryKeys.directory(query),
+    queryFn: async () => {
+      try {
+        return await api.directoryUsers(normalizedQuery);
+      } catch (error) {
+        if (handleCloudAuthError(queryClient, error)) {
+          return { users: [] };
+        }
+        throw error;
+      }
+    },
+    enabled: cloudEnabled,
+    staleTime: 15000,
+    retry: (failureCount, error) => !isCloudAuthError(error) && failureCount < 1
+  });
+}
+
+export function isCloudUserReady(status: CloudStatus | undefined): boolean {
+  return status?.cloud.status === "enrolled" && status.cloud.hasUserAccessToken && status.userAuthIssue == null && status.tokenIssue !== "expired";
+}
+
 export function useContacts(enabled = true) {
-  return useQuery({ queryKey: queryKeys.contacts, queryFn: api.contacts, enabled, refetchInterval: enabled ? 10000 : false });
+  const queryClient = useQueryClient();
+  const localSession = useLocalUiSession();
+  const cloudSession = useCloudUserSession();
+  const { data: cloudStatus } = useCloudStatus();
+  const cloudEnabled =
+    enabled &&
+    isLocalUiSessionReady(localSession.status) &&
+    isCloudUserSessionReady(cloudSession.status) &&
+    isCloudUserReady(cloudStatus);
+  return useQuery({
+    queryKey: queryKeys.contacts,
+    queryFn: async () => {
+      try {
+        return await api.contacts();
+      } catch (error) {
+        if (handleCloudAuthError(queryClient, error)) {
+          return { contacts: [] };
+        }
+        throw error;
+      }
+    },
+    enabled: cloudEnabled,
+    refetchInterval: cloudEnabled ? 30000 : false,
+    staleTime: 15000,
+    retry: (failureCount, error) => !isCloudAuthError(error) && failureCount < 1
+  });
+}
+
+export function useAgentProfiles() {
+  return useQuery({
+    queryKey: queryKeys.agentProfiles,
+    queryFn: api.agentProfiles,
+    refetchInterval: 10000,
+    select: (data) => data.profiles
+  });
+}
+
+export function useAgentProfile(id: string | null) {
+  return useQuery({
+    queryKey: queryKeys.agentProfile(id ?? "none"),
+    queryFn: async () => {
+      const result = await api.agentProfiles();
+      return result.profiles.find((profile) =>
+        profile.id === id ||
+        profile.userId === id ||
+        profile.agentInstanceId === id ||
+        profile.registryDid === id
+      ) ?? null;
+    },
+    enabled: Boolean(id),
+    refetchInterval: 10000
+  });
 }
 
 export function useConversations() {
+  const localSession = useLocalUiSession();
+  const localSessionReady = isLocalUiSessionReady(localSession.status);
   return useQuery({
     queryKey: queryKeys.conversations,
     queryFn: api.conversations,
-    refetchInterval: 3000,
+    enabled: localSessionReady,
+    refetchInterval: localSessionReady ? 3000 : false,
     select: (data) => {
       const seen = new Map<string, Conversation>();
       for (const conv of data.conversations ?? []) {
@@ -313,12 +456,20 @@ export function useConversations() {
 }
 
 export function useConversationMessages(conversationId: string | null) {
+  const localSession = useLocalUiSession();
+  const localSessionReady = isLocalUiSessionReady(localSession.status);
   return useQuery<ConversationMessagesResult>({
     queryKey: queryKeys.conversationMessages(conversationId ?? "none"),
-    queryFn: () => api.conversationMessages(conversationId ?? "local-agent"),
-    enabled: Boolean(conversationId),
-    refetchInterval: 3000,
+    queryFn: () => api.conversationMessages(conversationId ?? ""),
+    enabled: Boolean(conversationId) && localSessionReady,
+    refetchInterval: () => {
+      if (!localSessionReady) return false;
+      return typeof document === "undefined" || document.visibilityState === "visible" ? 2000 : 15000;
+    },
     refetchIntervalInBackground: true,
+    refetchOnMount: "always",
+    refetchOnReconnect: true,
+    networkMode: "always",
     structuralSharing: structurallyShareMessages
   });
 }
@@ -641,7 +792,14 @@ function useSendChatMutation(conversationId: string, sendAs: ChatSendRequest["se
 }
 
 export function usePendingApprovals() {
-  const query = useQuery({ queryKey: queryKeys.pendingApprovals, queryFn: api.pendingApprovals, refetchInterval: 3000 });
+  const localSession = useLocalUiSession();
+  const localSessionReady = isLocalUiSessionReady(localSession.status);
+  const query = useQuery({
+    queryKey: queryKeys.pendingApprovals,
+    queryFn: api.pendingApprovals,
+    enabled: localSessionReady,
+    refetchInterval: localSessionReady ? 3000 : false
+  });
   const approvalCards = useMemo<FileCandidateApprovalCard[]>(
     () => (query.data?.approvals ?? []).map(mapApproval),
     [query.data]
@@ -687,11 +845,15 @@ function useApprovalMutation(fn: (id: string, feedback?: string) => Promise<unkn
 }
 
 export function useReceivedFiles() {
-  return useQuery({ queryKey: queryKeys.receivedFiles, queryFn: api.files, refetchInterval: 5000 });
+  const localSession = useLocalUiSession();
+  const localSessionReady = isLocalUiSessionReady(localSession.status);
+  return useQuery({ queryKey: queryKeys.receivedFiles, queryFn: api.files, enabled: localSessionReady, refetchInterval: localSessionReady ? 5000 : false });
 }
 
 export function useAuditEvents() {
-  return useQuery({ queryKey: queryKeys.auditEvents, queryFn: api.audit, refetchInterval: 7000 });
+  const localSession = useLocalUiSession();
+  const localSessionReady = isLocalUiSessionReady(localSession.status);
+  return useQuery({ queryKey: queryKeys.auditEvents, queryFn: api.audit, enabled: localSessionReady, refetchInterval: localSessionReady ? 7000 : false });
 }
 
 export function useAuditVerify() {
@@ -713,6 +875,10 @@ export function useUpdateRegistryTrust() {
       api.updateRegistryTrust(input.did, input.trustLevel),
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: ["registry", "agents"] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agentProfiles });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.trustGraph });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.contacts });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.conversations });
     }
   });
 }
@@ -723,6 +889,8 @@ export function useDiscoverRegistryAgent() {
     mutationFn: api.discoverRegistryAgent,
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: ["registry", "agents"] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agentProfiles });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.trustGraph });
     }
   });
 }
@@ -1193,6 +1361,8 @@ function disconnectedCloudStatus(current: CloudStatus | undefined): CloudStatus 
     },
     tokenIssue: null,
     canRecoverDeviceToken: false,
+    userAuthIssue: null,
+    canRecoverUserToken: false,
     localPublicKeyFingerprint: null
   };
 }
@@ -1260,6 +1430,67 @@ export function useMissions() {
     refetchInterval: 3000,
     select: (data) => data.missions
   });
+}
+
+export function useTaskMissionProjections() {
+  const missionsQuery = useMissions();
+  const tasksQuery = useA2ATasks();
+  const projections = useMemo<TaskMissionProjection[]>(() => {
+    const missions = missionsQuery.data ?? [];
+    const missionTaskIds = new Set(missions.flatMap((mission) => mission.a2aTaskIds ?? []));
+    const missionRows: TaskMissionProjection[] = missions.map((mission) => ({
+      id: mission.id,
+      title: mission.title,
+      status: mission.status === "completed"
+        ? "completed"
+        : mission.status === "failed"
+          ? "failed"
+          : mission.status === "cancelled"
+            ? "cancelled"
+            : mission.status === "awaiting_approval"
+              ? "waiting"
+              : "running",
+      source: "mission",
+      owner: mission.recipientName || mission.requesterName || "Oracle Amigo",
+      conversationId: mission.conversationId,
+      controlTaskId: mission.a2aTaskIds?.[0] ?? (mission.source === "a2a" ? mission.id : null),
+      riskLevel: mission.risk?.level ?? "unknown",
+      updatedAt: mission.updatedAt,
+      stepCount: mission.steps.length,
+      message: mission.description
+    }));
+    const a2aRows: TaskMissionProjection[] = (tasksQuery.data?.tasks ?? [])
+      .filter((task) => !missionTaskIds.has(task.id))
+      .map((task) => ({
+        id: task.id,
+        title: String(task.metadata?.title ?? task.id),
+        status: task.state === "completed"
+          ? "completed"
+          : task.state === "failed"
+            ? "failed"
+            : task.state === "cancelled"
+              ? "cancelled"
+              : "running",
+        source: "a2a",
+        owner: String(task.metadata?.owner ?? task.metadata?.recipientName ?? "Remote agent"),
+        conversationId: typeof task.metadata?.conversationId === "string" ? task.metadata.conversationId : null,
+        controlTaskId: task.id,
+        riskLevel: "unknown",
+        updatedAt: task.createdAt,
+        stepCount: 0,
+        message: task.status || task.state
+      }));
+    return [...missionRows, ...a2aRows].sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+  }, [missionsQuery.data, tasksQuery.data?.tasks]);
+
+  return {
+    data: projections,
+    isLoading: missionsQuery.isLoading || tasksQuery.isLoading,
+    isError: missionsQuery.isError || tasksQuery.isError,
+    refetch: async () => {
+      await Promise.all([missionsQuery.refetch(), tasksQuery.refetch()]);
+    }
+  };
 }
 
 export function useVoiceCommands(limit = 50, offset = 0) {
@@ -1340,7 +1571,10 @@ export function useUpdateUserAgentSettings() {
   });
 }
 
-export function useInboxTriage() {
+/*
+ * Legacy synthetic inbox triage was removed from the public hook surface.
+ * The real intent inbox is server-backed through useInboxItems/useInboxItemAction.
+function useInboxTriageLegacyDisabled() {
   const { approvalCards } = usePendingApprovals();
   const { data: convsData } = useConversations();
   const { data: filesData } = useReceivedFiles();
@@ -1411,6 +1645,7 @@ export function useInboxTriage() {
     ] as TriageGroup[];
   }, [approvalCards, convsData, filesData, transfersData, auditData]);
 }
+*/
 
 export function usePauseMission() {
   const queryClient = useQueryClient();
@@ -1526,9 +1761,27 @@ export function useConsentAction() {
 export function useTrustGraph() {
   return useQuery({
     queryKey: queryKeys.trustGraph,
-    queryFn: api.trustGraph,
+    queryFn: api.agentProfiles,
     refetchInterval: 10000,
-    select: (data) => data.relationships
+    select: (data) => {
+      const local = data.profiles.find((profile) => profile.trustLevel === "local") ?? data.profiles[0];
+      return data.profiles
+        .filter((profile) => profile.id !== local?.id)
+        .map<TrustRelationship>((profile) => ({
+          agentPairId: `${local?.id ?? "local-agent"}:${profile.id}`,
+          localAgentInstanceId: local?.agentInstanceId ?? "local-agent",
+          remoteAgentInstanceId: profile.agentInstanceId ?? profile.userId ?? profile.registryDid ?? profile.id,
+          remoteAgentName: profile.displayName,
+          remoteAgentOwnerName: profile.email ?? profile.displayName,
+          trustLevel: profile.trustLevel,
+          capabilities: profile.capabilities,
+          permissionScope: profile.contactStatus === "accepted" ? "Contact accepted; approval still required for file sharing" : "Approval required before sharing",
+          isBlocked: profile.trustLevel === "blocked" || profile.registryTrustLevel === "blocked",
+          lastInteractionAt: profile.lastInteractionAt,
+          requestCount: 0,
+          createdAt: profile.presenceUpdatedAt ?? profile.lastInteractionAt ?? new Date(0).toISOString()
+        }));
+    }
   });
 }
 
@@ -1536,18 +1789,12 @@ export function useRealtimePolling() {
   const queryClient = useQueryClient();
   useEffect(() => {
     const fallback = [
-      { queryKey: [...queryKeys.conversations], intervalMs: 3000 },
-      { queryKey: [...queryKeys.contacts], intervalMs: 3000 },
-      { queryKey: [...queryKeys.relayInbox], intervalMs: 3000 },
-      { queryKey: [...queryKeys.pendingApprovals], intervalMs: 3000 },
-      { queryKey: [...queryKeys.transfers], intervalMs: 5000 },
-      { queryKey: [...queryKeys.a2aTasks], intervalMs: 5000 },
-      { queryKey: [...queryKeys.agentRuns], intervalMs: 5000 },
-      { queryKey: [...queryKeys.auditEvents], intervalMs: 7000 },
-      { queryKey: [...queryKeys.missions], intervalMs: 3000 },
-      { queryKey: [...queryKeys.trustGraph], intervalMs: 10000 },
-      { queryKey: [...queryKeys.cloudStatus], intervalMs: 10000 },
-      { queryKey: [...queryKeys.voiceCommands], intervalMs: 5000 }
+      { queryKey: [...queryKeys.conversations], intervalMs: 10000 },
+      { queryKey: [...queryKeys.pendingApprovals], intervalMs: 10000 },
+      { queryKey: [...queryKeys.transfers], intervalMs: 15000 },
+      { queryKey: [...queryKeys.missions], intervalMs: 15000 },
+      { queryKey: [...queryKeys.cloudStatus], intervalMs: 15000 },
+      { queryKey: [...queryKeys.voiceCommands], intervalMs: 15000 }
     ];
     const transport = new SseTransport("/events", fallback);
     transport.start(queryClient, (event) => {
