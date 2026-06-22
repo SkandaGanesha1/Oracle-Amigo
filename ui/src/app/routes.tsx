@@ -1,4 +1,5 @@
 import { Navigate, Outlet, Route, Routes, useLocation, useParams } from "react-router-dom";
+import { Home, LogIn, RefreshCw } from "lucide-react";
 import { AppShell } from "./AppShell";
 import { RouteShell } from "./RouteShell";
 import { AuthScreen } from "../features/auth/AuthScreen";
@@ -14,10 +15,39 @@ import { SettingsPage } from "../pages/SettingsPage";
 import { useCloudStatus } from "../hooks/queries";
 import { isCloudUserSessionReady, useCloudUserSession } from "../api/cloudUserSessionStore";
 import { useLocalUiSession } from "../api/localUiSessionStore";
+import { AmigoLogoLoader } from "../features/loading/AmigoLogoLoader";
 
 function ChatRedirect() {
   const params = useParams<{ conversationId?: string }>();
   return <Navigate to={params.conversationId ? `/chats/${params.conversationId}` : "/chats"} replace />;
+}
+
+function ProtectedRouteFallback() {
+  const location = useLocation();
+  return (
+    <section className="flex min-h-0 flex-1 items-center justify-center bg-oa-bg p-6 text-oa-text" role="alert">
+      <div className="w-full max-w-md rounded-lg border border-oa-border bg-oa-surface p-5 shadow-xl">
+        <h1 className="text-base font-semibold text-oa-text">Page not found</h1>
+        <p className="mt-1 text-sm text-oa-text-muted">
+          No protected route is registered for <span className="font-mono text-xs text-oa-text">{location.pathname}</span>.
+        </p>
+        <div className="mt-4 flex flex-wrap gap-2">
+          <button type="button" onClick={() => window.location.assign("/inbox")} className="inline-flex min-h-[40px] items-center gap-2 rounded-md bg-oa-blue px-3 py-2 text-sm font-medium text-white hover:bg-oa-blue/90">
+            <Home className="h-4 w-4" />
+            Go to Inbox
+          </button>
+          <button type="button" onClick={() => window.location.assign("/login")} className="inline-flex min-h-[40px] items-center gap-2 rounded-md border border-oa-border bg-oa-bg-elevated px-3 py-2 text-sm font-medium text-oa-text hover:bg-oa-surface">
+            <LogIn className="h-4 w-4" />
+            Go to Login
+          </button>
+          <button type="button" onClick={() => window.location.reload()} className="inline-flex min-h-[40px] items-center gap-2 rounded-md border border-oa-border bg-oa-bg-elevated px-3 py-2 text-sm font-medium text-oa-text hover:bg-oa-surface">
+            <RefreshCw className="h-4 w-4" />
+            Reload
+          </button>
+        </div>
+      </div>
+    </section>
+  );
 }
 
 function RouteGate() {
@@ -43,8 +73,10 @@ function RouteGate() {
 
   if (localSession.status === "checking" || localSession.status === "recovering" || isLoading || (hasActiveUserAuth && !isCloudUserSessionReady(cloudSession.status))) {
     return (
-      <div className="flex h-full w-full items-center justify-center bg-oa-bg text-sm text-oa-text-muted">
-        {localSession.status === "recovering" ? "Refreshing local UI session..." : "Checking local agent status..."}
+      <div className="oa-amigo-page-loader">
+        <AmigoLogoLoader
+          label={localSession.status === "recovering" ? "Refreshing local UI session..." : "Checking local agent status..."}
+        />
       </div>
     );
   }
@@ -77,8 +109,8 @@ function EnrollmentGate() {
 
   if (isLoading) {
     return (
-      <div className="flex h-full w-full items-center justify-center bg-oa-bg text-sm text-oa-text-muted">
-        Checking enrollment status...
+      <div className="oa-amigo-page-loader">
+        <AmigoLogoLoader label="Checking enrollment status..." />
       </div>
     );
   }
@@ -112,6 +144,7 @@ export function AppRoutes() {
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="/inbox" element={<InboxPage />} />
           <Route path="/" element={<Navigate to="/inbox" replace />} />
+          <Route path="*" element={<ProtectedRouteFallback />} />
         </Route>
       </Route>
     </Routes>

@@ -62,6 +62,67 @@ afterEach(() => {
   resetCloudUserSessionForTests();
 });
 
+describe("Sentry instrumentation", () => {
+  it("installs and initializes Sentry before the React app renders", () => {
+    const pkg = JSON.parse(read("package.json")) as { dependencies?: Record<string, string> };
+    const main = read("ui/src/main.tsx");
+    const instrument = read("ui/src/instrument.ts");
+
+    expect(pkg.dependencies).toHaveProperty("@sentry/react");
+    expect(main.trimStart().startsWith('import "./instrument";')).toBe(true);
+    expect(main).toContain("onUncaughtError: Sentry.reactErrorHandler()");
+    expect(main).toContain("onCaughtError: Sentry.reactErrorHandler()");
+    expect(main).toContain("onRecoverableError: Sentry.reactErrorHandler()");
+    expect(instrument).toContain("Sentry.init");
+    expect(instrument).toContain("import.meta.env.VITE_SENTRY_DSN");
+    expect(instrument).toContain("const SENTRY_DSN = import.meta.env.VITE_SENTRY_DSN?.trim();");
+    expect(instrument).not.toContain("ingest.us.sentry.io");
+    expect(instrument).toContain("reactRouterV7BrowserTracingIntegration");
+    expect(instrument).toContain("dataCollection");
+    expect(instrument).toContain("tracesSampleRate: numberFromEnv(import.meta.env.VITE_SENTRY_TRACES_SAMPLE_RATE, 1.0)");
+    expect(instrument).toContain("tracePropagationTargets");
+    expect(instrument).toContain("\"localhost\"");
+    expect(instrument).toContain("/^https:\\/\\/yourserver\\.io\\/api/");
+  });
+
+  it("captures custom render boundary failures without changing the fallback UI", () => {
+    const boundary = read("ui/src/app/ErrorBoundary.tsx");
+    const app = read("ui/src/App.tsx");
+
+    expect(boundary).toContain("Sentry.captureException(error");
+    expect(boundary).toContain("componentStack: info.componentStack");
+    expect(boundary).toContain("Something went wrong");
+    expect(app).toContain('import.meta.env.VITE_SENTRY_TEST_BUTTON !== "true"');
+    expect(app).toContain("This is your first error!");
+  });
+});
+
+describe("CSS compatibility source contracts", () => {
+  it("keeps browser hint compatibility declarations out of authored source", () => {
+    const styles = read("ui/src/styles.css");
+
+    expect(styles).not.toContain("text-size-adjust");
+  });
+
+  it("keeps shell and chat backgrounds pure black", () => {
+    const styles = read("ui/src/styles.css");
+    const chatCanvas = styles.match(/\.oa-discord-chat-canvas\s*\{[\s\S]*?\n\}/)?.[0] ?? "";
+    const chatScroll = styles.match(/\.oa-chat-scroll\s*\{[\s\S]*?\n\}/)?.[0] ?? "";
+    const lightTheme = styles.match(/\[data-theme="light"\]\s*\{[\s\S]*?\n\}/)?.[0] ?? "";
+
+    expect(styles).toContain("--color-oa-bg: #000000");
+    expect(styles).toContain("--color-oa-chat-bg: #000000");
+    expect(styles).toContain("--background: #000000");
+    expect(chatCanvas).toContain("background: #000000");
+    expect(chatCanvas).not.toContain("radial-gradient");
+    expect(chatScroll).toContain("background: #000000");
+    expect(lightTheme).toContain("--oa-chat-bg: #000000");
+    expect(lightTheme).toContain("--oa-chat-header-bg: #000000");
+    expect(lightTheme).toContain("--oa-chat-panel-bg: #000000");
+    expect(lightTheme).toContain("--oa-shell-bg: #000000");
+  });
+});
+
 describe("localAgentClient", () => {
   it("does not add JSON content type to bodyless GET requests", async () => {
     const fetchMock = vi.fn(async (_path: string, init?: RequestInit) => {
@@ -237,6 +298,9 @@ describe("frontend hardening source contracts", () => {
     expect(primitives).toContain("modalPanelVariants");
     expect(primitives).toContain("drawerVariants");
     expect(shell).toContain("appShellVariants");
+    expect(shell).toContain("<main id=\"main-content\"");
+    expect(shell).not.toContain("<m.main");
+    expect(shell).toContain("data-app-route-content");
     expect(shell).toContain("<AnimatePresence initial={false} mode=\"popLayout\">");
     expect(inboxList).toContain("listContainerVariants");
     expect(inboxList).toContain("layout=\"position\"");
@@ -466,10 +530,10 @@ describe("frontend hardening source contracts", () => {
     expect(hooks).toContain("export function isCloudUserReady");
     expect(hooks).toContain("useLocalUiSession");
     expect(hooks).toContain("isLocalUiSessionReady");
-    expect(hooks).toContain("status?.cloud.status === \"enrolled\"");
-    expect(hooks).toContain("status.cloud.hasUserAccessToken");
-    expect(hooks).toContain("status.userAuthIssue == null");
-    expect(hooks).toContain("status.tokenIssue !== \"expired\"");
+    expect(hooks).toContain("cloudStatus === \"authenticated\" || cloudStatus === \"enrolled\"");
+    expect(hooks).toContain("status?.cloud.hasUserAccessToken === true || status?.canRecoverUserToken === true");
+    expect(hooks).toContain("status?.userAuthIssue == null");
+    expect(hooks).toContain("status?.tokenIssue !== \"expired\"");
     expect(hooks).toContain("function isCloudAuthError");
     expect(hooks).toContain("CLOUD_USER_TOKEN_EXPIRED");
     expect(hooks).toContain("CLOUD_USER_TOKEN_REQUIRED");
@@ -565,6 +629,8 @@ describe("frontend hardening source contracts", () => {
     expect(server).toContain("readState:");
     expect(server).toContain("\"/chat/conversations/:id/read-state\"");
     expect(virtualized).toContain("buildTimelineMeta(messages)");
+    expect(virtualized).toContain("isHiddenTimelineMessage");
+    expect(virtualized).toContain("messages.filter((message) => !isHiddenTimelineMessage(message))");
     expect(virtualized).toContain("readState={readState}");
     expect(virtualized).toContain("meta={rowMeta}");
     expect(timelineModel).toContain("export function shouldGroupWithPrevious");
@@ -584,7 +650,11 @@ describe("frontend hardening source contracts", () => {
     expect(bubble).toContain("moderationPlaceholder");
     expect(bubble).toContain("ReactionPills");
     expect(bubble).toContain("<ApprovalCardMessage");
+    expect(bubble).not.toContain("file_request_rejected: \"File request rejected\"");
     expect(bubble).toContain("<TransferProgressCard");
+    expect(bubble).toContain("isCompletedTransferMessage");
+    expect(bubble).toContain("[\"stored\", \"available\"].includes");
+    expect(bubble).toContain("return null");
     expect(bubble).toContain("<FileRequestCard");
     expect(bubble).toContain("oa-message-content");
     expect(virtualized).toContain("className=\"oa-chat-scroll absolute inset-0\"");
@@ -626,8 +696,11 @@ describe("frontend hardening source contracts", () => {
   it("keeps file transfer review focused on risk, integrity, and ordered actions", () => {
     const preview = read("ui/src/components/stream-like/DocumentPreviewCard.tsx");
     const approval = read("ui/src/components/agentic-ai/ApprovalCardMessage.tsx");
+    const socialPostCard = read("components/ui/social-post-card.tsx");
+    const bubble = read("ui/src/components/stream-like/MessageBubble.tsx");
     const receipt = read("ui/src/components/agentic-ai/FileReceiptMessage.tsx");
     const chat = read("ui/src/features/chat/ChatWindow.tsx");
+    const unreadDivider = read("ui/src/components/stream-like/UnreadDivider.tsx");
     const styles = read("ui/src/styles.css");
 
     expect(preview).toContain("decodeFileName");
@@ -636,17 +709,62 @@ describe("frontend hardening source contracts", () => {
     expect(preview).toContain("Leaves device");
     expect(preview).not.toContain("pending approval");
     expect(approval).toContain("Review file transfer");
-    expect(approval).toContain("Approve and send");
-    expect(approval).toContain("PreviewButton");
-    expect(approval).toContain("View audit");
-    expect(approval).toContain("Deny file transfer");
-    expect(approval).toContain("RiskSummary");
+    expect(approval).toContain("BorderRotate");
+    expect(approval).toContain("SocialPostCard");
+    expect(approval).toContain("oa-approval-gradient-border");
+    expect(approval).toContain("label: \"Send\"");
+    expect(approval).toContain("label: \"Deny\"");
+    expect(approval).toContain("label: \"Feedback\"");
+    expect(approval).toContain("CheckCircle2");
+    expect(approval).toContain("XCircle");
+    expect(approval).toContain("MessageSquareText");
+    expect(approval).not.toContain("oa-candidate-list");
+    expect(approval).not.toContain("No candidate files found");
+    expect(approval).not.toContain("Choose indexed file");
+    expect(approval).not.toContain("useIndexedFiles");
+    expect(approval).not.toContain("useRebindApprovalFile");
+    expect(approval).not.toContain("PreviewButton");
+    expect(approval).not.toContain("View audit");
+    expect(approval).not.toContain("RiskSummary");
+    expect(approval).not.toContain("oa-risk-pill");
+    expect(socialPostCard).toContain("Tooltip");
+    expect(socialPostCard).toContain("TooltipTrigger asChild");
+    expect(socialPostCard).toContain("TooltipContent side=\"top\"");
+    expect(socialPostCard).not.toContain("@heroui/react");
+    expect(socialPostCard).not.toContain("Tooltip.Trigger");
+    expect(unreadDivider).toContain("role=\"separator\"");
+    expect(unreadDivider).toContain("aria-label={label}");
+    expect(unreadDivider.indexOf("role=\"separator\"")).toBeLessThan(unreadDivider.indexOf("aria-label=\"Jump to latest messages\""));
+    expect(socialPostCard).toContain("max-w-lg");
+    expect(socialPostCard).toContain("rounded-3xl");
+    expect(socialPostCard).toContain("bg-[#18181d]");
+    expect(socialPostCard).toContain("px-7 pt-6");
+    expect(socialPostCard).toContain("h-14 w-14");
+    expect(socialPostCard).toContain("aspect-square");
+    expect(socialPostCard).toContain("border-white/[0.08]");
+    expect(socialPostCard).toContain("divide-white/[0.08]");
+    expect(socialPostCard).toContain("min-h-[64px]");
+    expect(socialPostCard).toContain("grid grid-cols-3");
+    expect(socialPostCard).toContain("focus-visible:ring-inset");
+    expect(socialPostCard).not.toContain("OracleAvatar");
+    expect(socialPostCard).not.toContain("border-zinc-200");
+    expect(socialPostCard).not.toContain("border-zinc-700");
+    expect(socialPostCard).not.toContain("Heart");
+    expect(socialPostCard).not.toContain("Share2");
+    expect(bubble).toContain("oa-message-surface-social-approval");
     expect(receipt).toContain("View audit");
     expect(receipt).not.toContain("Needs review\"}</span>");
     expect(chat).toContain("ConnectionStatusStrip");
     expect(chat).toContain("Agent link active");
+    expect(styles).toContain(".oa-message-surface-social-approval");
+    expect(styles).toContain("max-width: min(34rem, calc(100vw - 96px));");
+    expect(styles).toContain(".animated-gradient-border");
+    expect(styles).toContain(".animated-gradient-border__layer");
+    expect(styles).toContain(".animated-gradient-border__content");
+    expect(styles).toContain(".oa-approval-gradient-border");
+    expect(styles).toContain("animated-gradient-border-spin");
+    expect(styles).toContain("prefers-reduced-motion: reduce");
     expect(styles).toContain(".oa-risk-summary");
-    expect(styles).toContain(".oa-approval-action-bar");
   });
 
   it("keeps routed pages and section rails out of placeholder mode", () => {
@@ -831,11 +949,14 @@ describe("frontend hardening source contracts", () => {
   });
 
   it("uses compact chat header, composer, and document preview cards", () => {
+    const main = read("ui/src/main.tsx");
     const header = read("ui/src/features/chat/ConversationHeader.tsx");
+    const profileCard = read("ui/src/features/chat/ConversationProfileCard.tsx");
     const composer = read("ui/src/components/stream-like/MessageComposer.tsx");
     const docCard = read("ui/src/components/stream-like/DocumentPreviewCard.tsx");
     const fileRequest = read("ui/src/components/agentic-ai/FileRequestMessage.tsx");
     const approval = read("ui/src/components/agentic-ai/ApprovalCardMessage.tsx");
+    const confirmation = read("components/ai-elements/confirmation.tsx");
     const transfer = read("ui/src/components/agentic-ai/TransferProgressMessage.tsx");
     const receipt = read("ui/src/components/agentic-ai/FileReceiptMessage.tsx");
     const styles = read("ui/src/styles.css");
@@ -845,31 +966,204 @@ describe("frontend hardening source contracts", () => {
     expect(header).toContain("oa-rail-avatar h-10 w-10 rounded-full");
     expect(header).toContain("oa-rail-presence-badge");
     expect(header).toContain("local ? \"MY\" : initialsFor(displayTitle)");
-    expect(header).toContain("oa-chat-header-toolbar");
     expect(header).toContain("oa-chat-header-search");
     expect(header).toContain("oa-open-chat-search");
-    expect(header).toContain("presence.label");
-    expect(header).toContain("aria-controls=\"right-inspector-panel\"");
+    expect(header).toContain("Dialog");
+    expect(header).toContain("DialogTrigger");
+    expect(header).toContain("DialogContent");
+    expect(header).toContain("DialogTitle");
+    expect(header).toContain("DialogDescription");
+    expect(header).toContain("ConversationProfileCard");
+    expect(header).toContain("Open ${displayTitle} profile card");
+    expect(header).toContain("normalizePeerPresence(conversation)");
+    expect(profileCard).toContain("OracleAvatar");
+    expect(profileCard).toContain("import { Badge } from \"@heroui/react\"");
+    expect(profileCard).toContain("DialogClose");
+    expect(profileCard).toContain("Close profile card");
+    expect(profileCard).toContain("oa-conversation-profile-close");
+    expect(profileCard).not.toContain("oa-conversation-profile-status");
+    expect(profileCard).not.toContain("max-w-sm");
+    expect(profileCard).not.toContain("h-40");
+    expect(profileCard).not.toContain("w-24");
+    expect(profileCard).not.toContain("h-24");
+    expect(profileCard).toContain("rounded-[2rem]");
+    expect(profileCard).toContain("oa-conversation-profile-card");
+    expect(profileCard).toContain("oa-conversation-profile-cover");
+    expect(profileCard).toContain("oa-conversation-profile-avatar");
+    expect(profileCard).toContain("Badge.Anchor");
+    expect(profileCard).toContain("oa-conversation-profile-avatar-anchor");
+    expect(profileCard).toContain("size=\"md\"");
+    expect(profileCard).not.toContain("size=\"lg\"");
+    expect(profileCard).toContain("placement=\"bottom-right\"");
+    expect(profileCard).toContain("oa-conversation-profile-avatar-image");
+    expect(profileCard).toContain("oa-conversation-profile-presence");
+    expect(profileCard).toContain("Active");
+    expect(profileCard).toContain("local time");
+    expect(profileCard).toContain("emailOrDetail");
+    expect(profileCard).toContain("Documents");
+    expect(profileCard).toContain("Media");
+    expect(profileCard).toContain("Links");
+    expect(styles).toContain(".oa-conversation-profile-dialog");
+    expect(styles).toContain("left: 50% !important");
+    expect(styles).toContain("top: 50% !important");
+    expect(styles).toContain("transform: translate(-50%, -50%) !important");
+    expect(styles).toContain(".oa-conversation-profile-presence");
+    expect(styles).toContain("background: #151515");
+    expect(styles).toContain("border: 1px solid rgba(255, 255, 255, 0.08)");
+    expect(styles).toContain(".oa-conversation-profile-close");
+    expect(styles).toContain("width: 36.625rem !important");
+    expect(styles).toContain("max-width: calc(100vw - 16px) !important");
+    expect(styles).toContain("min-height: 50.375rem");
+    expect(styles).toContain("height: 15.25rem");
+    expect(styles).toContain("--oa-conversation-profile-avatar-size: 5rem");
+    expect(styles).toContain("width: var(--oa-conversation-profile-avatar-size)");
+    expect(styles).toContain("height: var(--oa-conversation-profile-avatar-size)");
+    expect(styles).toContain("border: 4px solid #151515");
+    expect(styles).toContain(".oa-conversation-profile-avatar-anchor");
+    expect(styles).toContain(".oa-conversation-profile-avatar-anchor > .oa-conversation-profile-presence.badge--bottom-right");
+    expect(styles).toContain("position: absolute !important");
+    expect(styles).toContain("top: auto !important");
+    expect(styles).toContain("width: 16px !important");
+    expect(styles).toContain("height: 16px !important");
+    expect(styles).toContain("right: 4px");
+    expect(styles).toContain("bottom: 4px");
+    expect(styles).toContain("left: auto !important");
+    expect(styles).toContain("transform: none !important");
+    expect(styles).toContain(".oa-conversation-profile-meta");
+    expect(styles).toContain(".oa-conversation-profile-actions");
+    expect(styles).not.toContain(".oa-conversation-profile-status");
+    expect(styles).not.toContain("left: 0.15rem");
+    expect(header).not.toContain("PopoverContent");
+    expect(header).not.toContain("presence.label");
+    expect(header).not.toContain("oa-chat-header-toolbar");
+    expect(header).not.toContain("oa-chat-header-subline");
+    expect(header).not.toContain("oa-open-pinned-messages");
+    expect(header).not.toContain("oa-open-chat-activity");
+    expect(header).not.toContain("oa-open-security-context");
+    expect(header).not.toContain("oa-open-chat-actions");
+    expect(header).not.toContain("aria-controls=\"right-inspector-panel\"");
     expect(header).not.toContain("Phone");
     expect(header).not.toContain("Video");
     expect(header).not.toContain("UserPlus");
     expect(header).not.toContain("Members");
     expect(header).not.toContain("Notifications");
     expect(header).not.toContain("Voice input");
+    expect(profileCard).not.toContain("Follow");
+    expect(profileCard).not.toContain("Followers");
+    expect(profileCard).not.toContain("Following");
+    expect(profileCard).not.toContain("Likes");
+    expect(profileCard).not.toContain("Posts");
+    expect(profileCard).not.toContain("Views");
+    expect(profileCard).not.toContain("Instagram");
+    expect(profileCard).not.toContain("Twitter");
+    expect(profileCard).not.toContain("Threads");
+    expect(profileCard).not.toContain("exp.");
+    expect(confirmation).toContain("export const Confirmation");
+    expect(confirmation).toContain("export const ConfirmationAccepted");
+    expect(confirmation).toContain("export const ConfirmationRejected");
+    expect(confirmation).toContain("export const ConfirmationRequest");
+    expect(confirmation).toContain("export const ConfirmationTitle");
+    expect(approval).toContain("@/components/ai-elements/confirmation");
+    expect(approval).toContain("<Confirmation");
+    expect(approval).toContain("approval={{ approved: isApproved, id: card.approval_id }}");
+    expect(approval).toContain("state={isApproved ? \"approval-responded\" : \"output-denied\"}");
+    expect(approval).toContain("You approved this file transfer");
+    expect(approval).toContain("You rejected this file transfer");
+    expect(main).toContain('import "@fontsource/inter/400.css"');
+    expect(main).toContain('import "@fontsource/inter/500.css"');
+    expect(main).toContain('import "@fontsource/inter/600.css"');
+    expect(main).toContain('import "@fontsource/inter/700.css"');
     expect(composer).toContain("oa-composer-dock");
     expect(composer).toContain("oa-composer-frame");
+    expect(composer).toContain("oa-composer-glow-shell");
+    expect(composer).toContain("oa-composer-glow-layer");
+    expect(composer).toContain("aria-hidden=\"true\"");
+    expect(composer).toContain("oa-composer-action-row");
+    expect(composer).toContain("ComposerDivider");
+    expect(composer).toContain("Paperclip");
+    expect(composer).toContain("Command");
+    expect(composer).toContain("Smile");
+    expect(composer).toContain("Mic");
+    expect(composer).toContain("StopCircle");
+    expect(composer).toContain("ArrowUp");
+    expect(composer).toContain("Open command bar");
+    expect(composer).toContain("EmojiPicker");
     expect(composer).toContain("oa-composer-send");
+    expect(composer).toContain("data-oa-composer-input");
+    expect(composer).not.toContain("SuggestedPrompts");
+    expect(composer).not.toContain("DEFAULT_SUGGESTED_PROMPTS");
+    expect(composer).not.toContain("oa-composer-quick-actions");
+    expect(composer).not.toContain("Globe");
+    expect(composer).not.toContain("BrainCog");
+    expect(composer).not.toContain("FolderCode");
+    expect(composer).not.toContain("showSearch");
+    expect(composer).not.toContain("showThink");
+    expect(composer).not.toContain("showCanvas");
     expect(composer).not.toContain("HuddleButton");
     expect(composer).not.toContain("Start huddle");
     expect(composer).not.toContain("Voice input");
     expect(docCard).toContain("export interface ChatDocumentPreview");
     expect(fileRequest).toContain("oa-agent-card compact");
-    expect(approval).toContain("<DocumentPreviewCard");
+    expect(approval).toContain("<BorderRotate");
+    expect(approval).toContain("<SocialPostCard");
     expect(transfer).toContain("<DocumentPreviewCard");
     expect(receipt).toContain("<DocumentPreviewCard");
     expect(styles).toContain(".oa-doc-card");
     expect(styles).toContain(".oa-message-hover-toolbar");
     expect(styles).toContain(".oa-composer-dock");
+    expect(styles).toContain(".oa-composer-glow-shell");
+    expect(styles).toContain(".oa-composer-glow-layer");
+    expect(styles).toContain("background: #000000");
+    expect(styles).toMatch(/\.oa-message-surface-card\s*\{[\s\S]*?background: #1C1C21;/);
+    expect(styles).toMatch(/\.oa-approval-gradient-border \.oa-social-approval-card\s*\{[\s\S]*?background: #1C1C21;/);
+    expect(styles).toMatch(/\.oa-agent-card-panel\s*\{[\s\S]*?background: #1C1C21;/);
+    expect(styles).toMatch(/\.oa-connection-strip\s*\{[\s\S]*?background: #1C1C21;/);
+    expect(styles).toMatch(/\.oa-user-rail\s*\{[\s\S]*?background-color: #000000;/);
+    expect(styles).toMatch(/\.oa-composer-frame\s*\{[\s\S]*?background: #000000;/);
+    expect(styles).toContain("oa-composer-glow-spin");
+    expect(styles).toContain("conic-gradient");
+    expect(styles).toContain("min-height: 152px");
+    expect(styles).toContain("min-height: 204px");
+    expect(styles).toContain("min-height: 148px");
+    expect(styles).toContain("min-height: 200px");
+    expect(styles).toContain("min-height: 64px");
+    expect(styles).toContain("width: 48px");
+    expect(styles).toContain("height: 48px");
+    expect(styles).toContain("height: 34px");
+    expect(styles).toContain("width: 2px");
+    expect(styles).toContain("width: 2px");
+    expect(styles).toContain("height: 40px");
+    expect(styles).toContain("--font-sans: Inter");
+    expect(styles).toContain("font-family: var(--font-sans)");
+    expect(styles).toContain("font-size: 26px");
+    expect(styles).toContain("line-height: 32px");
+    expect(styles).toContain(".oa-composer-input::placeholder");
+    expect(styles).toContain("prefers-reduced-motion");
+    expect(styles).not.toContain(".oa-composer-frame::before");
+    expect(styles).not.toContain(".oa-composer-frame::after");
+    expect(styles).not.toContain(".oa-composer-quick-actions");
+    const uiIndex = read("ui/index.html");
+    const publicIndex = read("public/index.html");
+    const fontSources = [main, styles, uiIndex, publicIndex].join("\n");
+    expect(fontSources).not.toContain("fonts.googleapis.com");
+    expect(fontSources).not.toContain("fonts.gstatic.com");
+    expect(fontSources).not.toContain("@import url(");
+    expect(styles).toContain(".oa-chat-header");
+    expect(styles).toContain(".oa-chat-header-identity");
+    expect(styles).toContain(".oa-chat-header-search input");
+    expect(styles).toContain(".oa-message-author");
+    expect(styles).toContain("font-size: 19px");
+    expect(styles).toContain("line-height: 19px");
+    expect(styles).toContain(".oa-message-time");
+    expect(styles).toContain("font-size: 14px");
+    expect(styles).toContain("line-height: 16px");
+    expect(styles).toContain(".oa-message-surface-text");
+    expect(styles).toContain(".rich-message");
+    expect(styles).toContain("font-size: 22px");
+    expect(styles).toContain("line-height: 33px");
+    expect(styles).toContain(".oa-rail-tooltip");
+    expect(styles).toContain(".oa-rail-tooltip-label");
+    expect(styles).toContain(".oa-rail-tooltip-user");
   });
 
   it("uses prompt-kit thinking components and keeps chat approval cards lean", () => {
@@ -935,6 +1229,7 @@ describe("frontend hardening source contracts", () => {
     const shell = read("ui/src/app/AppShell.tsx");
     const providers = read("ui/src/app/AppProviders.tsx");
     const rail = read("ui/src/app/UserRail.tsx");
+    const profileDialog = read("ui/src/app/AccountProfileDialog.tsx");
     const model = read("ui/src/app/userRailModel.ts");
     expect(shell).toContain("<UserRail />");
     expect(providers).toContain("TooltipProvider");
@@ -959,39 +1254,65 @@ describe("frontend hardening source contracts", () => {
     expect(model).toContain("directoryByAgentInstanceId");
     expect(model).toContain("peerUserIdForContact");
     expect(rail).toContain("Account profile:");
-    expect(rail).toContain("Dropdown");
-    expect(rail).toContain("Drawer");
-    expect(rail).toContain("AccountProfileDrawer");
-    expect(rail).toContain("<ProfileDetails");
+    expect(rail).toContain("Popover");
+    expect(rail).toContain("PopoverTrigger");
+    expect(rail).toContain("PopoverContent");
+    expect(rail).not.toContain("DropdownMenu");
+    expect(rail).not.toContain("open={popoverOpen ? false : undefined}");
+    expect(rail).toContain("{!popoverOpen && (");
+    expect(rail).toContain("AccountProfileDialog");
+    expect(profileDialog).toContain("<ProfileDetails");
+    expect(profileDialog).toContain("readSelectedImage");
+    expect(profileDialog).toContain("BIO_MAX_LENGTH");
+    expect(profileDialog).toContain("coverImage");
+    expect(profileDialog).toContain("avatarImage");
+    expect(profileDialog).toContain("Biography");
+    expect(profileDialog).toContain("Save changes");
+    expect(profileDialog).toContain("Cancel");
+    expect(profileDialog).toContain("aria-label=\"Account profile dialog\"");
+    expect(profileDialog).toContain("aria-label=\"Upload profile cover image\"");
+    expect(profileDialog).toContain("aria-label=\"Upload profile avatar image\"");
+    expect(profileDialog).not.toContain("Website");
+    expect(profileDialog).not.toContain("website");
+    expect(profileDialog).not.toContain("First name");
+    expect(profileDialog).not.toContain("Last name");
+    expect(profileDialog).not.toContain("Username");
+    expect(rail).toContain("oa-account-popover-header");
+    expect(rail).toContain("oa-account-popover-avatar");
+    expect(rail).toContain("oa-account-popover-body");
+    expect(rail).toContain("oa-account-popover-footer");
+    expect(rail).toContain("oa-account-popover-signout");
+    expect(rail).toContain("accountDetail");
+    expect(rail).toContain("w-[15.5rem]");
     expect(rail).toContain("id=\"profile\"");
-    expect(rail).toContain("id=\"agents\"");
-    expect(rail).toContain("id=\"approvals\"");
-    expect(rail).toContain("id=\"files\"");
-    expect(rail).toContain("id=\"tasks\"");
-    expect(rail).toContain("id=\"audit\"");
     expect(rail).toContain("id=\"settings\"");
     expect(rail).toContain("id=\"logout\"");
+    expect(rail).not.toContain("id=\"agents\"");
+    expect(rail).not.toContain("id=\"approvals\"");
+    expect(rail).not.toContain("id=\"files\"");
+    expect(rail).not.toContain("id=\"tasks\"");
+    expect(rail).not.toContain("id=\"audit\"");
     for (const [before, after] of [
-      ["profile", "agents"],
-      ["agents", "approvals"],
-      ["approvals", "files"],
-      ["files", "tasks"],
-      ["tasks", "audit"],
-      ["audit", "settings"],
+      ["profile", "settings"],
       ["settings", "logout"],
     ] as const) {
       expect(rail.indexOf(`id="${before}"`)).toBeLessThan(rail.indexOf(`id="${after}"`));
     }
     expect(rail).toContain("onOpenProfile");
-    expect(rail.indexOf("<AccountProfileDrawer")).toBeLessThan(rail.indexOf("function RailProfileButton"));
-    expect(rail).toContain("navigate(\"/agents\")");
-    expect(rail).toContain("navigate(\"/approvals\")");
-    expect(rail).toContain("navigate(\"/files\")");
-    expect(rail).toContain("navigate(\"/tasks\")");
-    expect(rail).toContain("navigate(\"/audit\")");
-    expect(rail).toContain("<DialogPrimitive.Portal>");
-    expect(rail).toContain("className=\"oa-profile-drawer fixed right-0 top-0");
-    expect(rail).toContain("aria-label=\"Account profile drawer\"");
+    expect(rail.indexOf("<AccountProfileDialog")).toBeLessThan(rail.indexOf("function RailProfileButton"));
+    expect(rail).toContain("navigate(\"/settings\")");
+    expect(rail).not.toContain("closeAndNavigate");
+    expect(profileDialog).toContain("<DialogContent");
+    expect(profileDialog).toContain("<DialogTitle");
+    expect(profileDialog).toContain("<DialogDescription");
+    expect(profileDialog).toContain("className=\"oa-profile-dialog p-0\"");
+    const styles = read("ui/src/styles.css");
+    expect(styles).toContain(".oa-profile-dialog");
+    expect(styles).toContain("left: 50% !important");
+    expect(styles).toContain("top: 50% !important");
+    expect(styles).toContain("transform: translate(-50%, -50%) !important");
+    expect(styles).toContain("[data-slot=\"dialog-overlay\"]");
+    expect(styles).toContain("z-index: 130 !important");
     expect(rail).not.toContain("label=\"Settings\"");
     expect(rail).toContain("navigate(\"/chats/local-agent\")");
     expect(rail).toContain("peer_agent_instance_id");
@@ -1005,10 +1326,10 @@ describe("frontend hardening source contracts", () => {
     expect(types).toContain("conversation?: Conversation");
     expect(main).toContain("messagesData?.conversation");
     expect(main).toContain("messagesIsError");
-    expect(main).toContain("<ConversationLoadErrorPanel");
+    expect(main).toContain("<ChatCanvasErrorState");
     expect(main).not.toContain("navigate(`/chats/${localConversationId ?? \"local-agent\"}`");
     expect(main).not.toContain("const localConversationId");
-    expect(main).toContain('onOpenLocalAgent={() => navigate("/chats/local-agent", { replace: true })}');
+    expect(main).toContain('onOpenLocalAgent={isMissingConversation ? () => navigate("/chats/local-agent", { replace: true }) : undefined}');
     expect(server).toContain("conversation: conversationToUi");
     expect(server).toContain("getOrCreateLocalConversation");
   });
@@ -1059,11 +1380,14 @@ describe("frontend hardening source contracts", () => {
 
   it("exposes real transfer card actions without fake downloads", () => {
     const transfer = read("ui/src/components/agentic-ai/TransferProgressMessage.tsx");
+    const bubble = read("ui/src/components/stream-like/MessageBubble.tsx");
     expect(transfer).toContain("<DocumentPreviewCard");
     expect(transfer).toContain("Copy hash");
     expect(transfer).toContain("View in Files");
     expect(transfer).toContain("copyHash");
     expect(transfer).not.toContain("/download");
+    expect(bubble).toContain("isCompletedTransferMessage");
+    expect(bubble).toContain("[\"stored\", \"available\"].includes");
   });
 
   it("protects app routes by cloud enrollment status", () => {
@@ -1071,6 +1395,7 @@ describe("frontend hardening source contracts", () => {
     const routeShell = read("ui/src/app/RouteShell.tsx");
     const enrollment = read("ui/src/features/enrollment/DeviceEnrollmentScreen.tsx");
     const auth = read("ui/src/features/auth/AuthScreen.tsx");
+    const nav = read("ui/src/features/auth/AuthShellNav.tsx");
     expect(routes).toContain("function RouteGate()");
     expect(routes).toContain("useLocalUiSession");
     expect(routes).toContain("useCloudUserSession");
@@ -1096,8 +1421,23 @@ describe("frontend hardening source contracts", () => {
     expect(auth).toContain("markCloudUserReady()");
     expect(routeShell).toContain("overflow-y-auto");
     expect(routeShell).toContain("data-testid=\"auth-route-scroll\"");
-    expect(enrollment).toContain("<LogoutButton />");
-    expect(enrollment).toContain("sticky bottom-0");
+    expect(enrollment).toContain("<AuthDotMatrixBackground />");
+    expect(enrollment).toContain("<MiniNavbar showLogout />");
+    expect(enrollment).toContain("oa-enroll-submit");
+    expect(enrollment).toContain("api.enroll");
+    expect(enrollment).toContain("api.cloudStatus");
+    expect(enrollment).toContain("queryKeys.cloudStatus");
+    expect(enrollment).toContain("navigate(\"/inbox\"");
+    expect(enrollment).toContain("ENROLLMENT_CAPABILITIES");
+    expect(enrollment).not.toContain("<CapabilitiesReview");
+    expect(enrollment).not.toContain("Agent Capabilities");
+    expect(enrollment).not.toContain("A2A v1.0");
+    expect(enrollment).not.toContain("File Search");
+    expect(enrollment).not.toContain("File Transfer (Send)");
+    expect(enrollment).not.toContain("File Transfer (Receive)");
+    expect(enrollment).not.toContain("Approval Workflow");
+    expect(nav).toContain("showLogout");
+    expect(nav).toContain("oa-auth-nav-logout");
   });
 
   it("exposes explicit local device identity reset for cross-user enrollment conflicts", () => {
@@ -1219,5 +1559,15 @@ describe("frontend hardening source contracts", () => {
     expect(vite).toContain("\"/search\"");
     expect(vite).toContain("\"/redactions\"");
     expect(html).toContain("manifest.webmanifest");
+    expect(html).not.toContain('name="theme-color"');
+  });
+
+  it("keeps browser compatibility warnings out of authored UI chrome styles", () => {
+    const styles = read("ui/src/styles.css");
+
+    expect(styles).not.toContain("text-wrap: balance");
+    expect(styles).not.toContain("scrollbar-width: none");
+    expect(styles).not.toContain("text-size-adjust");
+    expect(styles).toContain(".oa-user-rail::-webkit-scrollbar");
   });
 });

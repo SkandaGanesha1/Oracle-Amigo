@@ -19,7 +19,6 @@ import { ThinkingBar as AgentPhaseThinkingBar } from "../agentic-ai/ThinkingBar"
 import { ThinkingBar } from "../chat/ThinkingBar";
 import { AgenticReasoning } from "../agentic-ai/AgenticReasoning";
 import { AgenticToolCall } from "../agentic-ai/AgenticToolCall";
-import { FeedbackBar } from "../agentic-ai/FeedbackBar";
 import { safeDisplayText } from "../../lib/safeText";
 import { usePinMessage, useRelayTaskStatus } from "../../hooks/queries";
 import { useMessageReactions } from "../../lib/messageReactions";
@@ -79,7 +78,6 @@ function formatTime(dateStr: string): string {
 
 const systemEventLabels: Record<string, string> = {
   relay_ready: "Connected",
-  file_request_rejected: "File request rejected",
   file_request_approved: "File approved",
   transfer_complete: "File transferred",
   contact_requested: "Contact request sent",
@@ -313,6 +311,13 @@ export function MessageBubble({ message, onRetry, grouped = false, meta, ariaPos
   const isOutgoing = side === "right";
   const isCentered = side === "center";
   const isStructuredCard = meta?.structuredCard ?? isStructuredCardMessage(message);
+  const isSocialApprovalCard =
+    message.kind === "approval" &&
+    (message as { card?: { kind?: string; status?: string } }).card?.kind !== "receiver_file_approval" &&
+    !["approved", "rejected"].includes((message as { card?: { status?: string } }).card?.status ?? "");
+  const isCompletedTransferMessage =
+    message.kind === "transfer" &&
+    ["stored", "available"].includes((message as TransferProgressMessage).status);
   const isDeleted = meta?.deleted ?? isDeletedMessage(message);
   const isEdited = meta?.edited ?? isEditedMessage(message);
   const moderationPlaceholder = moderationText(message);
@@ -328,6 +333,10 @@ export function MessageBubble({ message, onRetry, grouped = false, meta, ariaPos
     humanMessage?.relay_task_id,
     isOutgoingHuman && (humanMessage?.delivery_status === "queued_at_relay" || humanMessage?.delivery_status === "delivered_to_remote_agent")
   );
+
+  if (!isUnavailable && isCompletedTransferMessage) {
+    return null;
+  }
   const deliveryStatus = relayTaskStatus.data?.delivery_status ?? humanMessage?.delivery_status ?? "sent";
   const failureReason = typeof humanMessage?.delivery_receipt?.error === "string"
     ? humanMessage.delivery_receipt.error
@@ -454,6 +463,7 @@ export function MessageBubble({ message, onRetry, grouped = false, meta, ariaPos
               className={[
                 "oa-message-content",
                 isStructuredCard ? "oa-message-surface-card" : "oa-message-surface-text",
+                isSocialApprovalCard ? "oa-message-surface-social-approval" : "",
                 isCentered ? "text-center text-xs text-oa-text-muted" : "",
                 isDeleted ? "italic text-oa-text-muted" : "",
               ].join(" ")}
@@ -471,7 +481,7 @@ export function MessageBubble({ message, onRetry, grouped = false, meta, ariaPos
               )}
 
               {!isUnavailable && message.kind === "a2a_task" && <AgentRunMessage message={message as A2ATaskMessage} />}
-              {!isUnavailable && message.kind === "transfer" && <TransferProgressCard message={message as TransferProgressMessage} />}
+              {!isUnavailable && message.kind === "transfer" && !isCompletedTransferMessage && <TransferProgressCard message={message as TransferProgressMessage} />}
               {!isUnavailable && message.kind === "receipt" && <FileReceiptCard message={message as FileReceiptMessage} />}
               {!isUnavailable && message.kind === "file_request" && <FileRequestCard message={message as FileRequestMessageType} />}
               {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
@@ -488,14 +498,7 @@ export function MessageBubble({ message, onRetry, grouped = false, meta, ariaPos
                     onDecided={() => window.dispatchEvent(new CustomEvent("oa-refresh-approvals"))}
                   />
                 ) : (
-                  <>
-                    <ApprovalCardMessage message={message as FileCandidateApprovalMessage} />
-                    {((message as FileCandidateApprovalMessage).card.status === "approved" || (message as FileCandidateApprovalMessage).card.status === "rejected") && (
-                      <div className="mt-2">
-                        <FeedbackBar />
-                      </div>
-                    )}
-                  </>
+                  <ApprovalCardMessage message={message as FileCandidateApprovalMessage} />
                 )
               )}
               {!isUnavailable && isThinkingBar && <ThinkingBar state={message.state} privacyMasked />}

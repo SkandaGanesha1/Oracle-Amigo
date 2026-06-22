@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "skills": {
+    "claude-code": {
+      "source": "iii-hq/workers",
+      "sourceType": "github",
+      "skillPath": "claude-code/skills/SKILL.md",
+      "computedHash": "74a342666c1c10582bd8afc83c15a0a10608cb725c9a886913b4bc5ef47c97fe"
+    },
+    "coder": {
+      "source": "iii-hq/workers",
+      "sourceType": "github",
+      "skillPath": "coder/skills/SKILL.md",
+      "computedHash": "22a98b78fb2f88fae945407116adb4a31b38adfa6c31aa0d1543d533f2ce9a39"
+    },
+    "codex": {
+      "source": "iii-hq/workers",
+      "sourceType": "github",
+      "skillPath": "codex/skills/SKILL.md",
+      "computedHash": "7f471376bc791e471fa02b82e64c2a3c4539963c5436820ae4f161b830cdabc5"
+    },
+    "database": {
+      "source": "iii-hq/workers",
+      "sourceType": "github",
+      "skillPath": "database/skills/SKILL.md",
+      "computedHash": "3618f79f1d1e6dda3053789cf2239fd4fc63f679e579fc21c3f609099b03ff1a"
+    },
+    "email": {
+      "source": "iii-hq/workers",
+      "sourceType": "github",
+      "skillPath": "email/skills/SKILL.md",
+      "computedHash": "7d9afd3672f30487ea5af6e3cecb28a8f25e304c4f7b1fe4a7f1bedafc4e5fec"
+    },
+    "harness": {
+      "source": "iii-hq/workers",
+      "sourceType": "github",
+      "skillPath": "harness/skills/SKILL.md",
+      "computedHash": "e53785d1540e4f720920ce2265588437c9786a8cce46d04a125686d9f8ecb5ca"
+    },
+    "iii-directory": {
+      "source": "iii-hq/workers",
+      "sourceType": "github",
+      "skillPath": "iii-directory/skills/SKILL.md",
+      "computedHash": "e9728714ae3c7f0490b92206009dcea315eaacdbca31f8d1cf5a8b78cb83d221"
+    },
+    "shell": {
+      "source": "iii-hq/workers",
+      "sourceType": "github",
+      "skillPath": "shell/skills/SKILL.md",
+      "computedHash": "3c7408fa46807085a17f9a55397c858b277f043cdbd7ec05cdba5240472e7d20"
+    },
+    "telegram-bot": {
+      "source": "iii-hq/workers",
+      "sourceType": "github",
+      "skillPath": "telegram-bot/skills/SKILL.md",
+      "computedHash": "0571bd394416d7f9417f37e9b27e32703717d1935fdc271210da83fb42ca86e3"
+    }
+  }
+}

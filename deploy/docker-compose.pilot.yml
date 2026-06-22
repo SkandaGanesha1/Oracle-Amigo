@@ -6,7 +6,7 @@ services:
     env_file:
       - ./env/control-plane.example.env
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      - postgres-18-data:/var/lib/postgresql/data
     expose:
       - "5432"
     healthcheck:
@@ -28,6 +28,8 @@ services:
         condition: service_healthy
     volumes:
       - control-plane-transfers:/app/data/transfers
+    ports:
+      - "8080:8080"
     expose:
       - "8080"
     healthcheck:
@@ -66,8 +68,32 @@ services:
       - caddy-data:/data
       - caddy-config:/config
 
+  prometheus:
+    image: docker.io/prom/prometheus:v3.7.3
+    depends_on:
+      - control-plane
+      - admin-portal
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+
+  grafana:
+    image: docker.io/grafana/grafana:12.3.0
+    depends_on:
+      - prometheus
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+
 volumes:
-  postgres-data:
+  postgres-18-data:
   control-plane-transfers:
   caddy-data:
   caddy-config:
+  prometheus-data:
+  grafana-data:

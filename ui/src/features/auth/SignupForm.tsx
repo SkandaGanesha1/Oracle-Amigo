@@ -1,8 +1,6 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { Eye, EyeOff, Mail, Lock, User } from "lucide-react";
-import { OracleButton } from "../../components/primitives/OracleButton";
-import { OracleSurface } from "../../components/primitives/OracleSurface";
 import { signupSchema, type SignupInput } from "./schemas";
 
 interface SignupFormProps {
@@ -40,20 +38,20 @@ export function SignupForm({ onSubmit, isLoading, error }: SignupFormProps) {
   }
 
   return (
-    <form onSubmit={handleSubmit} className="flex w-full flex-col gap-5" noValidate>
-      <div className="flex flex-col gap-2">
-        <label htmlFor="signup-display-name" className="text-sm font-semibold text-oa-text">
+    <form onSubmit={handleSubmit} className="oa-auth-form" noValidate>
+      <div className="oa-auth-field" data-invalid={fieldErrors.displayName ? "true" : undefined}>
+        <label htmlFor="signup-display-name">
           Display Name
         </label>
-        <div className="relative">
-          <User className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-oa-text-muted" />
+        <div className="oa-auth-input-shell">
+          <User className="oa-auth-input-icon" aria-hidden="true" />
           <input
             id="signup-display-name"
             type="text"
             value={displayName}
             onChange={(e) => setDisplayName(e.currentTarget.value)}
             placeholder="Jane Doe"
-            className="min-h-[48px] w-full rounded-[10px] border border-oa-border bg-oa-surface-2 py-3 pl-11 pr-3 text-base text-oa-text placeholder-oa-text-disabled transition-colors focus:border-oa-blue focus:outline-none focus:ring-2 focus:ring-oa-blue/45"
+            className="oa-auth-input"
             autoComplete="name"
             aria-required="true"
             aria-describedby={fieldErrors.displayName ? "signup-display-name-error" : undefined}
@@ -61,44 +59,44 @@ export function SignupForm({ onSubmit, isLoading, error }: SignupFormProps) {
             autoFocus
           />
         </div>
-        {fieldErrors.displayName && <p id="signup-display-name-error" className="text-xs text-oa-red" role="alert">{fieldErrors.displayName}</p>}
+        {fieldErrors.displayName && <p id="signup-display-name-error" className="oa-auth-field-error" role="alert">{fieldErrors.displayName}</p>}
       </div>
 
-      <div className="flex flex-col gap-2">
-        <label htmlFor="signup-email" className="text-sm font-semibold text-oa-text">
+      <div className="oa-auth-field" data-invalid={fieldErrors.email ? "true" : undefined}>
+        <label htmlFor="signup-email">
           Email
         </label>
-        <div className="relative">
-          <Mail className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-oa-text-muted" />
+        <div className="oa-auth-input-shell">
+          <Mail className="oa-auth-input-icon" aria-hidden="true" />
           <input
             id="signup-email"
             type="email"
             value={email}
             onChange={(e) => setEmail(e.currentTarget.value)}
             placeholder="jane@example.com"
-            className="min-h-[48px] w-full rounded-[10px] border border-oa-border bg-oa-surface-2 py-3 pl-11 pr-3 text-base text-oa-text placeholder-oa-text-disabled transition-colors focus:border-oa-blue focus:outline-none focus:ring-2 focus:ring-oa-blue/45"
+            className="oa-auth-input"
             autoComplete="email"
             aria-required="true"
             aria-describedby={fieldErrors.email ? "signup-email-error" : undefined}
             aria-invalid={fieldErrors.email ? "true" : undefined}
           />
         </div>
-        {fieldErrors.email && <p id="signup-email-error" className="text-xs text-oa-red" role="alert">{fieldErrors.email}</p>}
+        {fieldErrors.email && <p id="signup-email-error" className="oa-auth-field-error" role="alert">{fieldErrors.email}</p>}
       </div>
 
-      <div className="flex flex-col gap-2">
-        <label htmlFor="signup-password" className="text-sm font-semibold text-oa-text">
+      <div className="oa-auth-field" data-invalid={fieldErrors.password ? "true" : undefined}>
+        <label htmlFor="signup-password">
           Password
         </label>
-        <div className="relative">
-          <Lock className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-oa-text-muted" />
+        <div className="oa-auth-input-shell">
+          <Lock className="oa-auth-input-icon" aria-hidden="true" />
           <input
             id="signup-password"
             type={showPassword ? "text" : "password"}
             value={password}
             onChange={(e) => setPassword(e.currentTarget.value)}
             placeholder="At least 8 characters"
-            className="min-h-[48px] w-full rounded-[10px] border border-oa-border bg-oa-surface-2 py-3 pl-11 pr-12 text-base text-oa-text placeholder-oa-text-disabled transition-colors focus:border-oa-blue focus:outline-none focus:ring-2 focus:ring-oa-blue/45"
+            className="oa-auth-input has-action"
             autoComplete="new-password"
             aria-required="true"
             aria-describedby={fieldErrors.password ? "signup-password-error" : undefined}
@@ -107,34 +105,32 @@ export function SignupForm({ onSubmit, isLoading, error }: SignupFormProps) {
           <button
             type="button"
             onClick={() => setShowPassword(!showPassword)}
-            className="absolute right-2 top-1/2 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-lg text-oa-text-muted transition-colors hover:text-oa-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oa-blue"
+            className="oa-auth-password-toggle"
             aria-label={showPassword ? "Hide password" : "Show password"}
           >
-            {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+            {showPassword ? <EyeOff aria-hidden="true" /> : <Eye aria-hidden="true" />}
           </button>
         </div>
-        {fieldErrors.password && <p id="signup-password-error" className="text-xs text-oa-red" role="alert">{fieldErrors.password}</p>}
+        {fieldErrors.password && <p id="signup-password-error" className="oa-auth-field-error" role="alert">{fieldErrors.password}</p>}
       </div>
 
       {error && (
-        <OracleSurface elevation="card" className="border-oa-red/30 bg-oa-red/10 p-3">
-          <p className="text-xs text-oa-red">{error}</p>
-        </OracleSurface>
+        <div className="oa-auth-error" role="alert">
+          {error}
+        </div>
       )}
 
-      <OracleButton
-        oaVariant="primary"
-        className="mt-3 h-11 w-full"
-        isPending={isLoading}
-        isDisabled={isLoading}
+      <button
+        className="oa-auth-submit"
+        disabled={isLoading}
         type="submit"
       >
-        Sign Up
-      </OracleButton>
+        {isLoading ? "Creating account..." : "Create account"}
+      </button>
 
-      <p className="text-center text-sm text-oa-text-muted">
+      <p className="oa-auth-switch-copy">
         Already have an account?{" "}
-        <Link to="/login" className="text-oa-blue transition-colors hover:text-oa-cyan">
+        <Link to="/login" className="oa-auth-switch-link">
           Log in
         </Link>
       </p>

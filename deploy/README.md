@@ -19,11 +19,55 @@ On Linux, `podman machine start` is usually not needed. On Windows and macOS, Po
 
 Named volumes:
 
-- `oracle-amigo-pilot_postgres-data`: Postgres data at `/var/lib/postgresql/data`.
+- `oracle-amigo-pilot_postgres-18-data`: Postgres data at `/var/lib/postgresql/data`.
 - `oracle-amigo-pilot_control-plane-transfers`: encrypted transfer objects at `/app/data/transfers`.
 - `oracle-amigo-pilot_caddy-data` and `oracle-amigo-pilot_caddy-config`: Caddy state.
 
 Back up Postgres and transfer volumes together. Do not prune Podman volumes unless data loss is acceptable.
+
+## Postgres Volume Migration
+
+The pilot compose file now uses the `postgres-18-data` named volume for the Postgres 18 image. Older pilot deployments used `postgres-data`. If you upgrade without migrating the old volume, Postgres starts with an empty database.
+
+Safest upgrade path:
+
+1. Create a SQL backup before deleting or renaming anything. If the old stack is still running before the upgrade, prefer `pg_dumpall`:
+
+   ```powershell
+   podman exec oracle-amigo-pilot-postgres-1 pg_dumpall -U $env:POSTGRES_USER > postgres-backup.sql
+   ```
+
+2. Stop the pilot stack before changing volumes:
+
+   ```powershell
+   podman compose -f deploy/docker-compose.pilot.yml down
+   ```
+
+3. Confirm both volume names. The Compose project prefix is usually `oracle-amigo-pilot_`:
+
+   ```powershell
+   podman volume ls | Select-String "oracle-amigo-pilot_postgres"
+   ```
+
+4. Copy the old named volume to the new named volume with a one-shot container:
+
+   ```powershell
+   podman volume create oracle-amigo-pilot_postgres-18-data
+   podman run --rm `
+     -v oracle-amigo-pilot_postgres-data:/from:ro `
+     -v oracle-amigo-pilot_postgres-18-data:/to `
+     docker.io/library/alpine:3.20 `
+     sh -c "cd /from/data && cp -a . /to/"
+   ```
+
+5. Start the upgraded stack and verify health before removing the old volume:
+
+   ```powershell
+   podman compose -f deploy/docker-compose.pilot.yml up --build
+   podman healthcheck run oracle-amigo-pilot-postgres-1
+   ```
+
+Keep `oracle-amigo-pilot_postgres-data` until the upgraded stack is verified and a fresh backup exists. Removing the old volume before migration can permanently destroy the pilot database.
 
 ## HTTP LAN Demo
 

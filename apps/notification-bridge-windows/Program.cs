@@ -68,6 +68,7 @@ try
         Log($"[toast] NotificationInvoked: raw='{args.Argument}'");
         var argsDict = ParseArguments(args.Argument);
         var action = argsDict.GetValueOrDefault("action", "");
+        var kind = argsDict.GetValueOrDefault("kind", "");
         var approvalId = argsDict.GetValueOrDefault("approval_id", "");
         var taskId = argsDict.GetValueOrDefault("task_id", "");
         var candidateId = argsDict.GetValueOrDefault("candidate_id", "");
@@ -77,6 +78,12 @@ try
         if (args.UserInput != null && args.UserInput.TryGetValue("feedback", out var f))
         {
             feedback = f;
+        }
+
+        if (kind == "chat_message" || kind == "system" || string.IsNullOrEmpty(approvalId))
+        {
+            Log($"[toast] Non-approval activation: kind='{kind}', conversation='{argsDict.GetValueOrDefault("conversation_id", "")}', message='{argsDict.GetValueOrDefault("message_id", "")}'");
+            return;
         }
 
         // Idempotency guard: skip duplicate invokes for the same approval.
@@ -200,48 +207,23 @@ while (true)
 
         try
         {
-            var builder = new AppNotificationBuilder()
-                .AddText("Oracle Amigo - File request approval")
-                .AddText($"{notifyParams.RequesterName} requested: {notifyParams.RequestedItem}")
-                .AddText($"Candidate: {notifyParams.TopCandidateFileName}")
-                .AddTextBox("feedback", "Feedback (optional)", "Type correction feedback")
-                .AddButton(new AppNotificationButton("Approve")
-                    .AddArgument("action", "approve")
-                    .AddArgument("approval_id", notifyParams.ApprovalId ?? "")
-                    .AddArgument("candidate_id", notifyParams.CandidateId ?? "")
-                    .AddArgument("task_id", notifyParams.TaskId ?? "")
-                    .AddArgument("nonce", notifyParams.CallbackNonce ?? "")
-                    .AddArgument("signature", notifyParams.CallbackSignature ?? "")
-                    .AddArgument("local_port", notifyParams.LocalAgentCallbackPort.ToString()))
-                .AddButton(new AppNotificationButton("Reject")
-                    .AddArgument("action", "reject")
-                    .AddArgument("approval_id", notifyParams.ApprovalId ?? "")
-                    .AddArgument("task_id", notifyParams.TaskId ?? "")
-                    .AddArgument("nonce", notifyParams.CallbackNonce ?? "")
-                    .AddArgument("signature", notifyParams.CallbackSignature ?? "")
-                    .AddArgument("local_port", notifyParams.LocalAgentCallbackPort.ToString()))
-                .AddButton(new AppNotificationButton("Send feedback")
-                    .AddArgument("action", "feedback")
-                    .AddArgument("approval_id", notifyParams.ApprovalId ?? "")
-                    .AddArgument("task_id", notifyParams.TaskId ?? "")
-                    .AddArgument("nonce", notifyParams.CallbackNonce ?? "")
-                    .AddArgument("signature", notifyParams.CallbackSignature ?? "")
-                    .AddArgument("local_port", notifyParams.LocalAgentCallbackPort.ToString())
-                    .SetInputId("feedback"));
+            var builder = BuildNotification(notifyParams);
 
             var toast = builder.BuildNotification();
-            toast.Tag = notifyParams.ApprovalId ?? "default";
-            toast.Group = "approvals";
+            toast.Tag = notifyParams.NotificationId ?? notifyParams.ApprovalId ?? notifyParams.MessageId ?? "default";
+            toast.Group = notifyParams.Kind == "chat_message" ? "messages" : notifyParams.Kind == "system" ? "system" : "approvals";
 
             notificationManager ??= AppNotificationManager.Default;
             notificationManager.Show(toast);
-            Log($"[notify] Toast SHOWN for approval={notifyParams.ApprovalId}");
+            Log($"[notify] Toast SHOWN kind={notifyParams.Kind ?? "approval"} notification={notifyParams.NotificationId ?? notifyParams.ApprovalId ?? notifyParams.MessageId}");
 
             var okBody = JsonSerializer.Serialize(new
             {
                 supported = true,
                 aumid = AUMID,
-                approvalId = notifyParams.ApprovalId
+                notificationId = notifyParams.NotificationId,
+                approvalId = notifyParams.ApprovalId,
+                messageId = notifyParams.MessageId
             });
             await WriteResponse(response, okBody);
         }
@@ -293,14 +275,78 @@ static async Task WriteResponse(HttpListenerResponse response, string body)
     response.OutputStream.Close();
 }
 
+static AppNotificationBuilder BuildNotification(NotifyParams notifyParams)
+{
+    var kind = string.IsNullOrWhiteSpace(notifyParams.Kind)
+        ? !string.IsNullOrWhiteSpace(notifyParams.ApprovalId) ? "approval" : "system"
+        : notifyParams.Kind;
+
+    if (kind == "approval")
+    {
+        var localPort = (notifyParams.LocalAgentCallbackPort ?? 3399).ToString();
+        return new AppNotificationBuilder()
+            .AddText(notifyParams.Title ?? "Oracle Amigo - File request approval")
+            .AddText($"{notifyParams.RequesterName ?? "Remote user"} requested: {notifyParams.RequestedItem ?? notifyParams.Body ?? "File request"}")
+            .AddText($"Candidate: {notifyParams.TopCandidateFileName ?? "Selected file"}")
+            .AddTextBox("feedback", "Feedback (optional)", "Type correction feedback")
+            .AddButton(new AppNotificationButton("Approve")
+                .AddArgument("action", "approve")
+                .AddArgument("kind", "approval")
+                .AddArgument("approval_id", notifyParams.ApprovalId ?? "")
+                .AddArgument("candidate_id", notifyParams.CandidateId ?? "")
+                .AddArgument("task_id", notifyParams.TaskId ?? "")
+                .AddArgument("nonce", notifyParams.CallbackNonce ?? "")
+                .AddArgument("signature", notifyParams.CallbackSignature ?? "")
+                .AddArgument("local_port", localPort))
+            .AddButton(new AppNotificationButton("Reject")
+                .AddArgument("action", "reject")
+                .AddArgument("kind", "approval")
+                .AddArgument("approval_id", notifyParams.ApprovalId ?? "")
+                .AddArgument("task_id", notifyParams.TaskId ?? "")
+                .AddArgument("nonce", notifyParams.CallbackNonce ?? "")
+                .AddArgument("signature", notifyParams.CallbackSignature ?? "")
+                .AddArgument("local_port", localPort))
+            .AddButton(new AppNotificationButton("Send feedback")
+                .AddArgument("action", "feedback")
+                .AddArgument("kind", "approval")
+                .AddArgument("approval_id", notifyParams.ApprovalId ?? "")
+                .AddArgument("task_id", notifyParams.TaskId ?? "")
+                .AddArgument("nonce", notifyParams.CallbackNonce ?? "")
+                .AddArgument("signature", notifyParams.CallbackSignature ?? "")
+                .AddArgument("local_port", localPort)
+                .SetInputId("feedback"));
+    }
+
+    var builder = new AppNotificationBuilder()
+        .AddText(notifyParams.Title ?? "Oracle Amigo")
+        .AddText(notifyParams.Body ?? "New notification");
+
+    if (!string.IsNullOrWhiteSpace(notifyParams.ConversationId) || !string.IsNullOrWhiteSpace(notifyParams.MessageId))
+    {
+        builder.AddButton(new AppNotificationButton("Open chat")
+            .AddArgument("action", "open_chat")
+            .AddArgument("kind", kind)
+            .AddArgument("conversation_id", notifyParams.ConversationId ?? "")
+            .AddArgument("message_id", notifyParams.MessageId ?? ""));
+    }
+
+    return builder;
+}
+
 internal record NotifyParams(
-    string ApprovalId,
-    string TaskId,
-    string CandidateId,
+    string? Kind,
+    string? NotificationId,
+    string? Title,
+    string? Body,
+    string? ConversationId,
+    string? MessageId,
+    string? ApprovalId,
+    string? TaskId,
+    string? CandidateId,
     string? CallbackNonce,
     string? CallbackSignature,
-    string RequesterName,
-    string RequestedItem,
-    string TopCandidateFileName,
-    int LocalAgentCallbackPort
+    string? RequesterName,
+    string? RequestedItem,
+    string? TopCandidateFileName,
+    int? LocalAgentCallbackPort
 );

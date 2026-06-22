@@ -4,7 +4,8 @@ export class ApiRequestError extends Error {
   constructor(
     message: string,
     public status: number,
-    public details: unknown
+    public details: unknown,
+    public requestId: string | null = null
   ) {
     super(message);
     this.name = "ApiRequestError";
@@ -31,6 +32,7 @@ async function requestWithLocalSessionRecovery<T>(path: string, init: RequestIni
   });
   if (!response.ok) {
     const details = await readResponseBody(response);
+    const requestId = response.headers.get("x-request-id");
     const message =
       details && typeof details === "object" && "message" in details && typeof details.message === "string"
         ? details.message
@@ -44,7 +46,14 @@ async function requestWithLocalSessionRecovery<T>(path: string, init: RequestIni
     if (!canRefreshLocalSession && isLocalUiSessionUnauthorized(path, response.status, message, details)) {
       markLocalUiSessionBlocked(message);
     }
-    throw new ApiRequestError(message, response.status, details);
+    console.warn("Local agent API request failed", {
+      path,
+      method: init?.method ?? "GET",
+      status: response.status,
+      requestId,
+      message,
+    });
+    throw new ApiRequestError(message, response.status, details, requestId);
   }
 
   if (path !== "/local-ui-session") markLocalUiSessionReady();
@@ -85,7 +94,7 @@ async function refreshLocalUiSessionOnce(): Promise<void> {
               ? details.message
               : `HTTP ${response.status}`;
           markLocalUiSessionBlocked(message);
-          throw new ApiRequestError(message, response.status, details);
+          throw new ApiRequestError(message, response.status, details, response.headers.get("x-request-id"));
         }
         await readResponseBody(response);
         markLocalUiSessionReady();

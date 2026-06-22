@@ -75,7 +75,7 @@ export function resetCloudUserSession(): void {
 
 export function reconcileCloudUserSessionFromStatus(status: CloudStatus | undefined): void {
   if (!status) return;
-  if (status.cloud.hasUserAccessToken && status.userAuthIssue == null) {
+  if ((status.cloud.hasUserAccessToken || status.canRecoverUserToken) && status.userAuthIssue == null) {
     markCloudUserReady();
     return;
   }

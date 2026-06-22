@@ -1,16 +1,15 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { Badge, Button } from "@heroui/react";
-import { Dialog as DialogPrimitive } from "radix-ui";
-import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
-import { Cpu, FileText, Inbox, ListChecks, LoaderCircle, LogOut, ScrollText, Search, Settings, ShieldCheck, User as UserIcon, X } from "lucide-react";
+import { Badge } from "@heroui/react";
+import { Inbox, LoaderCircle, LogOut, Search, Settings, User as UserIcon, X } from "lucide-react";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import oracleLogoUrl from "../../../UI_images/oracle_logo.png";
 import { OracleAvatar } from "../components/primitives/OracleAvatar";
 import { isCloudUserReady, useCloudStatus, useContacts, useConversations, useDirectorySearch, useLogout, usePendingApprovals, useStartConversation } from "../hooks/queries";
 import { buildRailUsers, safePersonName, type RailUser } from "./userRailModel";
 import type { AgentInstance, DirectoryUser, PeerPresence } from "../types";
-import { ProfileDetails } from "../features/inspector/ProfileDetails";
+import { AccountProfileDialog } from "./AccountProfileDialog";
 
 export function UserRail() {
   const navigate = useNavigate();
@@ -61,7 +60,7 @@ export function UserRail() {
   }
 
   return (
-    <aside className="oa-user-rail relative z-40 flex h-full w-16 shrink-0 flex-col items-center gap-1.5 border-r border-black/40 bg-[#111214] px-2 py-3 md:w-[72px]" aria-label="People and inbox rail">
+    <aside className="oa-user-rail relative z-40 flex h-full w-16 shrink-0 flex-col items-center gap-1.5 border-r border-black/40 bg-[#000000] px-2 py-3 md:w-[72px]" aria-label="People and inbox rail">
       <RailIconButton
         label="Oracle Amigo"
         active={location.pathname === "/chats"}
@@ -126,7 +125,7 @@ export function UserRail() {
         />
       )}
 
-      <AccountProfileDrawer
+      <AccountProfileDialog
         avatarSeed={profileAvatarSeed}
         displayName={profileDisplayName}
         isOpen={profileOpen}
@@ -223,7 +222,7 @@ function RailProfileButton({
 }) {
   const navigate = useNavigate();
   const logout = useLogout();
-  const [menuOpen, setMenuOpen] = useState(false);
+  const [popoverOpen, setPopoverOpen] = useState(false);
   const displayName = cloudStatus?.cloud?.displayName ?? cloudStatus?.cloud?.userEmail ?? "Account";
   const avatarSeed = cloudStatus?.cloud?.userEmail ?? displayName;
   const presence: PeerPresence = {
@@ -232,6 +231,7 @@ function RailProfileButton({
     label: cloudStatus?.cloud?.status === "enrolled" ? "Online" : "Offline",
     activeAgentInstanceId: cloudStatus?.cloud?.agentInstanceId ?? undefined
   };
+  const accountDetail = cloudStatus?.cloud?.userEmail ?? presence.label;
 
   async function handleLogout() {
     try {
@@ -244,35 +244,17 @@ function RailProfileButton({
 
   function handleAction(key: string) {
     if (key === "profile") {
-      setMenuOpen(false);
+      setPopoverOpen(false);
       window.setTimeout(onOpenProfile, 0);
       return;
     }
-    if (key === "agents") {
-      navigate("/agents");
-      return;
-    }
-    if (key === "approvals") {
-      navigate("/approvals");
-      return;
-    }
-    if (key === "files") {
-      navigate("/files");
-      return;
-    }
-    if (key === "tasks") {
-      navigate("/tasks");
-      return;
-    }
-    if (key === "audit") {
-      navigate("/audit");
-      return;
-    }
     if (key === "settings") {
+      setPopoverOpen(false);
       navigate("/settings");
       return;
     }
     if (key === "logout" && !logout.isPending) {
+      setPopoverOpen(false);
       void handleLogout();
     }
   }
@@ -280,82 +262,88 @@ function RailProfileButton({
   const LogoutIcon = logout.isPending ? LoaderCircle : LogOut;
 
   return (
-    <DropdownMenu.Root open={menuOpen} onOpenChange={setMenuOpen}>
-      <Tooltip open={menuOpen ? false : undefined}>
+    <Popover open={popoverOpen} onOpenChange={setPopoverOpen}>
+      <Tooltip>
         <TooltipTrigger asChild>
           <span className="inline-flex w-full justify-center">
-            <DropdownMenu.Trigger asChild>
-            <button
-              type="button"
-              className="group relative flex min-h-[54px] w-full items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oa-blue focus-visible:ring-offset-2"
-              aria-label={`Account profile: ${displayName}`}
-            >
-              <StatusAvatar
-                avatarSeed={avatarSeed}
-                displayName={displayName}
-                presence={presence}
-              />
-            </button>
-            </DropdownMenu.Trigger>
+            <PopoverTrigger asChild>
+              <button
+                type="button"
+                className="group relative flex min-h-[54px] w-full items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oa-blue focus-visible:ring-offset-2"
+                aria-label={`Account profile: ${displayName}`}
+              >
+                <StatusAvatar
+                  avatarSeed={avatarSeed}
+                  displayName={displayName}
+                  presence={presence}
+                />
+              </button>
+            </PopoverTrigger>
           </span>
         </TooltipTrigger>
-        <TooltipContent side="right" sideOffset={10} className="oa-rail-tooltip oa-rail-tooltip-rich">
-          <RailUserTooltip
-            avatarSeed={avatarSeed}
-            displayName={displayName}
-            detail={cloudStatus?.cloud?.userEmail ?? presence.label}
-            presence={presence}
-          />
-        </TooltipContent>
+        {!popoverOpen && (
+          <TooltipContent side="right" sideOffset={10} className="oa-rail-tooltip oa-rail-tooltip-rich">
+            <RailUserTooltip
+              avatarSeed={avatarSeed}
+              displayName={displayName}
+              detail={cloudStatus?.cloud?.userEmail ?? presence.label}
+              presence={presence}
+            />
+          </TooltipContent>
+        )}
       </Tooltip>
-      <DropdownMenu.Portal>
-        <DropdownMenu.Content
-          side="right"
-          align="end"
-          sideOffset={12}
-          className="oa-account-dropdown min-w-44 rounded-xl border border-white/10 bg-[#2F2F2F] p-1.5 shadow-2xl"
-        >
-          <DropdownMenu.Item id="profile" textValue="Profile" className="oa-account-dropdown-item" onSelect={() => handleAction("profile")}>
-            <UserIcon className="h-4 w-4 shrink-0 text-oa-text-muted" />
+      <PopoverContent
+        side="right"
+        align="end"
+        sideOffset={12}
+        className="oa-account-popover w-[15.5rem] max-w-[calc(100vw-92px)] rounded-xl border border-white/10 bg-[#171717] p-0 shadow-2xl"
+        aria-label="Account actions"
+      >
+        <div className="oa-account-popover-header">
+          <div className="oa-account-popover-avatar">
+            <StatusAvatar
+              avatarSeed={avatarSeed}
+              displayName={displayName}
+              presence={presence}
+            />
+          </div>
+          <div className="min-w-0">
+            <p className="oa-account-popover-name">{displayName}</p>
+            <p className="oa-account-popover-detail">{accountDetail}</p>
+          </div>
+        </div>
+
+        <div className="oa-account-popover-body">
+          <button id="profile" type="button" className="oa-account-popover-item" onClick={() => handleAction("profile")}>
+            <UserIcon className="h-4 w-4 shrink-0 text-oa-text-secondary" />
             <span>Profile</span>
-          </DropdownMenu.Item>
-          <DropdownMenu.Item id="agents" textValue="Agents" className="oa-account-dropdown-item" onSelect={() => handleAction("agents")}>
-            <Cpu className="h-4 w-4 shrink-0 text-oa-text-muted" />
-            <span>Agents</span>
-          </DropdownMenu.Item>
-          <DropdownMenu.Item id="approvals" textValue="Approvals" className="oa-account-dropdown-item" onSelect={() => handleAction("approvals")}>
-            <ShieldCheck className="h-4 w-4 shrink-0 text-oa-text-muted" />
-            <span>Approvals</span>
-          </DropdownMenu.Item>
-          <DropdownMenu.Item id="files" textValue="Vault" className="oa-account-dropdown-item" onSelect={() => handleAction("files")}>
-            <FileText className="h-4 w-4 shrink-0 text-oa-text-muted" />
-            <span>Vault</span>
-          </DropdownMenu.Item>
-          <DropdownMenu.Item id="tasks" textValue="Missions" className="oa-account-dropdown-item" onSelect={() => handleAction("tasks")}>
-            <ListChecks className="h-4 w-4 shrink-0 text-oa-text-muted" />
-            <span>Missions</span>
-          </DropdownMenu.Item>
-          <DropdownMenu.Item id="audit" textValue="Audit" className="oa-account-dropdown-item" onSelect={() => handleAction("audit")}>
-            <ScrollText className="h-4 w-4 shrink-0 text-oa-text-muted" />
-            <span>Audit</span>
-          </DropdownMenu.Item>
-          <DropdownMenu.Item id="settings" textValue="Settings" className="oa-account-dropdown-item" onSelect={() => handleAction("settings")}>
-            <Settings className="h-4 w-4 shrink-0 text-oa-text-muted" />
+          </button>
+          <button id="settings" type="button" className="oa-account-popover-item" onClick={() => handleAction("settings")}>
+            <Settings className="h-4 w-4 shrink-0 text-oa-text-secondary" />
             <span>Settings</span>
-          </DropdownMenu.Item>
-          <DropdownMenu.Item id="logout" textValue="Log out" className="oa-account-dropdown-item oa-account-dropdown-item-danger" onSelect={() => handleAction("logout")}>
-            <LogoutIcon className={`h-4 w-4 shrink-0 text-oa-red ${logout.isPending ? "animate-spin" : ""}`} />
-            <span>Log out</span>
-          </DropdownMenu.Item>
-        </DropdownMenu.Content>
-      </DropdownMenu.Portal>
-    </DropdownMenu.Root>
+          </button>
+        </div>
+
+        <div className="oa-account-popover-footer">
+          <button
+            id="logout"
+            type="button"
+            className="oa-account-popover-signout"
+            onClick={() => handleAction("logout")}
+          disabled={logout.isPending}
+        >
+            <LogoutIcon className={`h-4 w-4 shrink-0 ${logout.isPending ? "animate-spin" : ""}`} />
+            <span>Sign Out</span>
+          </button>
+        </div>
+      </PopoverContent>
+    </Popover>
   );
 }
 
 function RailLabelTooltip({ detail, label }: { detail?: string; label: string }) {
   return (
-    <div className="min-w-0">
+    <div className="oa-rail-tooltip-label min-w-0">
       <p className="text-sm font-semibold text-oa-text">{label}</p>
       {detail && <p className="mt-0.5 max-w-48 truncate text-xs text-oa-text-muted">{detail}</p>}
     </div>
@@ -376,7 +364,7 @@ function RailUserTooltip({
   presence: PeerPresence;
 }) {
   return (
-    <div className="flex min-w-0 items-center gap-3">
+    <div className="oa-rail-tooltip-user flex min-w-0 items-center gap-3">
       <StatusAvatar
         avatarSeed={avatarSeed}
         displayName={displayName}
@@ -388,68 +376,6 @@ function RailUserTooltip({
         {detail && <span className="block max-w-44 truncate text-xs text-oa-text-muted">{detail}</span>}
       </span>
     </div>
-  );
-}
-
-function AccountProfileDrawer({
-  avatarSeed,
-  displayName,
-  isOpen,
-  onOpenChange
-}: {
-  avatarSeed: string;
-  displayName: string;
-  isOpen: boolean;
-  onOpenChange: (isOpen: boolean) => void;
-}) {
-  return (
-    <DialogPrimitive.Root open={isOpen} onOpenChange={onOpenChange}>
-      <DialogPrimitive.Portal>
-        <DialogPrimitive.Overlay className="oa-profile-drawer-overlay fixed inset-0" />
-        <DialogPrimitive.Content
-          aria-label="Account profile drawer"
-          className="oa-profile-drawer fixed right-0 top-0 flex h-dvh w-[360px] max-w-[calc(100vw-1.5rem)] flex-col border-l border-oa-border bg-[#1e1f22] text-oa-text shadow-2xl outline-none"
-        >
-          <div className="flex h-full flex-col">
-            <div className="flex items-center justify-between border-b border-oa-border px-4 py-3">
-              <div>
-                <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-oa-text-muted">Account</p>
-                <h2 className="text-lg font-semibold text-oa-text">Profile</h2>
-              </div>
-              <Button
-                isIconOnly
-                size="sm"
-                variant="ghost"
-                onPress={() => onOpenChange(false)}
-                aria-label="Close profile drawer"
-                className="text-oa-text-muted"
-              >
-                <X className="h-4 w-4" />
-              </Button>
-            </div>
-            <div className="min-h-0 flex-1 overflow-y-auto p-0">
-              <ProfileDetails
-                className="p-4"
-                header={
-                  <div className="mb-2 flex items-center gap-3 rounded-xl bg-oa-surface px-3 py-3">
-                    <OracleAvatar
-                      seed={avatarSeed}
-                      initials={initialsFor(displayName)}
-                      size="md"
-                      className="h-10 w-10 rounded-full"
-                    />
-                    <div className="min-w-0">
-                      <p className="truncate text-sm font-semibold text-oa-text">{displayName}</p>
-                      <p className="text-xs text-oa-text-muted">Oracle Amigo account</p>
-                    </div>
-                  </div>
-                }
-              />
-            </div>
-          </div>
-        </DialogPrimitive.Content>
-      </DialogPrimitive.Portal>
-    </DialogPrimitive.Root>
   );
 }
 

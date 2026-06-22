@@ -1,16 +1,18 @@
 import { useState, useCallback, useEffect } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
-import { Bot } from "lucide-react";
+import { AnimatePresence, motion } from "framer-motion";
 import { api } from "../../api/client";
 import { useQueryClient } from "@tanstack/react-query";
 import { queryKeys } from "../../hooks/queries";
 import { SignupForm } from "./SignupForm";
 import { LoginForm } from "./LoginForm";
+import { AuthDotMatrixBackground } from "./AuthDotMatrixBackground";
+import { MiniNavbar } from "./AuthShellNav";
 import type { SignupInput, LoginInput } from "./schemas";
 import { markCloudUserReady, resetCloudUserSession, useCloudUserSession } from "../../api/cloudUserSessionStore";
 
 type AuthMode = "signup" | "login";
-type AuthFlowState = "idle" | "connecting" | "signed_up" | "logging_in" | "enrolled" | "redirect_to_chat";
+type AuthFlowState = "idle" | "connecting" | "signed_up" | "logging_in" | "enrolled";
 
 export function AuthScreen() {
   const navigate = useNavigate();
@@ -74,9 +76,8 @@ export function AuthScreen() {
     }
   }, [navigate, queryClient]);
 
-  function switchMode() {
-    const next = mode === "login" ? "signup" : "login";
-    setMode(next);
+  function switchMode(next: AuthMode = mode === "login" ? "signup" : "login") {
+    if (next === mode) return;
     setError(null);
     setFlowState("idle");
     navigate(next === "signup" ? "/signup" : "/login", { replace: true });
@@ -85,65 +86,44 @@ export function AuthScreen() {
   const isProcessing = flowState !== "idle";
 
   return (
-    <div className="relative mx-auto flex min-h-full w-full max-w-md flex-col items-center justify-center overflow-hidden px-5 py-10 sm:px-8">
-      <div className="pointer-events-none absolute inset-0 opacity-80 [background:radial-gradient(circle_at_50%_12%,rgba(47,109,255,0.14),transparent_30%),radial-gradient(circle_at_50%_90%,rgba(120,75,255,0.1),transparent_34%)]" />
-      <div className="relative flex w-full flex-col items-center gap-8">
-      <div className="flex flex-col items-center gap-3">
-        <span className="flex h-[62px] w-[62px] items-center justify-center rounded-[20px] border border-oa-blue/25 bg-gradient-to-br from-oa-blue/20 to-oa-purple/25 shadow-[0_16px_50px_rgba(49,109,255,0.22)]">
-          <Bot className="h-6 w-6 text-oa-blue" />
-        </span>
-        <h1 className="text-[28px] font-bold leading-tight text-oa-text">Oracle Amigo</h1>
-        <p className="text-center text-base text-oa-text-muted">
-          {mode === "login" ? "Log in to your control plane" : "Create a control plane account"}
-        </p>
-      </div>
+    <main className="oa-auth-screen" aria-label="Authentication and enrollment">
+      <AuthDotMatrixBackground />
+      <MiniNavbar mode={mode} onModeChange={switchMode} />
 
-      <div className="flex w-full rounded-[10px] border border-oa-border-strong bg-oa-surface-2 p-1 shadow-[0_18px_60px_rgba(0,0,0,0.32)]" role="tablist" aria-label="Auth mode">
-        <button
-          role="tab"
-          aria-selected={mode === "login"}
-          type="button"
-          onClick={() => mode !== "login" && switchMode()}
-          className={`flex min-h-11 flex-1 items-center justify-center rounded-[8px] px-4 text-base font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oa-blue ${
-            mode === "login"
-              ? "bg-oa-blue text-white shadow-sm"
-              : "text-oa-text hover:bg-white/[0.03]"
-          }`}
-        >
-          Log In
-        </button>
-        <button
-          role="tab"
-          aria-selected={mode === "signup"}
-          type="button"
-          onClick={() => mode !== "signup" && switchMode()}
-          className={`flex min-h-11 flex-1 items-center justify-center rounded-[8px] px-4 text-base font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oa-blue ${
-            mode === "signup"
-              ? "bg-oa-blue text-white shadow-sm"
-              : "text-oa-text hover:bg-white/[0.03]"
-          }`}
-        >
-          Sign Up
-        </button>
-      </div>
+      <section className="oa-auth-content">
+        <div className="oa-auth-card">
+          <div className="oa-auth-heading">
+            <h1>Welcome to Oracle Amigo</h1>
+            <p>{mode === "login" ? "Sign in to continue" : "Create your account"}</p>
+          </div>
 
-        {mode === "signup" && (
-          <SignupForm onSubmit={handleSignup} isLoading={isProcessing} error={error} />
-        )}
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={mode}
+              initial={{ opacity: 0, x: mode === "login" ? -100 : 100 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: mode === "login" ? -100 : 100 }}
+              transition={{ duration: 0.4, ease: "easeOut" }}
+              className="oa-auth-form-motion"
+            >
+              {mode === "signup" ? (
+                <SignupForm onSubmit={handleSignup} isLoading={isProcessing} error={error} />
+              ) : (
+                <LoginForm onSubmit={handleLogin} isLoading={isProcessing} error={error} />
+              )}
+            </motion.div>
+          </AnimatePresence>
 
-        {mode === "login" && (
-          <LoginForm onSubmit={handleLogin} isLoading={isProcessing} error={error} />
-        )}
-
-        {flowState !== "idle" && (
-          <p className="text-center text-xs text-oa-text-muted" role="status" aria-live="polite">
-            {flowState === "connecting" && "Creating your account..."}
-            {flowState === "signed_up" && "Account created. Signing you in..."}
-            {flowState === "logging_in" && "Authenticating..."}
-            {flowState === "enrolled" && "Opening Oracle Amigo..."}
-          </p>
-        )}
-      </div>
-    </div>
+          {flowState !== "idle" && (
+            <p className="oa-auth-status" role="status" aria-live="polite">
+              {flowState === "connecting" && "Creating your account..."}
+              {flowState === "signed_up" && "Account created. Signing you in..."}
+              {flowState === "logging_in" && "Authenticating..."}
+              {flowState === "enrolled" && "Opening Oracle Amigo..."}
+            </p>
+          )}
+        </div>
+      </section>
+    </main>
   );
 }

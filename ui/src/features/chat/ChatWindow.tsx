@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSendMessage, useSendFileRequest, useQueuedMessages, useRetryQueued, useCancelQueued, useLoadAroundMessage, useLoadBeforeMessages } from "../../hooks/queries";
 import { MessageTimeline } from "./MessageTimeline";
@@ -15,6 +16,7 @@ interface ChatWindowProps {
   readState?: ConversationReadState | null;
   pageInfo?: ConversationMessagesResult["pageInfo"];
   onMarkRead?: (messageId: string) => void;
+  emptyState?: ReactNode;
 }
 
 const bannerSeverities = new Set(["info", "success"]);
@@ -160,7 +162,7 @@ function collapseAgentStatusMessages(messages: TimelineMessage[]): TimelineMessa
     .sort((a, b) => createdAt(a).localeCompare(createdAt(b)));
 }
 
-export function ChatWindow({ conversation, messages, loading, conversationId, readState, pageInfo, onMarkRead }: ChatWindowProps) {
+export function ChatWindow({ conversation, messages, loading, conversationId, readState, pageInfo, onMarkRead, emptyState }: ChatWindowProps) {
   const sendMessage = useSendMessage(conversationId);
   const sendFileRequest = useSendFileRequest(conversationId);
   const [pendingSend, setPendingSend] = useState<{ text: string; sendAs: "normal" | "file_request"; clientMessageId: string } | null>(null);
@@ -273,21 +275,25 @@ export function ChatWindow({ conversation, messages, loading, conversationId, re
           })}
         </div>
       )}
-      <MessageTimeline
-        messages={chatMessages}
-        loading={loading}
-        onRetry={handleRetry}
-        typing={typingStates.length > 0}
-        typingLabel={typingLabel}
-        conversationId={conversationId}
-        readState={readState}
-        onMarkRead={onMarkRead}
-        hasMoreBefore={pageInfo?.hasMoreBefore ?? false}
-        loadingBefore={loadBeforeMessages.isPending}
-        loadBefore={(beforeMessageId) => loadBeforeMessages.mutateAsync(beforeMessageId).then(() => undefined)}
-        jumpToMessageId={jumpToMessageId}
-        loadAroundMessage={loadAroundMessage}
-      />
+      {!loading && chatMessages.length === 0 && emptyState ? (
+        emptyState
+      ) : (
+        <MessageTimeline
+          messages={chatMessages}
+          loading={loading}
+          onRetry={handleRetry}
+          typing={typingStates.length > 0}
+          typingLabel={typingLabel}
+          conversationId={conversationId}
+          readState={readState}
+          onMarkRead={onMarkRead}
+          hasMoreBefore={pageInfo?.hasMoreBefore ?? false}
+          loadingBefore={loadBeforeMessages.isPending}
+          loadBefore={(beforeMessageId) => loadBeforeMessages.mutateAsync(beforeMessageId).then(() => undefined)}
+          jumpToMessageId={jumpToMessageId}
+          loadAroundMessage={loadAroundMessage}
+        />
+      )}
       {pendingSend && (
         <div className="border-t border-oa-border px-4 py-3 bg-oa-surface">
           <SendConfirmation text={pendingSend.text} sendAs={pendingSend.sendAs} pending={isSending}>

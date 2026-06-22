@@ -21,6 +21,7 @@ export function migrate(db: DatabaseSync): void {
   ensureLocalCloudTables(db);
   ensureChatTables(db);
   ensureApprovalTransferTables(db);
+  ensureFilePreviewTables(db);
   ensureAnpTables(db);
   ensurePhaseFiveTables(db);
   ensureVoiceTables(db);
@@ -193,6 +194,25 @@ function ensureApprovalTransferTables(db: DatabaseSync): void {
   `);
 }
 
+function ensureFilePreviewTables(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS file_previews (
+      file_id TEXT PRIMARY KEY,
+      status TEXT NOT NULL DEFAULT 'processing',
+      source_mime_type TEXT NOT NULL DEFAULT 'application/octet-stream',
+      page_count INTEGER,
+      thumb_360_path TEXT,
+      thumb_720_path TEXT,
+      width INTEGER,
+      height INTEGER,
+      error_message TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (file_id) REFERENCES received_files(id) ON DELETE CASCADE
+    );
+  `);
+}
+
 function addColumnIfMissing(db: DatabaseSync, table: string, column: string, definition: string): void {
   const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
   if (rows.some((row) => row.name === column)) return;
@@ -257,12 +277,21 @@ function ensurePhaseFiveTables(db: DatabaseSync): void {
 
     CREATE TABLE IF NOT EXISTS notification_events (
       id TEXT PRIMARY KEY,
+      source_event_id TEXT UNIQUE,
       event_type TEXT NOT NULL,
       title TEXT NOT NULL,
       body TEXT NOT NULL,
       severity TEXT NOT NULL DEFAULT 'info',
       entity_type TEXT,
       entity_id TEXT,
+      status TEXT NOT NULL DEFAULT 'pending',
+      conversation_id TEXT,
+      message_id TEXT,
+      sender_user_id TEXT,
+      sender_agent_instance_id TEXT,
+      bridge_error TEXT,
+      shown_at TEXT,
+      read_at TEXT,
       delivered INTEGER NOT NULL DEFAULT 0,
       bridge_available INTEGER NOT NULL DEFAULT 0,
       metadata_json TEXT NOT NULL DEFAULT '{}',
@@ -275,6 +304,20 @@ function ensurePhaseFiveTables(db: DatabaseSync): void {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+  `);
+  addColumnIfMissing(db, "notification_events", "source_event_id", "TEXT");
+  addColumnIfMissing(db, "notification_events", "status", "TEXT NOT NULL DEFAULT 'pending'");
+  addColumnIfMissing(db, "notification_events", "conversation_id", "TEXT");
+  addColumnIfMissing(db, "notification_events", "message_id", "TEXT");
+  addColumnIfMissing(db, "notification_events", "sender_user_id", "TEXT");
+  addColumnIfMissing(db, "notification_events", "sender_agent_instance_id", "TEXT");
+  addColumnIfMissing(db, "notification_events", "bridge_error", "TEXT");
+  addColumnIfMissing(db, "notification_events", "shown_at", "TEXT");
+  addColumnIfMissing(db, "notification_events", "read_at", "TEXT");
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_notification_events_source_event
+      ON notification_events(source_event_id)
+      WHERE source_event_id IS NOT NULL;
   `);
 }
 

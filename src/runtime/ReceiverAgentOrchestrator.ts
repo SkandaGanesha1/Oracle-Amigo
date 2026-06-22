@@ -21,7 +21,7 @@ import { FileSearchService } from "../file-search/FileSearchService.js";
 import { LocalCloudIdentityStore, defaultProfileId } from "../cloud/LocalCloudIdentityStore.js";
 import { resolveFileRequestCandidates, toApprovalCandidatePayload, toReceiverApprovalCandidatePayload } from "./FileRequestCandidateResolver.js";
 import type { RelayInboxMessage } from "../cloud/RelayClient.js";
-import { sendNotification } from "../notification/NotificationBridgeClient.js";
+import { NotificationDeliveryService } from "../notification/NotificationDeliveryService.js";
 import { signApprovalCallback } from "../security/SecurityGuards.js";
 
 export interface ReceiverApprovalRecord {
@@ -50,7 +50,8 @@ export class ReceiverAgentOrchestrator {
     private readonly db: DatabaseSync = getDb(),
     private readonly profileId = defaultProfileId(),
     chatRepo?: ChatRepository,
-    fileSearch?: FileSearchService
+    fileSearch?: FileSearchService,
+    private readonly notifications = new NotificationDeliveryService(db)
   ) {
     this.chatRepo = chatRepo ?? new ChatRepository(db);
     this.fileSearch = fileSearch ?? new FileSearchService();
@@ -98,7 +99,7 @@ export class ReceiverAgentOrchestrator {
     );
 
     // Post approval card to receiver's chat UI
-    this.chatRepo.appendMessage({
+    const approvalMessage = this.chatRepo.appendMessage({
       conversationId,
       taskId,
       senderAgentInstanceId: message.to_agent_instance_id,
@@ -138,18 +139,54 @@ export class ReceiverAgentOrchestrator {
         nonce
       });
 
-      sendNotification({
-        approvalId,
-        taskId,
-        candidateId: String(topCandidate.id),
-        callbackNonce: nonce,
-        callbackSignature: signature,
-        requesterName: message.from_agent_instance_id,
-        requestedItem: fileQuery,
-        topCandidateFileName: topCandidate.fileName,
-        localAgentCallbackPort: callbackPort,
+      this.notifications.approvalRequired({
+        sourceEventId: `${message.relay_task_id}:approval_required`,
+        title: "Oracle Amigo - File request approval",
+        body: `${message.from_agent_instance_id} requested: ${fileQuery}`,
+        conversationId,
+        messageId: approvalMessage.id,
+        senderAgentInstanceId: message.from_agent_instance_id,
+        metadata: {
+          approvalId,
+          taskId,
+          relayTaskId: message.relay_task_id,
+          candidateId: String(topCandidate.id)
+        },
+        bridgePayload: {
+          approvalId,
+          taskId,
+          candidateId: String(topCandidate.id),
+          callbackNonce: nonce,
+          callbackSignature: signature,
+          requesterName: message.from_agent_instance_id,
+          requestedItem: fileQuery,
+          topCandidateFileName: topCandidate.fileName,
+          localAgentCallbackPort: callbackPort,
+        }
       }).catch((err) => {
-        console.warn("[ReceiverAgentOrchestrator] Failed to fire toast via notification bridge:", err);
+        console.warn("[ReceiverAgentOrchestrator] Failed to deliver approval notification:", err);
+      });
+    } else {
+      this.notifications.deliver({
+        eventType: "file_request_received",
+        sourceEventId: `${message.relay_task_id}:file_request_received`,
+        title: "File request received",
+        body: `${message.from_agent_instance_id} requested: ${fileQuery}`,
+        entityType: "conversation",
+        entityId: conversationId,
+        conversationId,
+        messageId: approvalMessage.id,
+        senderAgentInstanceId: message.from_agent_instance_id,
+        metadata: { approvalId, taskId, relayTaskId: message.relay_task_id },
+        bridgePayload: {
+          kind: "system",
+          title: "File request received",
+          body: `${message.from_agent_instance_id} requested: ${fileQuery}`,
+          conversationId,
+          messageId: approvalMessage.id
+        }
+      }).catch((err) => {
+        console.warn("[ReceiverAgentOrchestrator] Failed to deliver file request notification:", err);
       });
     }
 

@@ -10,6 +10,13 @@ import { buildTimelineMeta, getUnreadMessageId } from "./timelineModel";
 import { getTimelineScroll, saveTimelineScroll, type SavedTimelineScroll } from "./timelineScrollState";
 import type { ConversationReadState, TimelineMessage } from "../../api/types";
 
+export function isHiddenTimelineMessage(message: TimelineMessage): boolean {
+  if (message.kind !== "system_event") return false;
+  const text = message.text.trim().toLowerCase();
+  const eventType = message.event_type.trim().toLowerCase();
+  return text === "file request rejected" || eventType === "file_request_rejected";
+}
+
 function estimateMessageSize(message: TimelineMessage): number {
   if (message.kind === "human") {
     const lineCount = Math.ceil((message.text?.length ?? 0) / 88);
@@ -412,9 +419,14 @@ export function VirtualizedMessageList({
   loadAroundMessage,
   typingLabel,
 }: VirtualizedMessageListProps) {
+  const visibleMessages = useMemo(
+    () => messages.filter((message) => !isHiddenTimelineMessage(message)),
+    [messages]
+  );
+
   if (loading) {
     return (
-      <div className="flex flex-1 items-center justify-center" role="status" aria-live="polite" aria-label="Loading messages">
+      <div className="flex flex-1 items-center justify-center" data-testid="chat-canvas-loading" role="status" aria-live="polite" aria-label="Loading messages">
         <div className="flex flex-col items-center gap-3">
           <div className="flex gap-1">
             <span className="h-2 w-2 animate-bounce rounded-full bg-oa-text-muted" style={{ animationDelay: "0ms" }} />
@@ -427,11 +439,11 @@ export function VirtualizedMessageList({
     );
   }
 
-  if (messages.length === 0) {
+  if (visibleMessages.length === 0) {
     return (
-      <div className="flex flex-1 items-center justify-center">
+      <div className="flex flex-1 items-center justify-center" data-testid="chat-canvas-empty">
         <div className="flex flex-col items-center gap-3 text-center px-6">
-          <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-oa-surface ring-1 ring-oa-border">
+          <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-black ring-1 ring-oa-border">
             <svg className="h-6 w-6 text-oa-text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M12 20.25c4.97 0 9-3.694 9-8.25s-4.03-8.25-9-8.25S3 7.444 3 12c0 2.104.859 4.023 2.273 5.48.432.447.74 1.04.586 1.641a4.483 4.483 0 01-.923 1.785A5.969 5.969 0 006 21c1.282 0 2.47-.402 3.445-1.087.81.22 1.668.337 2.555.337z" />
             </svg>
@@ -448,7 +460,7 @@ export function VirtualizedMessageList({
   return (
     <StickToBottom className="flex flex-1" resize="smooth" initial="instant">
       <VirtualList
-        messages={messages}
+        messages={visibleMessages}
         onRetry={onRetry}
         typing={typing}
         conversationId={conversationId}

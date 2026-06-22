@@ -294,7 +294,7 @@ function isCloudAuthError(error: unknown): error is ApiRequestError {
   const details = error.details;
   if (!details || typeof details !== "object") return false;
   const code = "error" in details ? String((details as { error?: unknown }).error ?? "") : "";
-  return code === "CLOUD_USER_TOKEN_EXPIRED" || code === "CLOUD_USER_TOKEN_REQUIRED";
+  return code === "CLOUD_USER_TOKEN_EXPIRED" || code === "CLOUD_USER_TOKEN_REQUIRED" || code === "CLOUD_NOT_CONFIGURED";
 }
 
 function cloudAuthIssueFromError(error: ApiRequestError): "required" | "expired" {
@@ -302,7 +302,7 @@ function cloudAuthIssueFromError(error: ApiRequestError): "required" | "expired"
   const code = details && typeof details === "object" && "error" in details
     ? String((details as { error?: unknown }).error ?? "")
     : "";
-  return code === "CLOUD_USER_TOKEN_REQUIRED" ? "required" : "expired";
+  return code === "CLOUD_USER_TOKEN_EXPIRED" ? "expired" : "required";
 }
 
 function handleCloudAuthError(queryClient: ReturnType<typeof useQueryClient>, error: unknown): boolean {
@@ -350,7 +350,10 @@ export function useDirectorySearch(query: string, enabled = query.trim().length 
 }
 
 export function isCloudUserReady(status: CloudStatus | undefined): boolean {
-  return status?.cloud.status === "enrolled" && status.cloud.hasUserAccessToken && status.userAuthIssue == null && status.tokenIssue !== "expired";
+  const cloudStatus = status?.cloud.status;
+  const cloudReady = cloudStatus === "authenticated" || cloudStatus === "enrolled";
+  const hasUserToken = status?.cloud.hasUserAccessToken === true || status?.canRecoverUserToken === true;
+  return Boolean(cloudReady && hasUserToken && status?.userAuthIssue == null && status?.tokenIssue !== "expired");
 }
 
 export function useContacts(enabled = true) {

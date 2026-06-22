@@ -41,6 +41,7 @@ export const api = {
     };
   }>("/local-ui-session"),
   cloudStatus: cloudAuthApi.cloudStatus,
+  refreshCloudSession: cloudAuthApi.refreshCloudSession,
   signup: cloudAuthApi.signup,
   login: cloudAuthApi.login,
   logout: cloudAuthApi.logout,
@@ -128,7 +129,14 @@ export const api = {
   voiceStatus: () => localAgentClient.get<Record<string, unknown>>("/voice/status"),
   voiceCommands: (limit = 50, offset = 0) => localAgentClient.get<VoiceCommandListResult>(`/voice/commands?limit=${limit}&offset=${offset}`),
   voiceCommand: (id: string) => localAgentClient.get<{ command: VoiceCommandRecord }>(`/voice/commands/${encodeURIComponent(id)}`),
-  createVoiceCommand: (input: { transcript: string; source: string; locale?: string; input_mode?: "typed" | "speech"; sttConfidence?: number }) =>
+  transcribeVoiceAudio: async (audio: Blob, options: { locale?: string; source?: "voice-launcher" | "quickvoice" | "chat-composer" } = {}) =>
+    localAgentClient.post<{ confidence?: number; provider: string; transcript: string }>("/voice/transcribe", {
+      audioBase64: await blobToBase64(audio),
+      locale: options.locale,
+      mimeType: audio.type || "application/octet-stream",
+      source: options.source ?? "chat-composer"
+    }),
+  createVoiceCommand: (input: { transcript: string; source: string; locale?: string; input_mode?: "typed" | "speech"; stt?: { provider?: string; confidence?: number }; sttConfidence?: number }) =>
     localAgentClient.post<{ command: VoiceCommandRecord }>(`/voice/commands`, input),
   confirmVoiceCommand: (id: string, input: { idempotency_key?: string } = {}) =>
     localAgentClient.post<{ command: VoiceCommandRecord }>(`/voice/commands/${encodeURIComponent(id)}/confirm`, input),
@@ -212,6 +220,17 @@ export function mapApproval(row: Record<string, unknown>): FileCandidateApproval
     feedback_text: feedbackText ? String(feedbackText) : null,
     expires_at: String(expiresAt)
   };
+}
+
+async function blobToBase64(blob: Blob): Promise<string> {
+  const buffer = await blob.arrayBuffer();
+  let binary = "";
+  const bytes = new Uint8Array(buffer);
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+  }
+  return btoa(binary);
 }
 
 export {

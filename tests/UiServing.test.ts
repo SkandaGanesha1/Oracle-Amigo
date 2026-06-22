@@ -17,6 +17,7 @@ describe.skipIf(!hasStaticUiAssets)("Static UI serving", () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.headers["content-type"]).toContain("text/html");
+    expect(response.headers["cache-control"]).toBe("no-cache");
     expect(response.body).toContain("/assets/");
 
     await server.close();
@@ -38,9 +39,11 @@ describe.skipIf(!hasStaticUiAssets)("Static UI serving", () => {
 
     expect(styles.statusCode).toBe(200);
     expect(styles.headers["content-type"]).toContain("text/css");
+    expect(styles.headers["cache-control"]).toBe("public, max-age=31536000, immutable");
     expect(styles.body.trim().length).toBeGreaterThan(0);
     expect(app.statusCode).toBe(200);
     expect(app.headers["content-type"]).toMatch(/javascript/);
+    expect(app.headers["cache-control"]).toBe("public, max-age=31536000, immutable");
     expect(app.body.trim().length).toBeGreaterThan(0);
 
     await server.close();

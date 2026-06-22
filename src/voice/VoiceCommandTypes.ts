@@ -31,7 +31,7 @@ export const VoiceCommandStatusSchema = z.enum([
 
 export const VoiceCommandRequestSchema = z.object({
   transcript: z.string().trim().min(1).max(2000),
-  source: z.enum(["voice-launcher", "quickvoice"]).default("voice-launcher"),
+  source: z.enum(["voice-launcher", "quickvoice", "chat-composer"]).default("voice-launcher"),
   mode: z.enum(["preview_then_execute", "auto_execute"]).default("preview_then_execute"),
   locale: z.string().trim().max(40).optional(),
   input_mode: z.enum(["speech", "typed"]).optional(),
@@ -46,7 +46,7 @@ export const VoiceTranscribeRequestSchema = z.object({
   audioBase64: z.string().trim().min(1).max(8_000_000),
   locale: z.string().trim().max(40).optional(),
   mimeType: z.string().trim().min(1).max(120),
-  source: z.enum(["voice-launcher", "quickvoice"]).default("voice-launcher")
+  source: z.enum(["voice-launcher", "quickvoice", "chat-composer"]).default("voice-launcher")
 });
 
 export const VoiceCommandParseResultSchema = z.object({

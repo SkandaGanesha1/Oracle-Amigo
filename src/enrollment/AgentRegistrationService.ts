@@ -1,8 +1,8 @@
 import { platform, release } from "node:os";
-import { AuthClient } from "../cloud/AuthClient.js";
 import { EnrollmentClient, type EnrollRequest } from "../cloud/EnrollmentClient.js";
 import { ControlPlaneClient } from "../cloud/ControlPlaneClient.js";
 import { LocalCloudIdentityStore, defaultProfileId } from "../cloud/LocalCloudIdentityStore.js";
+import { UserTokenManager } from "../cloud/UserTokenManager.js";
 import { buildV1AgentCard } from "../protocol/a2a-v1/AgentCardV1.js";
 import { generateOrLoadIdentity } from "../security/DeviceIdentity.js";
 import { resolveDbPath } from "../db/connection.js";
@@ -23,21 +23,12 @@ export class AgentRegistrationService {
   async enroll(opts: AgentRegistrationOptions = {}) {
     const profileId = opts.profileId ?? defaultProfileId();
     const identity = this.store.getOrCreate(profileId);
-    if (!identity.userAccessToken) {
+    if (!identity.userAccessToken && !identity.userRefreshToken && !identity.refreshToken) {
       throw new Error("Login or signup is required before enrollment");
     }
-    let userAccessToken = identity.userAccessToken;
-    const userRefreshToken = identity.userRefreshToken ?? identity.refreshToken;
-    if (userRefreshToken) {
-      const bundle = await new AuthClient(new ControlPlaneClient(identity.controlPlaneUrl)).refresh(userRefreshToken);
-      this.store.save(profileId, {
-        controlPlaneUrl: identity.controlPlaneUrl,
-        userAccessToken: bundle.access_token,
-        refreshToken: bundle.refresh_token,
-        userRefreshToken: bundle.refresh_token,
-        status: identity.status === "disconnected" ? "authenticated" : identity.status
-      });
-      userAccessToken = bundle.access_token;
+    const userAccessToken = await new UserTokenManager(this.store).getFreshUserAccessToken(profileId);
+    if (!userAccessToken) {
+      throw new Error("Login or signup is required before enrollment");
     }
     const localIdentity = generateOrLoadIdentity(identity.displayName ?? "Local User", resolveDbPath());
     const port = process.env.AGENTIC_AGENT_PORT ?? process.env.SANDBOX_PORT ?? "3399";

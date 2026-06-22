@@ -458,10 +458,12 @@ export class ChatRepository {
   }
 
   updateReadState(conversationId: string, lastReadMessageId: string): ConversationReadState | null {
+    const conversation = this.getConversation(conversationId);
+    if (!conversation) return null;
     const marker = this.getMessage(lastReadMessageId);
     if (!marker || marker.conversation_id !== conversationId) return null;
 
-    const unread = this.countMessagesAfter(conversationId, marker.created_at, marker.id);
+    const unread = this.countMessagesAfter(conversation, marker.created_at, marker.id);
     const now = new Date().toISOString();
     this.db.prepare(`
       UPDATE conversations
@@ -725,13 +727,23 @@ export class ChatRepository {
     `).run(conversationId, userId, agentInstanceId, role, new Date().toISOString());
   }
 
-  private countMessagesAfter(conversationId: string, createdAt: string, messageId: string): number {
+  private countMessagesAfter(conversation: ChatConversationRecord, createdAt: string, messageId: string): number {
     const row = this.db.prepare(`
       SELECT COUNT(*) AS count
       FROM chat_messages
       WHERE conversation_id = ?
         AND (created_at > ? OR (created_at = ? AND id > ?))
-    `).get(conversationId, createdAt, createdAt, messageId) as { count: number } | undefined;
+        AND ${unreadMessagePredicateSql()}
+    `).get(
+      conversation.id,
+      createdAt,
+      createdAt,
+      messageId,
+      conversation.local_user_id,
+      conversation.local_user_id,
+      conversation.local_agent_instance_id,
+      conversation.local_agent_instance_id
+    ) as { count: number } | undefined;
     return Number(row?.count ?? 0);
   }
 
@@ -743,11 +755,21 @@ export class ChatRepository {
     if (conversation.last_read_message_id) {
       const marker = this.getMessage(conversation.last_read_message_id);
       unread = marker && marker.conversation_id === conversationId
-        ? this.countMessagesAfter(conversationId, marker.created_at, marker.id)
+        ? this.countMessagesAfter(conversation, marker.created_at, marker.id)
         : 0;
     } else {
-      const row = this.db.prepare("SELECT COUNT(*) AS count FROM chat_messages WHERE conversation_id = ?")
-        .get(conversationId) as { count: number } | undefined;
+      const row = this.db.prepare(`
+        SELECT COUNT(*) AS count
+        FROM chat_messages
+        WHERE conversation_id = ?
+          AND ${unreadMessagePredicateSql()}
+      `).get(
+        conversationId,
+        conversation.local_user_id,
+        conversation.local_user_id,
+        conversation.local_agent_instance_id,
+        conversation.local_agent_instance_id
+      ) as { count: number } | undefined;
       unread = Number(row?.count ?? 0);
     }
 
@@ -817,6 +839,23 @@ function parseJson(value: unknown): Record<string, unknown> {
   } catch {
     return {};
   }
+}
+
+function unreadMessagePredicateSql(): string {
+  return `(
+    message_type = 'approval'
+    OR (
+      message_type IN ('human', 'file_request', 'transfer', 'receipt')
+      AND NOT (
+        (sender_user_id IS NOT NULL AND ? IS NOT NULL AND sender_user_id = ?)
+        OR (sender_agent_instance_id IS NOT NULL AND ? IS NOT NULL AND sender_agent_instance_id = ?)
+      )
+    )
+    OR (
+      message_type = 'system_event'
+      AND json_extract(payload_json, '$.unread') = 1
+    )
+  )`;
 }
 
 function normalizeMode(value: string): ChatMode {

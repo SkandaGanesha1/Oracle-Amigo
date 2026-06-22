@@ -8,19 +8,21 @@ interface UnreadDividerProps {
 
 export function UnreadDivider({ label = "New messages", count, onJumpToLatest }: UnreadDividerProps) {
   return (
-    <div className="group flex items-center gap-3 px-4 py-1.5" role="separator" aria-label={label}>
-      <div className="flex-1 border-t border-oa-blue/40" />
-      <div className="flex items-center gap-2">
-        <span className="shrink-0 text-[11px] font-semibold uppercase tracking-wider text-oa-blue">
-          {label}
-        </span>
-        {count !== undefined && count > 0 && (
-          <span className="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-oa-blue/20 px-1 text-[9px] font-medium text-oa-blue">
-            {count}
+    <div className="group flex items-center gap-3 px-4 py-1.5">
+      <div className="flex flex-1 items-center gap-3" role="separator" aria-label={label}>
+        <div className="flex-1 border-t border-oa-blue/40" />
+        <div className="flex items-center gap-2">
+          <span className="shrink-0 text-[11px] font-semibold uppercase tracking-wider text-oa-blue">
+            {label}
           </span>
-        )}
+          {count !== undefined && count > 0 && (
+            <span className="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-oa-blue/20 px-1 text-[9px] font-medium text-oa-blue">
+              {count}
+            </span>
+          )}
+        </div>
+        <div className="flex-1 border-t border-oa-blue/40" />
       </div>
-      <div className="flex-1 border-t border-oa-blue/40" />
       {onJumpToLatest && (
         <button
           type="button"

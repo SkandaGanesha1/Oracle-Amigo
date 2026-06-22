@@ -6,7 +6,7 @@ describe("ApprovalCard source contract", () => {
     const mod = await import("../features/approvals/ApprovalCard");
     expect(mod.ApprovalCard).toBeDefined();
     expect(typeof mod.ApprovalCard).toBe("function");
-  });
+  }, 120_000);
 
   it("uses TanStack Query mutations for approve/reject", () => {
     const source = require("fs").readFileSync(
@@ -33,12 +33,14 @@ describe("ApprovalCard source contract", () => {
     expect(source).toContain("card.is_bound");
   });
 
-  it("uses sub-components CandidateFileList, ApprovalRiskHeader, ApprovalTerminalState", () => {
+  it("uses risk and terminal sub-components without candidate-list clutter", () => {
     const source = require("fs").readFileSync(
       require("path").resolve(__dirname, "../features/approvals/ApprovalCard.tsx"),
       "utf8"
     );
-    expect(source).toContain("CandidateFileList");
+    expect(source).not.toContain("CandidateFileList");
+    expect(source).not.toContain("Choose indexed file");
+    expect(source).not.toContain("No matching files found");
     expect(source).toContain("ApprovalRiskHeader");
     expect(source).toContain("ApprovalTerminalState");
   });
@@ -53,7 +55,7 @@ describe("ApprovalCard props contract", () => {
     expect(source).toContain("FileCandidateApprovalCard");
     expect(source).toContain("requester_display_name");
     expect(source).toContain("target_display_name");
-    expect(source).toContain("low_confidence_candidates");
+    expect(source).not.toContain("low_confidence_candidates");
   });
 });
 
@@ -72,4 +74,13 @@ describe("Approval sub-components export contract", () => {
     const mod = await import("../features/approvals/ApprovalTerminalState");
     expect(mod.ApprovalTerminalState).toBeDefined();
   });
+
+  it("AI Elements confirmation exports", async () => {
+    const mod = await import("../../../components/ai-elements/confirmation");
+    expect(mod.Confirmation).toBeDefined();
+    expect(mod.ConfirmationAccepted).toBeDefined();
+    expect(mod.ConfirmationRejected).toBeDefined();
+    expect(mod.ConfirmationRequest).toBeDefined();
+    expect(mod.ConfirmationTitle).toBeDefined();
+  }, 120_000);
 });

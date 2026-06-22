@@ -61,6 +61,8 @@ import { UniversalSearchService } from "./search/UniversalSearchService.js";
 import { deleteAgent, getAgent, listAgents, setTrustLevel, upsertAgent, type TrustLevel } from "./registry/AgentRegistry.js";
 import { discoverAndRegister, refreshAgent } from "./registry/AgentDiscovery.js";
 import { listStoredFiles, getStoredFile } from "./storage/AgenticStorage.js";
+import { FilePreviewService, getPreviewThumbnailPath } from "./files/FilePreviewService.js";
+import { verifyFileRoute } from "./files/FileUrlSigner.js";
 import { MissionThreadService } from "./workflow/MissionThreadService.js";
 import { createTask as wfCreateTask, transition as wfTransition, listTasks as wfListTasks, getTask as wfGetTask } from "./workflow/TaskWorkflow.js";
 import { getDb, resolveDbPath } from "./db/connection.js";
@@ -70,6 +72,8 @@ import { DirectoryClient, type CloudAgentInstance, type CloudAgentInstanceDirect
 import { RelayClient } from "./cloud/RelayClient.js";
 import { normalizeRelayDeliveryStatus } from "./cloud/RelayDeliveryStatus.js";
 import { LocalCloudIdentityStore, defaultControlPlaneUrl, defaultProfileId, type LocalCloudIdentity } from "./cloud/LocalCloudIdentityStore.js";
+import { isJwtExpiringSoon } from "./cloud/JwtExpiry.js";
+import { UserTokenManager } from "./cloud/UserTokenManager.js";
 import { DeviceEnrollmentService } from "./enrollment/DeviceEnrollmentService.js";
 import { AgentRegistrationService } from "./enrollment/AgentRegistrationService.js";
 import { HeartbeatService } from "./runtime/HeartbeatService.js";
@@ -78,7 +82,9 @@ import { RemoteTaskDispatcher } from "./runtime/RemoteTaskDispatcher.js";
 import { PeerRoutingService } from "./runtime/PeerRoutingService.js";
 import { ApprovalTransferOrchestrator } from "./runtime/ApprovalTransferOrchestrator.js";
 import { resolveFileRequestCandidates, toApprovalCandidatePayload } from "./runtime/FileRequestCandidateResolver.js";
-import { getDeviceTokenRecoveryStatus, isExpiredJwt, structuredEnrollmentError, withRecoveredDeviceToken } from "./runtime/CloudTokenRecovery.js";
+
+const expiredUserAuthProfiles = new Set<string>();
+import { getDeviceTokenRecoveryStatus, structuredEnrollmentError, withRecoveredDeviceToken } from "./runtime/CloudTokenRecovery.js";
 import { ChatRepository, type ChatConversationRecord, type ChatMessageRecord, type ChatMessageReaction, type ChatRepositoryEvent, type ConversationReadState, type DeliveryStatus, type RelayDeliveryReceipt } from "./chat/ChatRepository.js";
 import { ConversationRepairService } from "./chat/ConversationRepairService.js";
 import { VoiceCommandService } from "./voice/VoiceCommandService.js";
@@ -133,6 +139,16 @@ const ChatReactionParamsSchema = z.object({
   conversationId: z.string().trim().min(1).max(200),
   messageId: z.string().trim().min(1).max(200),
   emoji: z.string().trim().min(1).max(32).refine((value) => !/[\u0000-\u001F\u007F]/u.test(value), "Invalid emoji")
+});
+
+const FilePreviewVariantSchema = z.object({
+  variant: z.enum(["360", "720"]).default("360")
+});
+
+const SignedFileQuerySchema = z.object({
+  variant: z.enum(["360", "720"]).optional(),
+  expires: z.coerce.number().int(),
+  sig: z.string().trim().min(1)
 });
 
 const ThreadReplySchema = z.object({
@@ -444,6 +460,8 @@ export function buildServer(
   });
   const requestStartTimes = new WeakMap<object, number>();
   const publicDir = resolve(process.cwd(), "public");
+  const localUiShellCacheControl = "no-cache";
+  const localUiAssetCacheControl = "public, max-age=31536000, immutable";
   const agentRuns = new AgentRunService(tool, fileSearch, reasoner);
   const chatRunSubscriptions = new Map<string, () => void>();
   const protocol = new PersonalAgentProtocol();
@@ -455,10 +473,12 @@ export function buildServer(
   const secretPolicy = new SecretPolicy();
   const cloudStore = new LocalCloudIdentityStore();
   const deviceEnrollment = new DeviceEnrollmentService(cloudStore);
+  const userTokenManager = new UserTokenManager(cloudStore);
   const agentRegistration = new AgentRegistrationService(cloudStore);
   const chatRepo = new ChatRepository(getDb());
   const conversationRepair = new ConversationRepairService(chatRepo);
   const approvalTransfers = new ApprovalTransferOrchestrator(getDb(), cloudStore, defaultProfileId(), chatRepo);
+  const filePreviewService = new FilePreviewService(getDb(), undefined, chatRepo);
   const universalSearch = new UniversalSearchService(getDb(), (value) => redactLocalPathText(secretPolicy.redactText(value)));
   const missionThreads = new MissionThreadService(getDb());
   const redactionEngine = new RedactionEngine(getDb());
@@ -525,6 +545,11 @@ export function buildServer(
     timestamp: new Date().toISOString()
   });
 
+  chatRepo.subscribe((event) => {
+    if (!event.message || (event.operation !== "message_created" && event.operation !== "message_updated")) return;
+    filePreviewService.enqueueMessageAttachments(event.message);
+  });
+
   // Eagerly init identity with resolved db path so handlers don't re-read process.env
   const dbPath = resolveDbPath();
   const identity = generateOrLoadIdentity("Local User", dbPath);
@@ -541,10 +566,7 @@ export function buildServer(
     resolveUser: async (query) => {
       const cloud = cloudStore.get();
       if (!cloud?.controlPlaneUrl) return null;
-      let token = cloud.userAccessToken;
-      if (cloud.refreshToken) {
-        token = await deviceEnrollment.refreshUserAccessToken().catch(() => token ?? null);
-      }
+      const token = await userTokenManager.getFreshUserAccessToken(cloud.profileId).catch(() => cloud.userAccessToken);
       if (!token) return null;
       const directory = new DirectoryClient(new ControlPlaneClient(cloud.controlPlaneUrl));
       const usersResponse = await directory.searchUsers(query, token);
@@ -773,25 +795,27 @@ export function buildServer(
       });
       return;
     }
-    logger.error("request failed", { error: message });
+    logger.error("request failed", { requestId: _request.id, method: _request.method, url: _request.url, error: message });
     reply.status(500).send({ error: "Internal server error" });
   });
 
   server.addHook("onRequest", async (request, reply) => {
     requestStartTimes.set(request, Date.now());
+    reply.header("x-request-id", request.id);
     const origin = request.headers.origin;
     if (isAllowedLocalAppOrigin(origin)) {
       reply.header("Access-Control-Allow-Origin", origin);
       reply.header("Vary", "Origin");
       reply.header("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
       reply.header("Access-Control-Allow-Headers", "content-type,authorization,x-local-agent-token");
+      reply.header("Access-Control-Expose-Headers", "x-request-id");
       reply.header("Access-Control-Allow-Credentials", "true");
       if (request.method === "OPTIONS") {
         reply.status(204).send();
         return;
       }
     }
-    logger.info("request started", { method: request.method, url: request.url });
+    logger.info("request started", { requestId: request.id, method: request.method, url: request.url });
   });
 
   server.addHook("onResponse", async (request, reply) => {
@@ -799,6 +823,7 @@ export function buildServer(
     logger.info("request completed", {
       method: request.method,
       url: request.url,
+      requestId: request.id,
       statusCode: reply.statusCode,
       durationMs: startedAt ? Date.now() - startedAt : undefined
     });
@@ -827,7 +852,7 @@ export function buildServer(
 
   server.get("/local-ui-session", async (request, reply) => {
     const wasValid = hasValidLocalUiSession(request);
-    return withLocalUiAppShell(reply).send({
+    return withLocalUiAppShell(request, reply).send({
       ok: true,
       localUiSession: {
         enabled: true,
@@ -838,17 +863,19 @@ export function buildServer(
     });
   });
 
-  server.get("/manifest.webmanifest", async () => ({
-    name: "Oracle Amigo",
-    short_name: "Amigo",
-    description: "Agentic messaging, approvals, vault, policy, and mission control",
-    start_url: "/inbox",
-    scope: "/",
-    display: "standalone",
-    background_color: "#05070d",
-    theme_color: "#7c3aed",
-    icons: []
-  }));
+  server.get("/manifest.webmanifest", async (_request, reply) =>
+    reply.header("Content-Type", "application/manifest+json; charset=utf-8").send(JSON.stringify({
+      name: "Oracle Amigo",
+      short_name: "Amigo",
+      description: "Agentic messaging, approvals, vault, policy, and mission control",
+      start_url: "/inbox",
+      scope: "/",
+      display: "standalone",
+      background_color: "#05070d",
+      theme_color: "#7c3aed",
+      icons: []
+    }))
+  );
 
   server.get("/profile", localOnly, async () => {
     const identity = protocol.createLocalIdentity();
@@ -1255,9 +1282,9 @@ export function buildServer(
     };
   });
 
-  server.get("/cloud/status", async () => {
+  const getCloudStatusPayload = async () => {
     let cloud = cloudStore.getOrCreate();
-    const userAuth = await resolveUserAuthStatus(cloudStore, deviceEnrollment, cloud);
+    const userAuth = await resolveUserAuthStatus(cloudStore, userTokenManager, cloud);
     cloud = userAuth.identity;
     const configuredControlPlaneUrl = defaultControlPlaneUrl();
     const controlPlane = await inspectControlPlaneConnection(cloud.controlPlaneUrl, configuredControlPlaneUrl);
@@ -1279,51 +1306,55 @@ export function buildServer(
         orgSlug: defaultOrgSlug()
       }
     };
+  };
+
+  server.get("/cloud/status", async () => {
+    return getCloudStatusPayload();
+  });
+
+  server.post("/cloud/session/refresh", async () => {
+    const identity = cloudStore.get();
+    if (identity) {
+      await userTokenManager.getFreshUserAccessToken(identity.profileId).catch(() => null);
+    }
+    return getCloudStatusPayload();
   });
 
   server.get("/cloud/me", localOnly, async (request, reply) => {
     const cloud = requireCloudIdentity(cloudStore.get(), reply);
     if (!cloud) return;
-    const token = await requireFreshUserAccessToken(deviceEnrollment, reply);
-    if (!token) return;
     const { AuthClient } = await import("./cloud/AuthClient.js");
-    return runUserCloudRequest(reply, cloudStore, cloud, () =>
-      new AuthClient(new ControlPlaneClient(cloud.controlPlaneUrl)).me(token)
+    return runUserCloudRequest(reply, cloudStore, userTokenManager, cloud, (token, currentCloud) =>
+      new AuthClient(new ControlPlaneClient(currentCloud.controlPlaneUrl)).me(token)
     );
   });
 
   server.get("/cloud/directory/users", localOnly, async (request, reply) => {
     const cloud = requireCloudIdentity(cloudStore.get(), reply);
     if (!cloud) return;
-    const token = await requireFreshUserAccessToken(deviceEnrollment, reply);
-    if (!token) return;
     const q = ((request.query as { q?: string })?.q ?? "").trim();
-    return runUserCloudRequest(reply, cloudStore, cloud, () =>
-      new DirectoryClient(new ControlPlaneClient(cloud.controlPlaneUrl)).searchUsers(q, token)
+    return runUserCloudRequest(reply, cloudStore, userTokenManager, cloud, (token, currentCloud) =>
+      new DirectoryClient(new ControlPlaneClient(currentCloud.controlPlaneUrl)).searchUsers(q, token)
     );
   });
 
   server.get("/cloud/directory/users/:user_id/agents", localOnly, async (request, reply) => {
     const cloud = requireCloudIdentity(cloudStore.get(), reply);
     if (!cloud) return;
-    const token = await requireFreshUserAccessToken(deviceEnrollment, reply);
-    if (!token) return;
     const { user_id } = request.params as { user_id: string };
-    return runUserCloudRequest(reply, cloudStore, cloud, () =>
-      new DirectoryClient(new ControlPlaneClient(cloud.controlPlaneUrl)).getUserAgents(user_id, token)
+    return runUserCloudRequest(reply, cloudStore, userTokenManager, cloud, (token, currentCloud) =>
+      new DirectoryClient(new ControlPlaneClient(currentCloud.controlPlaneUrl)).getUserAgents(user_id, token)
     );
   });
 
   server.get("/cloud/contacts", localOnly, async (_request, reply) => {
     const cloud = requireCloudIdentity(cloudStore.get(), reply);
     if (!cloud) return;
-    const token = await requireFreshUserAccessToken(deviceEnrollment, reply);
-    if (!token) return;
-    const client = new DirectoryClient(new ControlPlaneClient(cloud.controlPlaneUrl));
-    return runUserCloudRequest(reply, cloudStore, cloud, async () => {
+    return runUserCloudRequest(reply, cloudStore, userTokenManager, cloud, async (token, currentCloud) => {
+      const client = new DirectoryClient(new ControlPlaneClient(currentCloud.controlPlaneUrl));
       const result = await client.listContacts(token);
       const contacts = await Promise.all((result.contacts ?? []).map(async (contact) => {
-        const peerUserId = contact.requester_user_id === cloud.userId ? contact.target_user_id : contact.requester_user_id;
+        const peerUserId = contact.requester_user_id === currentCloud.userId ? contact.target_user_id : contact.requester_user_id;
         try {
           const peer = await client.getUserAgents(peerUserId, token);
           if (contact.requester_user_id === peerUserId) {
@@ -1341,7 +1372,7 @@ export function buildServer(
   server.get("/agent-profiles", localOnly, async (_request, reply) => {
     const cloud = requireCloudIdentity(cloudStore.get(), reply);
     if (!cloud) return;
-    const auth = await createDirectoryAuthContext(cloud, deviceEnrollment);
+    const auth = await createDirectoryAuthContext(cloud, userTokenManager);
     const skills = await skillRegistry.ensureFresh();
     const registryAgents = listAgents();
     const conversations = chatRepo.listConversations();
@@ -1403,7 +1434,7 @@ export function buildServer(
 
     for (const conversation of conversations) {
       if (conversation.mode !== "cloud_relay") continue;
-      const peer = await resolveRelayPeerInfo(conversation, cloud, deviceEnrollment);
+      const peer = await resolveRelayPeerInfo(conversation, cloud, userTokenManager);
       const id = peer?.userId ?? peer?.agentInstanceId ?? conversation.peer_user_id ?? conversation.peer_agent_instance_id;
       if (!id || profiles.has(id)) continue;
       const registry = findRegistryForAgent(registryAgents, "", peer?.agentInstanceId ?? conversation.peer_agent_instance_id ?? "");
@@ -1457,22 +1488,18 @@ export function buildServer(
   server.post("/cloud/contacts/request", localOnly, async (request, reply) => {
     const cloud = requireCloudIdentity(cloudStore.get(), reply);
     if (!cloud) return;
-    const token = await requireFreshUserAccessToken(deviceEnrollment, reply);
-    if (!token) return;
     const body = parseBody(ContactRequestSchema, request.body);
-    return runUserCloudRequest(reply, cloudStore, cloud, () =>
-      new DirectoryClient(new ControlPlaneClient(cloud.controlPlaneUrl)).requestContact(body.target_user_id, token)
+    return runUserCloudRequest(reply, cloudStore, userTokenManager, cloud, (token, currentCloud) =>
+      new DirectoryClient(new ControlPlaneClient(currentCloud.controlPlaneUrl)).requestContact(body.target_user_id, token)
     );
   });
 
   server.post("/cloud/contacts/:contact_id/accept", localOnly, async (request, reply) => {
     const cloud = requireCloudIdentity(cloudStore.get(), reply);
     if (!cloud) return;
-    const token = await requireFreshUserAccessToken(deviceEnrollment, reply);
-    if (!token) return;
     const { contact_id } = request.params as { contact_id: string };
-    return runUserCloudRequest(reply, cloudStore, cloud, () =>
-      new DirectoryClient(new ControlPlaneClient(cloud.controlPlaneUrl)).acceptContact(contact_id, token)
+    return runUserCloudRequest(reply, cloudStore, userTokenManager, cloud, (token, currentCloud) =>
+      new DirectoryClient(new ControlPlaneClient(currentCloud.controlPlaneUrl)).acceptContact(contact_id, token)
     );
   });
 
@@ -2938,7 +2965,7 @@ export function buildServer(
       payload: { severity: "success" },
       deliveryStatus: "delivered"
     });
-    const peer = await resolveRelayPeerInfo(conversation, cloud, deviceEnrollment);
+    const peer = await resolveRelayPeerInfo(conversation, cloud, userTokenManager);
     return { conversation: conversationToUi(conversation, chatRepo.getMessages(conversation.id), peer, cloud?.agentInstanceId ?? localIdentity.agentId) };
   });
 
@@ -2955,7 +2982,7 @@ export function buildServer(
     for (const conversation of conversations) {
       await refreshRelayDeliveryStatuses(chatRepo.getMessages(conversation.id), cloudStore, defaultProfileId());
     }
-    const peerInfo = await resolveRelayPeerInfoMap(conversations, cloud, deviceEnrollment);
+    const peerInfo = await resolveRelayPeerInfoMap(conversations, cloud, userTokenManager);
     return {
       conversations: conversations.map((conversation) =>
         conversationToUi(
@@ -2993,7 +3020,7 @@ export function buildServer(
     const refreshed = await refreshRelayDeliveryStatuses(sourceMessages, cloudStore, defaultProfileId());
     const allMessages = chatRepo.getMessages(canonicalId);
     const messages = refreshed.map((message) => messageToTimeline(message, localAgentInstanceId, allMessages));
-    const peer = await resolveRelayPeerInfo(conversation, cloud, deviceEnrollment);
+    const peer = await resolveRelayPeerInfo(conversation, cloud, userTokenManager);
     return {
       conversationId: canonicalId,
       conversation: conversationToUi(conversation, allMessages, peer, localAgentInstanceId),
@@ -3871,6 +3898,75 @@ export function buildServer(
     return { files };
   });
 
+  server.get("/storage/files/:id/preview", localOnly, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const stored = getStoredFile(id);
+    if (!stored) return reply.status(404).send({ error: "File not found" });
+    const preview = filePreviewService.ensurePreview(id);
+    return { id, preview: filePreviewService.toMetadata(preview) };
+  });
+
+  server.get("/storage/files/:id/thumbnail-url", localOnly, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const { variant } = parseBody(FilePreviewVariantSchema, request.query ?? {});
+    const stored = getStoredFile(id);
+    if (!stored) return reply.status(404).send({ error: "File not found" });
+    const preview = filePreviewService.ensurePreview(id);
+    const metadata = filePreviewService.toMetadata(preview);
+    return {
+      id,
+      variant,
+      preview: metadata,
+      url: metadata.status === "ready" ? filePreviewService.signedThumbnailUrl(id, variant) : null
+    };
+  });
+
+  server.get("/storage/files/:id/viewer-url", localOnly, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const stored = getStoredFile(id);
+    if (!stored) return reply.status(404).send({ error: "File not found" });
+    const preview = filePreviewService.ensurePreview(id);
+    const metadata = filePreviewService.toMetadata(preview);
+    if (metadata.status === "blocked") return reply.status(403).send({ error: "File blocked by preview validation", preview: metadata });
+    return {
+      id,
+      preview: metadata,
+      url: metadata.status === "ready" ? filePreviewService.signedViewerUrl(id) : null
+    };
+  });
+
+  server.get("/storage/files/:id/thumbnail", localOnly, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const query = parseBody(SignedFileQuerySchema, request.query ?? {});
+    const variant = query.variant ?? "360";
+    if (!verifyFileRoute({ fileId: id, kind: "thumbnail", variant, expires: query.expires }, query.sig)) {
+      return reply.status(403).send({ error: "Invalid or expired file preview URL" });
+    }
+    const preview = filePreviewService.ensurePreview(id);
+    if (!preview || preview.status !== "ready") return reply.status(409).send({ error: "PDF thumbnail is not ready", preview: filePreviewService.toMetadata(preview) });
+    const path = getPreviewThumbnailPath(preview, variant);
+    if (!path || !existsSync(path)) return reply.status(404).send({ error: "PDF thumbnail not found" });
+    return reply.type("image/webp").header("Cache-Control", "private, max-age=60").send(createReadStream(path));
+  });
+
+  server.get("/storage/files/:id/view", localOnly, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const query = parseBody(SignedFileQuerySchema, request.query ?? {});
+    if (!verifyFileRoute({ fileId: id, kind: "view", expires: query.expires }, query.sig)) {
+      return reply.status(403).send({ error: "Invalid or expired PDF viewer URL" });
+    }
+    const stored = getStoredFile(id);
+    if (!stored) return reply.status(404).send({ error: "File not found" });
+    const preview = filePreviewService.ensurePreview(id);
+    if (preview?.status === "blocked") return reply.status(403).send({ error: "File blocked by preview validation", preview: filePreviewService.toMetadata(preview) });
+    if (!existsSync(stored.storedPath)) return reply.status(404).send({ error: "File not found on disk" });
+    return reply
+      .type("application/pdf")
+      .header("Content-Disposition", `inline; filename="${stored.originalFileName}"`)
+      .header("Cache-Control", "private, max-age=60")
+      .send(createReadStream(stored.storedPath));
+  });
+
   server.get("/storage/files/:id/open", localOnly, async (request, reply) => {
     const { id } = request.params as { id: string };
     const stored = getStoredFile(id);
@@ -4180,12 +4276,15 @@ export function buildServer(
     return reply.send(intent);
   });
 
-  server.get("/", async (_request, reply) => {
+  server.get("/", async (request, reply) => {
     const asset = await tryReadPublicFile(publicDir, "index.html");
     if (!asset.ok) {
       return reply.status(asset.statusCode).send({ error: asset.message });
     }
-    return withLocalUiAppShell(reply).type("text/html; charset=utf-8").send(asset.content);
+    return withLocalUiAppShell(request, reply)
+      .header("Cache-Control", localUiShellCacheControl)
+      .type("text/html; charset=utf-8")
+      .send(asset.content);
   });
 
   server.get("/favicon.ico", async (_request, reply) => reply.status(204).send());
@@ -4197,7 +4296,10 @@ export function buildServer(
     if (!asset.ok) {
       return reply.status(asset.statusCode).send({ error: asset.message });
     }
-    return reply.type(contentType(assetPath)).send(asset.content);
+    return reply
+      .header("Cache-Control", localUiAssetCacheControl)
+      .type(contentType(assetPath))
+      .send(asset.content);
   });
 
   server.get("/sessions", { preHandler: requireLocalApiToken }, async () => ({
@@ -4304,9 +4406,9 @@ export function buildServer(
     return tool.closeSandboxSession({ sessionId });
   });
 
-  server.setNotFoundHandler(async (_request, reply) => {
-    const url = _request.url;
-    const raw = _request.raw.url ?? url;
+  server.setNotFoundHandler(async (request, reply) => {
+    const url = request.url;
+    const raw = request.raw.url ?? url;
     if (raw.includes("..") || raw.includes("%2e") || url.startsWith("/assets/") || url.includes("/src/") || url.match(/\.(ts|tsx|js|map|json|md)$/)) {
       return reply.status(404).send({ error: "Not found" });
     }
@@ -4314,7 +4416,10 @@ export function buildServer(
     if (!asset.ok) {
       return reply.status(asset.statusCode).send({ error: asset.message });
     }
-    return withLocalUiAppShell(reply).type("text/html; charset=utf-8").send(asset.content);
+    return withLocalUiAppShell(request, reply)
+      .header("Cache-Control", localUiShellCacheControl)
+      .type("text/html; charset=utf-8")
+      .send(asset.content);
   });
 
   return server;
@@ -5096,8 +5201,8 @@ function parseBody<T>(schema: z.ZodType<T, z.ZodTypeDef, unknown>, body: unknown
   return schema.parse(body);
 }
 
-function withLocalUiAppShell(reply: FastifyReply): FastifyReply {
-  return setLocalUiSessionCookie(reply).header(LOCAL_UI_RUNTIME_HEADER, LOCAL_UI_RUNTIME_VERSION);
+function withLocalUiAppShell(request: FastifyRequest, reply: FastifyReply): FastifyReply {
+  return setLocalUiSessionCookie(reply, request).header(LOCAL_UI_RUNTIME_HEADER, LOCAL_UI_RUNTIME_VERSION);
 }
 
 function skillPathForId(id: string): string {
@@ -5212,8 +5317,8 @@ function isCloudConnectivityError(error: unknown): boolean {
   const maybeCodedError = error as Error & { code?: unknown };
   const code = typeof maybeCodedError.code === "string" ? maybeCodedError.code : "";
   return (
-    ["ECONNREFUSED", "ETIMEDOUT", "ENOTFOUND", "EAI_AGAIN"].includes(code) ||
-    /Cloud request .* timed out|fetch failed|connect ECONNREFUSED/i.test(error.message)
+    ["ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "ENOTFOUND", "EAI_AGAIN"].includes(code) ||
+    /Cloud request .* timed out|fetch failed|connect ECONNREFUSED|read ECONNRESET|socket hang up/i.test(error.message)
   );
 }
 
@@ -5283,28 +5388,33 @@ type UserAuthIssue = "required" | "expired" | null;
 
 async function resolveUserAuthStatus(
   identityStore: LocalCloudIdentityStore,
-  enrollmentService: DeviceEnrollmentService,
+  tokenManager: UserTokenManager,
   identity: LocalCloudIdentity
 ): Promise<{ identity: LocalCloudIdentity; userAuthIssue: UserAuthIssue; canRecoverUserToken: boolean }> {
-  const canRecoverUserToken = Boolean(identity.userRefreshToken ?? identity.refreshToken);
+  const canRecoverUserToken = Boolean(identity.userRefreshToken || identity.refreshToken);
 
-  if (!identity.userAccessToken) {
-    return { identity, userAuthIssue: "required", canRecoverUserToken };
+  if (!identity.userAccessToken && !canRecoverUserToken) {
+    return {
+      identity,
+      userAuthIssue: expiredUserAuthProfiles.has(identity.profileId) ? "expired" : "required",
+      canRecoverUserToken
+    };
   }
 
-  if (!isExpiredJwt(identity.userAccessToken)) {
+  if (identity.userAccessToken && !isJwtExpiringSoon(identity.userAccessToken)) {
+    expiredUserAuthProfiles.delete(identity.profileId);
     return { identity, userAuthIssue: null, canRecoverUserToken };
   }
 
   if (canRecoverUserToken) {
     try {
-      const refreshedToken = await enrollmentService.refreshUserAccessToken();
+      const refreshedToken = await tokenManager.getFreshUserAccessToken(identity.profileId);
       const refreshed = identityStore.get(identity.profileId) ?? identity;
-      if (refreshedToken && refreshed.userAccessToken && !isExpiredJwt(refreshed.userAccessToken)) {
+      if (refreshedToken && refreshed.userAccessToken && !isJwtExpiringSoon(refreshed.userAccessToken)) {
         return {
           identity: refreshed,
           userAuthIssue: null,
-          canRecoverUserToken: Boolean(refreshed.userRefreshToken ?? refreshed.refreshToken)
+          canRecoverUserToken: Boolean(refreshed.userRefreshToken)
         };
       }
     } catch {
@@ -5375,31 +5485,6 @@ function requireCloudIdentity(identity: LocalCloudIdentity | null, reply: Fastif
   return identity;
 }
 
-async function requireFreshUserAccessToken(
-  enrollmentService: DeviceEnrollmentService,
-  reply: FastifyReply
-): Promise<string | null> {
-  const identityStore = new LocalCloudIdentityStore();
-  const identity = identityStore.get();
-  if (!identity) {
-    reply.status(401).send({ error: "CLOUD_NOT_CONFIGURED", message: "Cloud login is required" });
-    return null;
-  }
-  if (identity.refreshToken) {
-    try {
-      const refreshed = await enrollmentService.refreshUserAccessToken();
-      if (refreshed) return refreshed;
-    } catch (err) {
-      clearCloudUserTokens(identityStore, identity);
-      sendCloudUserTokenExpired(reply);
-      return null;
-    }
-  }
-  if (identity.userAccessToken) return identity.userAccessToken;
-  reply.status(401).send({ error: "CLOUD_USER_TOKEN_REQUIRED", message: "Cloud login is required" });
-  return null;
-}
-
 function clearCloudUserTokens(identityStore: LocalCloudIdentityStore, identity: LocalCloudIdentity): void {
   identityStore.save(identity.profileId, {
     userAccessToken: null,
@@ -5407,6 +5492,7 @@ function clearCloudUserTokens(identityStore: LocalCloudIdentityStore, identity: 
     userRefreshToken: null,
     status: identity.status
   });
+  expiredUserAuthProfiles.add(identity.profileId);
 }
 
 function sendCloudUserTokenExpired(reply: FastifyReply): void {
@@ -5419,14 +5505,59 @@ function sendCloudUserTokenExpired(reply: FastifyReply): void {
 async function runUserCloudRequest<T>(
   reply: FastifyReply,
   identityStore: LocalCloudIdentityStore,
+  tokenManager: UserTokenManager,
   identity: LocalCloudIdentity,
-  operation: () => Promise<T>
+  operation: (token: string, identity: LocalCloudIdentity) => Promise<T>
 ): Promise<T | undefined> {
+  let token: string | null = null;
   try {
-    return await operation();
+    token = await tokenManager.getFreshUserAccessToken(identity.profileId);
+  } catch {
+    const latest = identityStore.get(identity.profileId);
+    if (latest?.userAccessToken && !isJwtExpiringSoon(latest.userAccessToken)) {
+      token = latest.userAccessToken;
+    } else {
+      clearCloudUserTokens(identityStore, latest ?? identity);
+      sendCloudUserTokenExpired(reply);
+      return undefined;
+    }
+  }
+
+  if (!token) {
+    if (identity.userAccessToken) {
+      token = identity.userAccessToken;
+    } else {
+      reply.status(401).send({ error: "CLOUD_USER_TOKEN_REQUIRED", message: "Cloud login is required" });
+      return undefined;
+    }
+  }
+
+  try {
+    return await operation(token, identityStore.get(identity.profileId) ?? identity);
   } catch (err) {
     if (err instanceof CloudError && err.statusCode === 401) {
-      clearCloudUserTokens(identityStore, identity);
+      let refreshed: string | null = null;
+      try {
+        refreshed = await tokenManager.forceRefreshUserAccessToken(identity.profileId);
+      } catch {
+        refreshed = null;
+      }
+      if (refreshed) {
+        try {
+          return await operation(refreshed, identityStore.get(identity.profileId) ?? identity);
+        } catch (retryErr) {
+          if (!(retryErr instanceof CloudError && retryErr.statusCode === 401)) throw retryErr;
+        }
+      }
+      const latest = identityStore.get(identity.profileId);
+      if (latest?.userAccessToken && !isJwtExpiringSoon(latest.userAccessToken)) {
+        try {
+          return await operation(latest.userAccessToken, latest);
+        } catch (retryErr) {
+          if (!(retryErr instanceof CloudError && retryErr.statusCode === 401)) throw retryErr;
+        }
+      }
+      clearCloudUserTokens(identityStore, latest ?? identity);
       sendCloudUserTokenExpired(reply);
       return undefined;
     }
@@ -5604,11 +5735,11 @@ interface DirectoryAuthContext {
 async function resolveRelayPeerInfoMap(
   conversations: ChatConversationRecord[],
   cloud: LocalCloudIdentity | null,
-  enrollmentService: DeviceEnrollmentService
+  tokenManager: UserTokenManager
 ): Promise<Map<string, RelayPeerInfo>> {
   const result = new Map<string, RelayPeerInfo>();
   for (const conversation of conversations) {
-    const info = await resolveRelayPeerInfo(conversation, cloud, enrollmentService);
+    const info = await resolveRelayPeerInfo(conversation, cloud, tokenManager);
     if (info) result.set(conversation.id, info);
   }
   return result;
@@ -5617,10 +5748,10 @@ async function resolveRelayPeerInfoMap(
 async function resolveRelayPeerInfo(
   conversation: ChatConversationRecord,
   cloud: LocalCloudIdentity | null,
-  enrollmentService: DeviceEnrollmentService
+  tokenManager: UserTokenManager
 ): Promise<RelayPeerInfo | null> {
   if (conversation.mode !== "cloud_relay" || !cloud?.controlPlaneUrl) return null;
-  const auth = await createDirectoryAuthContext(cloud, enrollmentService);
+  const auth = await createDirectoryAuthContext(cloud, tokenManager);
   if (!auth) return null;
 
   if (conversation.peer_user_id) {
@@ -5655,13 +5786,10 @@ async function resolveRelayPeerInfo(
 
 async function createDirectoryAuthContext(
   cloud: LocalCloudIdentity,
-  enrollmentService: DeviceEnrollmentService
+  tokenManager: UserTokenManager
 ): Promise<DirectoryAuthContext | null> {
   if (!cloud.controlPlaneUrl) return null;
-  let userToken = cloud.userAccessToken;
-  if (cloud.refreshToken) {
-    userToken = await enrollmentService.refreshUserAccessToken().catch(() => userToken ?? null);
-  }
+  const userToken = await tokenManager.getFreshUserAccessToken(cloud.profileId).catch(() => cloud.userAccessToken);
   if (!userToken && !cloud.deviceAccessToken) return null;
   return {
     client: new DirectoryClient(new ControlPlaneClient(cloud.controlPlaneUrl)),

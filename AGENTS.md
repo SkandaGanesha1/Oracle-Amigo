@@ -22,6 +22,10 @@ Admin Portal work is split across `apps/admin-portal/` for the Fastify adapter, 
 
 Use TypeScript ES modules, two-space indentation, and explicit Zod validation at API and configuration boundaries. Prefer descriptive camelCase for variables/functions, PascalCase for React components and classes, and kebab-case for scripts and docs. Keep generated outputs (`public/`, `apps/admin-portal/public/`, `dist/`) out of manual edits.
 
+## Discord Design Reference
+
+When a task explicitly asks for Discord-inspired styling, use `docs/DESIGN-discord.md` as the visual design reference. Treat it as design guidance, not application logic. Follow its core visual tokens: Blurple `#5865f2`, electric green `#35ed7e`, magenta `#ec48bd`, deep indigo `#0a0d3a`, generously rounded cards, bold display typography, and saturated marketing-style layouts. Reserve green for the highest-intent CTA. Do not apply this Discord theme to unrelated product or admin UI unless the user requests it.
+
 ## Testing Guidelines
 
 Vitest is the primary framework. Add or update focused tests for behavior changes, especially command policy, sandboxing, networking, secrets handling, authentication, and admin sessions. Prefer dry-run tests for CI; treat VM-dependent and two-laptop tests as optional integration coverage. Name new tests `FeatureName.test.ts`.

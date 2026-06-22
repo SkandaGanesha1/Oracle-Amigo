@@ -1,8 +1,11 @@
 /// <reference types="vitest/globals" />
 import React from "react";
-import { describe, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { render } from "@testing-library/react";
 import { TransferProgressCard } from "../features/transfers/TransferProgressCard";
+import SocialPostCard, { type SocialPostCardAction } from "../../../components/ui/social-post-card";
+import { TooltipProvider } from "../../../components/ui/tooltip";
+import { UnreadDivider } from "../components/stream-like/UnreadDivider";
 import type { TransferProgressMessage } from "../types";
 
 function makeTransfer(overrides: Partial<TransferProgressMessage> = {}): TransferProgressMessage {
@@ -52,5 +55,42 @@ describe("FileReceiptCard accessibility contract", () => {
     const mod = await import("../features/transfers/FileReceiptCard");
     expect(mod.FileReceiptCard).toBeDefined();
     expect(typeof mod.FileReceiptCard).toBe("function");
+  });
+});
+
+describe("Nested interactive accessibility", () => {
+  it("renders social action tooltips on the real buttons without wrapper buttons", () => {
+    const actions: [SocialPostCardAction, SocialPostCardAction, SocialPostCardAction] = [
+      { key: "send", label: "Send", icon: <span aria-hidden="true">S</span>, onClick: vi.fn(), tone: "primary" as const },
+      { key: "deny", label: "Deny", icon: <span aria-hidden="true">D</span>, onClick: vi.fn(), tone: "danger" as const },
+      { key: "feedback", label: "Feedback", icon: <span aria-hidden="true">F</span>, onClick: vi.fn(), tone: "neutral" as const },
+    ];
+
+    const { container } = render(
+      <TooltipProvider>
+        <SocialPostCard
+          author={{ name: "Remote Agent" }}
+          contentText="Review file transfer."
+          document={{ title: "report.pdf" }}
+          actions={actions}
+        />
+      </TooltipProvider>
+    );
+
+    expect(container.querySelector(".tooltip__trigger[role='button']")).toBeNull();
+    const triggers = Array.from(container.querySelectorAll("[data-slot='tooltip-trigger']"));
+    expect(triggers).toHaveLength(3);
+    expect(triggers.every((trigger) => trigger.tagName === "BUTTON")).toBe(true);
+    expect(triggers.every((trigger) => trigger.querySelector("button") === null)).toBe(true);
+  });
+
+  it("keeps unread divider jump button outside the separator", () => {
+    const { container } = render(<UnreadDivider label="Unread messages" count={3} onJumpToLatest={vi.fn()} />);
+    const separator = container.querySelector("[role='separator']");
+
+    expect(separator).not.toBeNull();
+    expect(separator?.getAttribute("aria-label")).toBe("Unread messages");
+    expect(separator?.querySelector("button,[role='button'],a[href],input,select,textarea")).toBeNull();
+    expect(container.querySelector("button[aria-label='Jump to latest messages']")).not.toBeNull();
   });
 });

@@ -1,13 +1,12 @@
 import { useEffect, useState, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { AlertTriangle, Search, MessageSquareText, ListTodo, RefreshCw } from "lucide-react";
 import { useConversations, useConversationMessages, useCreateThreadReply, useUpdateConversationReadState } from "../../hooks/queries";
 import { useActiveConversationLiveSync } from "../../hooks/useActiveConversationLiveSync";
 import { ApiRequestError } from "../../api/localAgentClient";
 import { api } from "../../api/client";
 import { ConversationHeader } from "./ConversationHeader";
 import { ChatWindow } from "./ChatWindow";
-import { RightInspectorPanel } from "../inspector/RightInspectorPanel";
+import { ChatCanvas, ChatCanvasEmptyState, ChatCanvasErrorState, ChatCanvasLoadingState } from "./ChatCanvas";
 import { ThreadDrawer, type ThreadSubject } from "../../components/stream-like/ThreadDrawer";
 import type { TimelineMessage, FileReceiptMessage } from "../../api/types";
 import { AnimatePresence } from "../../components/primitives/MotionPrimitives";
@@ -38,25 +37,6 @@ function messagePreviewText(message: TimelineMessage): string {
   return messageTitle(message);
 }
 
-function useInspectorState() {
-  const [inspectorOpen, setInspectorOpen] = useState(false);
-
-  const toggleInspector = useCallback(() => {
-    setInspectorOpen((prev) => {
-      const next = !prev;
-      localStorage.setItem("oa-inspector-open", String(next));
-      return next;
-    });
-  }, []);
-
-  const closeInspector = useCallback(() => {
-    setInspectorOpen(false);
-    localStorage.setItem("oa-inspector-open", "false");
-  }, []);
-
-  return { inspectorOpen, toggleInspector, closeInspector };
-}
-
 function conversationLoadErrorCopy(error: unknown): { title: string; message: string } {
   if (error instanceof ApiRequestError) {
     if (error.status === 401) {
@@ -82,55 +62,6 @@ function conversationLoadErrorCopy(error: unknown): { title: string; message: st
   };
 }
 
-function ConversationLoadErrorPanel({
-  error,
-  refreshing,
-  onRetry,
-  onOpenLocalAgent,
-}: {
-  error: unknown;
-  refreshing?: boolean;
-  onRetry: () => void;
-  onOpenLocalAgent: () => void;
-}) {
-  const copy = conversationLoadErrorCopy(error);
-  const isMissing = error instanceof ApiRequestError && error.status === 404;
-
-  return (
-    <div className="flex flex-1 items-center justify-center px-6">
-      <div className="flex max-w-md flex-col items-center gap-4 text-center">
-        <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-oa-surface ring-1 ring-oa-border">
-          <AlertTriangle className="h-7 w-7 text-oa-red" />
-        </div>
-        <div className="space-y-1">
-          <h2 className="text-base font-semibold text-oa-text">{copy.title}</h2>
-          <p className="text-sm leading-6 text-oa-text-muted">{copy.message}</p>
-        </div>
-        <div className="flex flex-wrap justify-center gap-2">
-          <button
-            type="button"
-            onClick={onRetry}
-            disabled={refreshing}
-            className="inline-flex min-h-[40px] items-center gap-2 rounded-lg bg-oa-blue px-3 py-2 text-sm font-medium text-white transition hover:bg-oa-blue/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oa-blue focus-visible:ring-offset-2"
-          >
-            <RefreshCw className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`} />
-            {refreshing ? "Refreshing session" : "Retry"}
-          </button>
-          {isMissing && (
-            <button
-              type="button"
-              onClick={onOpenLocalAgent}
-              className="inline-flex min-h-[40px] items-center rounded-lg border border-oa-border bg-oa-surface px-3 py-2 text-sm font-medium text-oa-text transition hover:bg-oa-surface-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oa-blue focus-visible:ring-offset-2"
-            >
-              Open local agent
-            </button>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 export function MainChatLayout() {
   const { conversationId } = useParams<{ conversationId?: string }>();
   const { data: conversationsData } = useConversations();
@@ -142,7 +73,6 @@ export function MainChatLayout() {
     isLoading,
     refetch: refetchMessages,
   } = messagesQuery;
-  const { inspectorOpen, toggleInspector, closeInspector } = useInspectorState();
   const [threadSubject, setThreadSubject] = useState<ThreadSubject | null>(null);
   const [refreshingSession, setRefreshingSession] = useState(false);
   const navigate = useNavigate();
@@ -223,84 +153,61 @@ export function MainChatLayout() {
     await refetchMessages();
   }, [messagesError, refetchMessages]);
 
+  const errorCopy = messagesIsError ? conversationLoadErrorCopy(messagesError) : null;
+  const isMissingConversation = messagesError instanceof ApiRequestError && messagesError.status === 404;
+  const isEmptyConversation = Boolean(activeConversation && conversationId && !isLoading && !messagesIsError && messages.length === 0);
+  const emptyConversationState = isEmptyConversation && activeConversation ? (
+    <ChatCanvasEmptyState
+      title={activeConversation.title || "Oracle Amigo"}
+      subtitle={`This is the beginning of your conversation with ${activeConversation.title || "this contact"}.`}
+      onSearchDirectory={focusDirectorySearch}
+      onOpenLocalAgent={() => navigate("/chats/local-agent")}
+      onOpenApprovals={() => navigate("/approvals")}
+    />
+  ) : undefined;
+  const header = activeConversation ? (
+    <ConversationHeader conversation={activeConversation} />
+  ) : undefined;
+  const timeline = activeConversation ? (
+    <ChatWindow
+      conversation={activeConversation}
+      messages={messages}
+      loading={isLoading}
+      conversationId={canonicalConversationId ?? conversationId ?? activeConversation.id}
+      readState={readState}
+      pageInfo={messagesData?.pageInfo}
+      onMarkRead={handleMarkRead}
+      emptyState={emptyConversationState}
+    />
+  ) : undefined;
+  const loadingState = conversationId && isLoading && !messagesIsError ? <ChatCanvasLoadingState /> : undefined;
+  const errorState = errorCopy ? (
+    <ChatCanvasErrorState
+      title={errorCopy.title}
+      message={errorCopy.message}
+      refreshing={refreshingSession}
+      onRetry={() => void retryConversationLoad()}
+      onOpenLocalAgent={isMissingConversation ? () => navigate("/chats/local-agent", { replace: true }) : undefined}
+    />
+  ) : undefined;
+  const emptyState = !conversationId ? (
+    <ChatCanvasEmptyState
+      title="Oracle Amigo"
+      subtitle="This is the beginning of your agentic chat canvas. Select a person, open your local agent, or review pending work."
+      onSearchDirectory={focusDirectorySearch}
+      onOpenLocalAgent={() => navigate("/chats/local-agent")}
+      onOpenApprovals={() => navigate("/approvals")}
+    />
+  ) : undefined;
   return (
     <div className="chat-canvas flex h-full w-full">
-      <div className="flex flex-1 flex-col min-w-0">
-        {conversationId && (activeConversation || isLoading || messagesIsError) ? (
-          <>
-            {activeConversation && (
-              <ConversationHeader
-                conversation={activeConversation}
-                onToggleInspector={toggleInspector}
-                inspectorOpen={inspectorOpen}
-              />
-            )}
-            <div className="flex flex-1 overflow-hidden">
-              <div className="flex flex-1 flex-col min-w-0 bg-oa-chat-bg">
-                {activeConversation ? (
-                  <ChatWindow
-                    conversation={activeConversation}
-                    messages={messages}
-                    loading={isLoading}
-                    conversationId={canonicalConversationId ?? conversationId}
-                    readState={readState}
-                    pageInfo={messagesData?.pageInfo}
-                    onMarkRead={handleMarkRead}
-                  />
-                ) : messagesIsError ? (
-                  <ConversationLoadErrorPanel
-                    error={messagesError}
-                    refreshing={refreshingSession}
-                    onRetry={() => void retryConversationLoad()}
-                    onOpenLocalAgent={() => navigate("/chats/local-agent", { replace: true })}
-                  />
-                ) : (
-                  <div className="flex flex-1 items-center justify-center text-sm text-oa-text-muted">Loading conversation...</div>
-                )}
-              </div>
-
-              {inspectorOpen && (
-                <RightInspectorPanel
-                  onClose={closeInspector}
-                  conversationId={activeConversation?.id ?? conversationId}
-                />
-              )}
-            </div>
-          </>
-        ) : (
-          <div className="flex flex-1 items-center justify-center">
-            <div className="flex flex-col items-center gap-5 text-center max-w-sm">
-              <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-oa-surface ring-1 ring-oa-border">
-                <MessageSquareText className="h-8 w-8 text-oa-text-muted" />
-              </div>
-              <div className="flex flex-col gap-1">
-                <h2 className="text-lg font-semibold text-oa-text">Welcome</h2>
-                <p className="text-sm text-oa-text-muted">
-                  Select a person from the left rail or search the directory to start.
-                </p>
-              </div>
-              <div className="flex flex-col gap-2 w-full">
-                <button
-                  type="button"
-                  onClick={focusDirectorySearch}
-                  className="flex min-h-[48px] items-center gap-2 rounded-lg bg-oa-surface px-4 py-2.5 text-sm text-oa-text transition-colors hover:bg-oa-bubble-bg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oa-blue focus-visible:ring-offset-2"
-                >
-                  <Search className="h-4 w-4 text-oa-text-muted" />
-                  <span>Search directory to find people</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => navigate("/approvals")}
-                  className="flex min-h-[48px] items-center gap-2 rounded-lg bg-oa-surface px-4 py-2.5 text-sm text-oa-text transition-colors hover:bg-oa-bubble-bg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oa-blue focus-visible:ring-offset-2"
-                >
-                  <ListTodo className="h-4 w-4 text-oa-text-muted" />
-                  <span>View pending approvals and transfers</span>
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
+      <ChatCanvas
+        header={header}
+        timeline={timeline}
+        loadingState={loadingState}
+        errorState={errorState}
+        emptyState={emptyState}
+      />
       <AnimatePresence>
         {threadSubject && (
           <ThreadDrawer

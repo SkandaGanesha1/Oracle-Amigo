@@ -1,6 +1,7 @@
 import { ControlPlaneClient } from "../cloud/ControlPlaneClient.js";
 import { DirectoryClient, type CloudAgentInstance, type CloudAgentInstanceDirectoryEntry, type CloudUserAgents } from "../cloud/DirectoryClient.js";
 import { defaultProfileId, LocalCloudIdentityStore, type LocalCloudIdentity } from "../cloud/LocalCloudIdentityStore.js";
+import { UserTokenManager } from "../cloud/UserTokenManager.js";
 import { ChatRepository, type ChatConversationRecord } from "../chat/ChatRepository.js";
 import type { DeviceEnrollmentService } from "../enrollment/DeviceEnrollmentService.js";
 
@@ -20,6 +21,8 @@ interface DirectoryAuthContext {
 }
 
 export class PeerRoutingService {
+  private readonly userTokenManager: UserTokenManager;
+
   constructor(
     private chatRepo: ChatRepository,
     private opts: {
@@ -27,7 +30,11 @@ export class PeerRoutingService {
       enrollmentService?: DeviceEnrollmentService;
       profileId?: string;
     } = {}
-  ) {}
+  ) {
+    this.opts.identityStore ??= new LocalCloudIdentityStore();
+    this.opts.profileId ??= defaultProfileId();
+    this.userTokenManager = new UserTokenManager(this.opts.identityStore);
+  }
 
   async refreshConversationPeer(
     conversation: ChatConversationRecord,
@@ -110,10 +117,7 @@ export class PeerRoutingService {
   }
 
   private async createDirectoryAuthContext(cloud: LocalCloudIdentity): Promise<DirectoryAuthContext | null> {
-    let userToken = cloud.userAccessToken;
-    if (cloud.refreshToken && this.opts.enrollmentService) {
-      userToken = await this.opts.enrollmentService.refreshUserAccessToken().catch(() => userToken ?? null);
-    }
+    const userToken = await this.userTokenManager.getFreshUserAccessToken(cloud.profileId).catch(() => cloud.userAccessToken);
     if (!userToken && !cloud.deviceAccessToken) return null;
     return {
       client: new DirectoryClient(new ControlPlaneClient(cloud.controlPlaneUrl)),

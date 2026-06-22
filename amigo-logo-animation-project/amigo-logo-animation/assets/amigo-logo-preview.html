@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AMIGO animated logo preview</title>
+<style>
+html, body { margin: 0; width: 100%; height: 100%; background: #000; }
+body { display: grid; place-items: center; overflow: hidden; }
+svg { width: min(92vw, 1280px); height: auto; overflow: visible; }
+.logo-path { fill: none; stroke: #fff; stroke-width: 5.3; stroke-linecap: butt; stroke-linejoin: miter; vector-effect: non-scaling-stroke; }
+.lead { stroke-dasharray: 0.5 0.5; stroke-dashoffset: -0.5; animation: amigoLead 2s linear infinite; animation-fill-mode: both; }
+.trail { stroke-dasharray: 0.001 0.999; stroke-dashoffset: -1; animation: amigoTrail 2s linear infinite; animation-fill-mode: both; }
+@keyframes amigoLead {
+  0% { stroke-dasharray: 0.5 0.5; stroke-dashoffset: -0.5; }
+  48% { stroke-dasharray: 0.5 0.5; stroke-dashoffset: 0; }
+  100% { stroke-dasharray: 0.005 0.995; stroke-dashoffset: 0; }
+}
+@keyframes amigoTrail {
+  0%, 48% { stroke-dasharray: 0.001 0.999; stroke-dashoffset: -1; }
+  100% { stroke-dasharray: 0.5 0.5; stroke-dashoffset: -0.5; }
+}
+</style>
+</head>
+<body>
+<svg viewBox="0 0 306 90" role="img" aria-label="Animated AMIGO logo">
+  <rect width="306" height="90" fill="#000" />
+    <path class="logo-path letter-a lead" pathLength="1" d="M 12 72 L 27 18 L 43 72 M 17 59 H 31"/>
+    <path class="logo-path letter-a trail" pathLength="1" d="M 12 72 L 27 18 L 43 72 M 17 59 H 31"/>
+    <path class="logo-path letter-m lead" pathLength="1" d="M 58 72 L 60 18 L 81 56 L 102 18 L 106 72"/>
+    <path class="logo-path letter-m trail" pathLength="1" d="M 58 72 L 60 18 L 81 56 L 102 18 L 106 72"/>
+    <path class="logo-path letter-i lead" pathLength="1" d="M 125 18 V 72 M 116 18 H 134 M 116 72 H 134"/>
+    <path class="logo-path letter-i trail" pathLength="1" d="M 125 18 V 72 M 116 18 H 134 M 116 72 H 134"/>
+    <path class="logo-path letter-g lead" pathLength="1" d="M 214 31 C 208 22 198 18 187 18 C 169 18 155 31 155 45 C 155 60 169 72 187 72 C 201 72 212 65 217 57 V 48 H 192"/>
+    <path class="logo-path letter-g trail" pathLength="1" d="M 214 31 C 208 22 198 18 187 18 C 169 18 155 31 155 45 C 155 60 169 72 187 72 C 201 72 212 65 217 57 V 48 H 192"/>
+    <path class="logo-path letter-o lead" pathLength="1" d="M 259 18 C 276 18 290 31 292 45 C 294 58 285 69 272 73 M 252 72 C 237 70 226 59 226 45 C 226 32 237 21 252 18"/>
+    <path class="logo-path letter-o trail" pathLength="1" d="M 259 18 C 276 18 290 31 292 45 C 294 58 285 69 272 73 M 252 72 C 237 70 226 59 226 45 C 226 32 237 21 252 18"/>
+</svg>
+</body>
+</html>

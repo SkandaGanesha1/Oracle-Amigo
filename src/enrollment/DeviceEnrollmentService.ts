@@ -1,6 +1,7 @@
 import { AuthClient, type LoginRequest, type SignupRequest } from "../cloud/AuthClient.js";
 import { ControlPlaneClient } from "../cloud/ControlPlaneClient.js";
 import { LocalCloudIdentityStore, defaultControlPlaneUrl, defaultProfileId } from "../cloud/LocalCloudIdentityStore.js";
+import { UserTokenManager } from "../cloud/UserTokenManager.js";
 
 export interface LocalAuthOptions {
   profileId?: string;
@@ -83,18 +84,6 @@ export class DeviceEnrollmentService {
   }
 
   async refreshUserAccessToken(profileId = defaultProfileId()): Promise<string | null> {
-    const identity = this.store.get(profileId);
-    if (!identity) return null;
-    const refreshToken = identity?.userRefreshToken ?? identity?.refreshToken;
-    if (!refreshToken) return identity?.userAccessToken ?? null;
-    const bundle = await new AuthClient(new ControlPlaneClient(identity.controlPlaneUrl)).refresh(refreshToken);
-    this.store.save(profileId, {
-      controlPlaneUrl: identity.controlPlaneUrl,
-      userAccessToken: bundle.access_token,
-      refreshToken: bundle.refresh_token,
-      userRefreshToken: bundle.refresh_token,
-      status: identity.status === "disconnected" ? "authenticated" : identity.status
-    });
-    return bundle.access_token;
+    return new UserTokenManager(this.store).forceRefreshUserAccessToken(profileId);
   }
 }

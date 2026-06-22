@@ -34,9 +34,9 @@ export async function requireLocalApiToken(req: FastifyRequest, reply: FastifyRe
   }
 }
 
-export function setLocalUiSessionCookie(reply: FastifyReply): FastifyReply {
+export function setLocalUiSessionCookie(reply: FastifyReply, req?: FastifyRequest): FastifyReply {
   const value = createLocalUiSessionCookieValue();
-  return reply.header("Set-Cookie", serializeLocalUiSessionCookie(value));
+  return reply.header("Set-Cookie", serializeLocalUiSessionCookie(value, req));
 }
 
 export function createLocalUiSessionCookieValue(now = Date.now(), nonce = randomBytes(16).toString("hex")): string {
@@ -45,7 +45,7 @@ export function createLocalUiSessionCookieValue(now = Date.now(), nonce = random
   return `v1.${issuedAt}.${nonce}.${signature}`;
 }
 
-export function serializeLocalUiSessionCookie(value: string): string {
+export function serializeLocalUiSessionCookie(value: string, req?: FastifyRequest): string {
   const parts = [
     `${LOCAL_UI_SESSION_COOKIE}=${value}`,
     "Path=/",
@@ -53,10 +53,39 @@ export function serializeLocalUiSessionCookie(value: string): string {
     "SameSite=Lax",
     `Max-Age=${LOCAL_UI_SESSION_MAX_AGE_SECONDS}`
   ];
-  if (process.env.LOCAL_AGENT_UI_SESSION_SECURE === "true") {
+  if (shouldSecureLocalUiSessionCookie(req)) {
     parts.push("Secure");
   }
   return parts.join("; ");
+}
+
+export function shouldSecureLocalUiSessionCookie(req?: FastifyRequest): boolean {
+  const override = process.env.LOCAL_AGENT_UI_SESSION_SECURE?.trim().toLowerCase();
+  if (override === "true") return true;
+  if (override === "false") return false;
+
+  if (!req) return true;
+
+  const forwardedProto = firstHeaderValue(req.headers["x-forwarded-proto"]);
+  const protocol = forwardedProto ?? (req as FastifyRequest & { protocol?: string }).protocol;
+  if (protocol?.split(",")[0]?.trim().toLowerCase() === "https") return true;
+
+  const host = firstHeaderValue(req.headers.host) ?? req.hostname;
+  if (!host) return true;
+  const hostname = normalizeHostForCookiePolicy(host);
+  return hostname === "localhost" || hostname === "localhost.localdomain" || hostname === "127.0.0.1" || hostname === "::1";
+}
+
+function firstHeaderValue(value: string | string[] | undefined): string | undefined {
+  if (Array.isArray(value)) return value[0];
+  return value;
+}
+
+function normalizeHostForCookiePolicy(host: string | undefined): string {
+  if (!host) return "";
+  const firstHost = host.split(",")[0]?.trim().toLowerCase() ?? "";
+  if (firstHost.startsWith("[")) return firstHost.slice(1, firstHost.indexOf("]"));
+  return firstHost.split(":")[0] ?? "";
 }
 
 export function hasValidLocalUiSession(req: FastifyRequest): boolean {

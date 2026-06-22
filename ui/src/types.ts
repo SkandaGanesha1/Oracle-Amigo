@@ -456,6 +456,10 @@ export interface MessageAttachment {
   size_bytes: number;
   url: string;
   thumbnail_url?: string | null;
+  preview_status?: "processing" | "ready" | "failed" | "blocked";
+  page_count?: number | null;
+  preview_error?: string | null;
+  thumbnail_variants?: Array<"360" | "720">;
   width?: number | null;
   height?: number | null;
   duration_ms?: number | null;

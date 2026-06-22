@@ -10,7 +10,7 @@ import { getDb } from "../db/connection.js";
 export type StagedFile = { stagedPath: string; sha256: string; sizeBytes: number; };
 export type StoredFile = { id: string; transferId: string; storedPath: string; originalFileName: string; sha256: string; sizeBytes: number; receivedAt: string; };
 
-function storageRoot(): string {
+export function storageRoot(): string {
   if (process.env.AGENTIC_STORAGE_ROOT) return process.env.AGENTIC_STORAGE_ROOT;
   if (process.platform === "win32" && process.env.LOCALAPPDATA)
     return join(process.env.LOCALAPPDATA, "AgenticApp", "storage");
@@ -18,7 +18,7 @@ function storageRoot(): string {
 }
 
 export function ensureDirectories(): void {
-  for (const sub of ["inbox", "sent", "staging", "approved", "temp"]) {
+  for (const sub of ["inbox", "sent", "staging", "approved", "temp", "previews"]) {
     mkdirSync(join(storageRoot(), sub), { recursive: true });
   }
 }

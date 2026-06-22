@@ -194,7 +194,7 @@ function rowToIdentity(row: Record<string, unknown>, secrets: SecretStore): Loca
     userAccessToken: readTokenSecret(secrets, profileId, "userAccessToken", row),
     deviceAccessToken: readTokenSecret(secrets, profileId, "deviceAccessToken", row),
     refreshToken: readTokenSecret(secrets, profileId, "refreshToken", row),
-    userRefreshToken: readTokenSecret(secrets, profileId, "userRefreshToken", row) ?? readTokenSecret(secrets, profileId, "refreshToken", row),
+    userRefreshToken: readTokenSecret(secrets, profileId, "userRefreshToken", row),
     deviceRefreshToken: readTokenSecret(secrets, profileId, "deviceRefreshToken", row),
     status: String(row.status) as LocalCloudIdentity["status"],
     createdAt: String(row.created_at),

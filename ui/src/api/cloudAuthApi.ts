@@ -3,6 +3,7 @@ import { localAgentClient, request } from "./localAgentClient";
 
 export const cloudAuthApi = {
   cloudStatus: () => localAgentClient.get<CloudStatus>("/cloud/status"),
+  refreshCloudSession: () => localAgentClient.post<CloudStatus>("/cloud/session/refresh", {}),
   signup: (body: { email: string; password: string; display_name: string; org_slug?: string; control_plane_url?: string }) =>
     localAgentClient.post("/cloud/signup", body),
   login: (body: { email: string; password: string; org_slug?: string; control_plane_url?: string }) =>

@@ -263,6 +263,21 @@ CREATE TABLE IF NOT EXISTS received_files (
   received_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS file_previews (
+  file_id TEXT PRIMARY KEY,
+  status TEXT NOT NULL DEFAULT 'processing',
+  source_mime_type TEXT NOT NULL DEFAULT 'application/octet-stream',
+  page_count INTEGER,
+  thumb_360_path TEXT,
+  thumb_720_path TEXT,
+  width INTEGER,
+  height INTEGER,
+  error_message TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (file_id) REFERENCES received_files(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS approval_transfer_jobs (
   id TEXT PRIMARY KEY,
   approval_id TEXT NOT NULL UNIQUE,
@@ -400,17 +415,30 @@ CREATE TABLE IF NOT EXISTS watermark_history (
 
 CREATE TABLE IF NOT EXISTS notification_events (
   id TEXT PRIMARY KEY,
+  source_event_id TEXT UNIQUE,
   event_type TEXT NOT NULL,
   title TEXT NOT NULL,
   body TEXT NOT NULL,
   severity TEXT NOT NULL DEFAULT 'info',
   entity_type TEXT,
   entity_id TEXT,
+  status TEXT NOT NULL DEFAULT 'pending',
+  conversation_id TEXT,
+  message_id TEXT,
+  sender_user_id TEXT,
+  sender_agent_instance_id TEXT,
+  bridge_error TEXT,
+  shown_at TEXT,
+  read_at TEXT,
   delivered INTEGER NOT NULL DEFAULT 0,
   bridge_available INTEGER NOT NULL DEFAULT 0,
   metadata_json TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_notification_events_source_event
+  ON notification_events(source_event_id)
+  WHERE source_event_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS user_agent_settings (
   profile_id TEXT PRIMARY KEY,

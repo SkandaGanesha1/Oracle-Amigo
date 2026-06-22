@@ -207,6 +207,8 @@ Database runtime:
 
 The cloud control plane is Postgres-only. The local agent database and sqlite-vec file-search storage are separate and unchanged.
 
+For persistent Postgres-backed development, staging, or production, configure stable `JWT_PRIVATE_KEY_PEM` and `JWT_PUBLIC_KEY_PEM`. Without stable PEM values, the non-production control plane generates an in-memory RSA keypair on every restart, invalidating existing access tokens and forcing refresh-token recovery. See `docs/control-plane-persistent-postgres-auth.md` for the key generation and operator setup notes.
+
 ## Deployment
 
 The control plane ships as a Node.js service and now has a Podman Compose pilot stack for control-plane + Admin Portal:

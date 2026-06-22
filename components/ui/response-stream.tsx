@@ -393,9 +393,9 @@ function ResponseStream({
     }
   }
 
-  const Container = as as keyof React.JSX.IntrinsicElements
+  const Container = as as React.ElementType
 
-  return <Container className={className}>{renderContent()}</Container>
+  return React.createElement(Container, { className }, renderContent())
 }
 
 export { useTextStream, ResponseStream }

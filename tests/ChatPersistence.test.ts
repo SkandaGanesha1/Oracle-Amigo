@@ -33,6 +33,7 @@ afterEach(() => {
   delete process.env.SANDBOX_FILE_SEARCH_ROOTS;
   delete process.env.AGENTIC_DISABLE_RUNTIME_AUTOSTART;
   delete process.env.CONTROL_PLANE_URL;
+  delete process.env.NOTIFICATION_BRIDGE_PORT;
   try { rmSync(tmpRoot, { recursive: true, force: true }); } catch { /* ignore */ }
 });
 
@@ -406,6 +407,61 @@ describe("persisted chat API", () => {
     expect(refreshed.json().readState).toMatchObject(updated.json().readState);
     expect(chatRepo.getConversation(conversation.id)?.unread_count).toBe(1);
     await server.close();
+  });
+
+  it("counts inbound messages and pending approval cards as unread, not local-authored messages", () => {
+    const chatRepo = new ChatRepository();
+    const conversation = chatRepo.createConversation({
+      title: "Peer",
+      mode: "cloud_relay",
+      localUserId: "usr-local",
+      localAgentInstanceId: "agi-local",
+      peerAgentInstanceId: "agi-peer"
+    });
+
+    chatRepo.appendMessage({
+      id: "msg-inbound-unread",
+      conversationId: conversation.id,
+      senderAgentInstanceId: "agi-peer",
+      receiverAgentInstanceId: "agi-local",
+      messageType: "human",
+      text: "inbound",
+      deliveryStatus: "stored_by_remote_agent"
+    });
+    expect(chatRepo.getConversation(conversation.id)?.unread_count).toBe(1);
+
+    chatRepo.appendMessage({
+      id: "msg-local-sent-not-unread",
+      conversationId: conversation.id,
+      senderUserId: "usr-local",
+      senderAgentInstanceId: "agi-local",
+      receiverAgentInstanceId: "agi-peer",
+      messageType: "human",
+      text: "local sent",
+      deliveryStatus: "queued_at_relay"
+    });
+    chatRepo.appendMessage({
+      id: "msg-local-status-not-unread",
+      conversationId: conversation.id,
+      senderAgentInstanceId: "agi-local",
+      receiverAgentInstanceId: "agi-peer",
+      messageType: "agent_status",
+      text: "status",
+      deliveryStatus: "delivered"
+    });
+    expect(chatRepo.getConversation(conversation.id)?.unread_count).toBe(1);
+
+    chatRepo.appendMessage({
+      id: "msg-local-approval-unread",
+      conversationId: conversation.id,
+      senderAgentInstanceId: "agi-local",
+      receiverAgentInstanceId: "agi-peer",
+      messageType: "approval",
+      text: "Approval required",
+      payload: { status: "pending" },
+      deliveryStatus: "delivered"
+    });
+    expect(chatRepo.getConversation(conversation.id)?.unread_count).toBe(2);
   });
 
   it("persists reply previews, thread summaries, pins, and around-window message jumps", async () => {
@@ -870,6 +926,29 @@ describe("persisted chat API", () => {
   });
 
   it("stores inbound relay message.send as an incoming peer chat message", async () => {
+    let capturedNotification: Record<string, unknown> | null = null;
+    const bridgeServer = createServer((req, res) => {
+      res.setHeader("content-type", "application/json");
+      if (req.method === "POST" && req.url === "/notify") {
+        let body = "";
+        req.on("data", (chunk) => { body += chunk; });
+        req.on("end", () => {
+          capturedNotification = JSON.parse(body) as Record<string, unknown>;
+          res.end(JSON.stringify({ supported: true, status: "ok" }));
+        });
+        return;
+      }
+      res.statusCode = 404;
+      res.end(JSON.stringify({ error: "not found" }));
+    });
+    const bridgePort = await new Promise<number>((resolve) => {
+      bridgeServer.listen(0, "127.0.0.1", () => {
+        const addr = bridgeServer.address();
+        resolve(addr && typeof addr === "object" ? addr.port : 3400);
+      });
+    });
+    process.env.NOTIFICATION_BRIDGE_PORT = String(bridgePort);
+
     const chatRepo = new ChatRepository();
     const realtimeEvents: Array<{ operation: string; conversationId: string; messageId?: string }> = [];
     const unsubscribe = chatRepo.subscribe((event) => {
@@ -896,11 +975,44 @@ describe("persisted chat API", () => {
     expect(result.status).toBe("created");
     const conversation = chatRepo.findCloudRelayConversationByPeerAgent("agi-peer");
     expect(conversation).toBeTruthy();
+    expect(conversation?.unread_count).toBe(1);
     expect(realtimeEvents).toContainEqual(expect.objectContaining({
       operation: "message_created",
       conversationId: conversation!.id,
       messageId: expect.any(String)
     }));
+    const notificationRow = getDb().prepare("SELECT * FROM notification_events WHERE source_event_id = ?")
+      .get("relay-msg-1:chat_message_received") as Record<string, unknown> | undefined;
+    expect(notificationRow).toMatchObject({
+      event_type: "chat_message_received",
+      status: "shown",
+      delivered: 1,
+      bridge_available: 1,
+      conversation_id: conversation!.id,
+      sender_agent_instance_id: "agi-peer"
+    });
+    expect(capturedNotification).toMatchObject({
+      kind: "chat_message",
+      title: conversation!.title,
+      body: "hello from peer",
+      conversationId: conversation!.id
+    });
+    const duplicate = await dispatcher.dispatch({
+      relay_task_id: "relay-msg-1",
+      from_agent_instance_id: "agi-peer",
+      to_agent_instance_id: "agi-local",
+      a2a_task_id: "task-msg-1",
+      type: "message.send",
+      payload: { kind: "message", text: "hello from peer" },
+      status: "delivered",
+      created_at: new Date().toISOString(),
+      delivered_at: null,
+      ack_at: null
+    });
+    expect(duplicate.status).toBe("duplicate");
+    const notificationCount = getDb().prepare("SELECT COUNT(*) AS count FROM notification_events WHERE source_event_id = ?")
+      .get("relay-msg-1:chat_message_received") as { count: number };
+    expect(notificationCount.count).toBe(1);
     const server = buildServer();
 
     const messages = await server.inject({ method: "GET", url: `/chat/conversations/${conversation!.id}/messages` });
@@ -917,7 +1029,18 @@ describe("persisted chat API", () => {
       kind: "agent_status",
       status_text: "hello from peer"
     }));
+
+    const inbox = await server.inject({ method: "GET", url: "/api/inbox/items?bucket=waiting_on_others" });
+    expect(inbox.statusCode).toBe(200);
+    expect(inbox.json().items).toContainEqual(expect.objectContaining({
+      kind: "chat_message",
+      conversationId: conversation!.id,
+      status: "unread",
+      unread: true
+    }));
     await server.close();
+    delete process.env.NOTIFICATION_BRIDGE_PORT;
+    await new Promise<void>((resolve) => bridgeServer.close(() => resolve()));
   });
 
   it("emits chat realtime events for voice-triggered inbound file requests through the injected repository", async () => {

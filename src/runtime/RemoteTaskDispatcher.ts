@@ -12,6 +12,7 @@ import { storeReceivedRelayFile } from "../storage/AgenticStorage.js";
 import { createTask, transition } from "../workflow/TaskWorkflow.js";
 import type { RelayInboxMessage } from "../cloud/RelayClient.js";
 import { ChatRepository, type RelayDeliveryReceipt } from "../chat/ChatRepository.js";
+import { NotificationDeliveryService } from "../notification/NotificationDeliveryService.js";
 import { withRecoveredDeviceToken } from "./CloudTokenRecovery.js";
 import { PeerRoutingService } from "./PeerRoutingService.js";
 import { resolveFileRequestCandidates, toApprovalCandidatePayload } from "./FileRequestCandidateResolver.js";
@@ -32,7 +33,8 @@ export class RemoteTaskDispatcher {
     private db: DatabaseSync = getDb(),
     private profileId = defaultProfileId(),
     private chatRepo = new ChatRepository(db),
-    private fileSearch = new FileSearchService()
+    private fileSearch = new FileSearchService(),
+    private notifications = new NotificationDeliveryService(db)
   ) {}
 
   async dispatch(message: RelayInboxMessage): Promise<DispatchResult> {
@@ -228,7 +230,7 @@ export class RemoteTaskDispatcher {
       transition(task.id, "INTENT_CLASSIFIED", { intent: this.intentExtractor.extract(text).intent, remote: true });
 
       // Call ReceiverAgentOrchestrator to handle incoming request (file search + approval card + insert db)
-      const orchestrator = new ReceiverAgentOrchestrator(this.db, this.profileId, this.chatRepo, this.fileSearch);
+      const orchestrator = new ReceiverAgentOrchestrator(this.db, this.profileId, this.chatRepo, this.fileSearch, this.notifications);
       const approval = await orchestrator.handleIncomingFileRequest(message, conversation.id, task.id);
       const candidateCount = JSON.parse(approval.candidatesJson).length;
 
@@ -274,7 +276,7 @@ export class RemoteTaskDispatcher {
     try {
       const text = extractRequestText(message.payload);
       const conversation = await this.findOrCreateRelayConversation(message, "message.send");
-      this.chatRepo.appendMessage({
+      const storedMessage = this.chatRepo.appendMessage({
         conversationId: conversation.id,
         taskId: localTaskId,
         senderAgentInstanceId: message.from_agent_instance_id,
@@ -288,6 +290,14 @@ export class RemoteTaskDispatcher {
           sender_label: conversation.title || `Remote agent ${shortId(message.from_agent_instance_id)}`
         },
         deliveryStatus: "stored_by_remote_agent"
+      });
+      await this.notifications.chatMessageReceived({
+        message: storedMessage,
+        conversationTitle: conversation.title,
+        sourceEventId: `${message.relay_task_id}:chat_message_received`,
+        senderLabel: conversation.title || `Remote agent ${shortId(message.from_agent_instance_id)}`
+      }).catch(() => {
+        // The local chat write is the source of truth; notification delivery is best-effort.
       });
       await this.sendDeliveryReceipt(message, {
         relay_task_id: message.relay_task_id,

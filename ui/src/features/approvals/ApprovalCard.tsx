@@ -1,9 +1,8 @@
 import { useCallback, useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Shield, ShieldCheck, ShieldAlert, Check, X, Clock, ArrowRight, Search, FileWarning, FileText, Eye, Ban, HelpCircle, User, BadgeCheck, BadgeAlert, Send, AlertTriangle } from "lucide-react";
-import { useApproveFileRequest, useRejectFileRequest, useSubmitApprovalFeedback, useConsentAction, useIndexedFiles, useRebindApprovalFile } from "../../hooks/queries";
+import { Shield, ShieldCheck, ShieldAlert, Check, X, Clock, ArrowRight, Eye, Ban, HelpCircle, User, BadgeCheck, BadgeAlert, Send, AlertTriangle } from "lucide-react";
+import { useApproveFileRequest, useRejectFileRequest, useSubmitApprovalFeedback, useConsentAction } from "../../hooks/queries";
 import type { FileCandidateApprovalCard } from "../../api/types";
-import { CandidateFileList } from "./CandidateFileList";
 import { ApprovalRiskHeader } from "./ApprovalRiskHeader";
 import { ApprovalExactBinding } from "./ApprovalExactBinding";
 import { ApprovalFeedbackBox } from "./ApprovalFeedbackBox";
@@ -23,14 +22,6 @@ function formatRequester(id: string): string {
   return id;
 }
 
-function initialFilePickerQuery(requestText: string): string {
-  return requestText
-    .replace(/^(\s*(please|can|could|would|send|share|get|find|locate|show|give)\s+)+/i, "")
-    .replace(/^\s*(me|the|a|an)\s+/i, "")
-    .replace(/\s+(file|document)\s*$/i, "")
-    .trim();
-}
-
 interface ApprovalCardProps {
   card: FileCandidateApprovalCard;
 }
@@ -40,11 +31,10 @@ export function ApprovalCard({ card }: ApprovalCardProps) {
   const { mutate: approve, isPending: isApproving } = useApproveFileRequest();
   const { mutate: reject, isPending: isRejecting } = useRejectFileRequest();
   const { mutate: submitFeedback, isPending: isFeedbackSubmitting } = useSubmitApprovalFeedback();
-  const rebindFile = useRebindApprovalFile();
   const consentAction = useConsentAction();
 
-  const [selectedId, setSelectedId] = useState<string | null>(
-    card.selected_candidate_id ?? null
+  const [selectedId] = useState<string | null>(
+    card.selected_candidate_id ?? card.candidates[0]?.candidate_id ?? null
   );
   const [selectedAccessType, setSelectedAccessType] = useState<"one-time" | "time-bound" | "permanent">("one-time");
   const [expiryHours, setExpiryHours] = useState(24);
@@ -52,9 +42,6 @@ export function ApprovalCard({ card }: ApprovalCardProps) {
   const [showAskWhy, setShowAskWhy] = useState(false);
   const [askWhyText, setAskWhyText] = useState("");
   const [showPreview, setShowPreview] = useState(false);
-  const [showFilePicker, setShowFilePicker] = useState(false);
-  const [manualQuery, setManualQuery] = useState(() => initialFilePickerQuery(card.request_text));
-  const indexedFiles = useIndexedFiles(8, 0, showFilePicker ? manualQuery : "", "");
 
   useEffect(() => {
     if (!card.expires_at) return;
@@ -71,11 +58,10 @@ export function ApprovalCard({ card }: ApprovalCardProps) {
   }, [card.expires_at]);
 
   const isTerminal = card.status !== "pending" && card.status !== "feedback_requested";
-  const isProcessing = isApproving || isRejecting || isFeedbackSubmitting || consentAction.isPending || rebindFile.isPending;
+  const isProcessing = isApproving || isRejecting || isFeedbackSubmitting || consentAction.isPending;
   const requesterLabel = card.requester_display_name?.trim() || formatRequester(card.requester);
   const targetLabel = card.target_display_name?.trim() || "Local agent";
   const hasCandidates = card.candidates.length > 0;
-  const lowConfidenceCandidates = card.low_confidence_candidates ?? [];
   const isBound = Boolean(card.is_bound && card.selected_candidate_id);
   const selectedFile = card.candidates.find((c) => c.candidate_id === selectedId);
   const sensitivity = selectedFile ? detectFileSensitivity(selectedFile.file_name, selectedFile.display_path) : detectFileSensitivity("", "");
@@ -92,19 +78,6 @@ export function ApprovalCard({ card }: ApprovalCardProps) {
   const handleFeedback = useCallback((feedback: string) => {
     submitFeedback({ approvalId: card.approval_id, feedback });
   }, [submitFeedback, card.approval_id]);
-
-  const handleManualBind = useCallback((fileId: number | string) => {
-    rebindFile.mutate(
-      { approvalId: card.approval_id, fileId: String(fileId) },
-      {
-        onSuccess: (updated) => {
-          const nextSelected = updated?.selected_candidate_id ?? updated?.candidates?.[0]?.candidate_id ?? null;
-          setSelectedId(nextSelected);
-          setShowFilePicker(false);
-        }
-      }
-    );
-  }, [rebindFile, card.approval_id]);
 
   const handleAskWhy = useCallback(() => {
     if (askWhyText.trim()) {
@@ -195,87 +168,6 @@ export function ApprovalCard({ card }: ApprovalCardProps) {
               Critical
             </span>
           )}
-        </div>
-      )}
-
-      {hasCandidates && (
-        <div className="mt-4">
-          <CandidateFileList
-            candidates={card.candidates}
-            selectedId={selectedId}
-            onSelect={setSelectedId}
-            onPreview={() => setShowPreview(true)}
-          />
-        </div>
-      )}
-
-      {lowConfidenceCandidates.length > 0 && (
-        <div className="mt-3 rounded-lg border border-dashed border-oa-border bg-oa-surface-2 p-3">
-          <p className="text-[11px] font-medium text-oa-text-muted">Low confidence / other types</p>
-          <div className="mt-2">
-            <CandidateFileList
-              candidates={lowConfidenceCandidates}
-              selectedId={null}
-              onSelect={() => undefined}
-            />
-          </div>
-        </div>
-      )}
-
-      {!hasCandidates && card.status === "pending" && (
-        <div className="mt-4 flex items-start gap-2.5 rounded-lg border border-oa-amber/20 bg-oa-amber/5 p-3">
-          <FileWarning className="mt-0.5 h-4 w-4 shrink-0 text-oa-amber" />
-          <div className="space-y-2">
-            <p className="text-xs font-medium text-oa-amber">No matching files found</p>
-            <p className="text-[10px] text-oa-text-muted leading-relaxed">
-              The agent searched your available files but found no candidates matching &ldquo;{card.request_text}.&rdquo; Provide feedback below to refine the search, or reject this request.
-            </p>
-            <button
-              type="button"
-              onClick={() => setShowFilePicker((value) => !value)}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-oa-amber/30 bg-oa-amber/10 px-2.5 py-1.5 text-xs font-medium text-oa-amber transition hover:bg-oa-amber/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oa-amber"
-            >
-              <FileText className="h-3.5 w-3.5" />
-              Choose indexed file
-            </button>
-          </div>
-        </div>
-      )}
-
-      {card.status === "pending" && showFilePicker && (
-        <div className="mt-3 rounded-lg border border-oa-border bg-oa-bg-elevated p-3">
-          <div className="flex items-center gap-2">
-            <Search className="h-4 w-4 text-oa-text-muted" />
-            <input
-              type="text"
-              value={manualQuery}
-              onChange={(event) => setManualQuery(event.target.value)}
-              placeholder="Search indexed files by name..."
-              className="min-w-0 flex-1 rounded-lg border border-oa-border bg-oa-bg px-3 py-2 text-xs text-oa-text outline-none focus:border-oa-blue"
-            />
-          </div>
-          <div className="mt-3 space-y-2">
-            {(indexedFiles.data?.items ?? []).map((file) => (
-              <button
-                key={file.id}
-                type="button"
-                disabled={isProcessing}
-                onClick={() => handleManualBind(file.id)}
-                className="flex w-full items-center justify-between gap-3 rounded-lg border border-oa-border bg-oa-surface-2 px-3 py-2 text-left transition hover:border-oa-blue/40 disabled:opacity-60"
-              >
-                <span className="min-w-0">
-                  <span className="block truncate text-xs font-medium text-oa-text">{file.fileName}</span>
-                  <span className="block truncate text-[10px] text-oa-text-muted">{file.displayPath}</span>
-                </span>
-                <span className="shrink-0 text-[10px] text-oa-text-muted">{file.extension || "file"}</span>
-              </button>
-            ))}
-            {!indexedFiles.isLoading && (indexedFiles.data?.items ?? []).length === 0 && (
-              <div className="rounded-lg border border-dashed border-oa-border px-3 py-4 text-center text-xs text-oa-text-muted">
-                No indexed files matched this search. Try a shorter filename or add feedback below.
-              </div>
-            )}
-          </div>
         </div>
       )}
 
